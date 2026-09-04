@@ -97,3 +97,47 @@ python main.py
 - 公共能力只写在 `libs/common`，禁止复制粘贴
 - 业务逻辑与框架代码分离
 - 早期用内存/文件即可，接口保持稳定，后期再换 Redis/DB
+
+## Data Service（已实现）
+
+真实 Binance K 线采集 + 本地存储 + 5 分钟定时增量 + 数据集构建 + Hugging Face 上传。
+
+### 启动
+
+```bash
+cd services/data/app
+export PYTHONPATH=../../../libs:$PYTHONPATH
+python main.py
+# 文档: http://localhost:8001/docs
+```
+
+### 主要接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/latest_price` | 最新成交价 |
+| GET | `/api/v1/klines` | K 线（local / binance） |
+| GET | `/api/v1/local/list` | 本地已存数据列表 |
+| POST | `/api/v1/fetch` | 手动触发采集（支持回填） |
+| GET | `/api/v1/scheduler/status` | 定时任务状态 |
+| POST | `/api/v1/scheduler/run_once` | 立即跑一轮采集 |
+| POST | `/api/v1/dataset/build` | 构建特征+标签数据集 |
+| POST | `/api/v1/dataset/push_hf` | 构建并推送到 Hugging Face |
+
+### 环境变量（可选）
+
+```bash
+export HF_TOKEN=hf_xxxx          # Hugging Face Token
+export HF_REPO_ID=PUITO/crypto-btc-5m
+export DATA_DIR=./data
+export FETCH_EVERY_SECONDS=300
+export SYMBOLS=BTCUSDT
+```
+
+### 使用 Hugging Face 数据集
+
+```python
+from datasets import load_dataset
+ds = load_dataset("PUITO/crypto-btc-5m")  # 替换为你的 repo
+df = ds["train"].to_pandas()
+```

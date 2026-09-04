@@ -19,3 +19,7 @@ htmlcov/
 *.log
 .idea/
 .vscode/
+
+# Local market data
+data/
+*.parquet
