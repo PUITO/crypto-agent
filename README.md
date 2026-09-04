@@ -141,3 +141,27 @@ from datasets import load_dataset
 ds = load_dataset("PUITO/crypto-btc-5m")  # 替换为你的 repo
 df = ds["train"].to_pandas()
 ```
+
+## API Gateway（统一入口 :8000）
+
+所有后端服务可通过 Gateway 访问，前端只需配置一个 baseURL。
+
+| 前缀 | 上游 |
+|------|------|
+| `/data/*` | Data :8001 |
+| `/config/*` | Config :8002 |
+| `/plugin/*` | Plugin :8003 |
+| `/backtest/*` | Backtest :8004 |
+| `/chart/*` | Chart :8005 |
+| `/agent/*` | Agent :8006 |
+| `/multi-agent/*` | Multi-Agent :8007 |
+| `/api/v1/health/all` | 聚合健康检查 |
+
+```bash
+cd services/gateway/app
+export PYTHONPATH=../../../libs:$PYTHONPATH
+python main.py
+# http://localhost:8000/docs
+# 例: GET http://localhost:8000/data/api/v1/latest_price
+# 例: POST http://localhost:8000/agent/api/v1/chat
+```
