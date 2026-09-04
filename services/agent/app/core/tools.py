@@ -22,11 +22,13 @@ class ToolRegistry:
         config_url: str = "http://localhost:8002",
         plugin_url: str = "http://localhost:8003",
         backtest_url: str = "http://localhost:8004",
+        chart_url: str = "http://localhost:8005",
     ):
         self.data_url = data_url.rstrip("/")
         self.config_url = config_url.rstrip("/")
         self.plugin_url = plugin_url.rstrip("/")
         self.backtest_url = backtest_url.rstrip("/")
+        self.chart_url = chart_url.rstrip("/")
         self._tools: dict[str, dict[str, Any]] = {}
         self._register_builtins()
 
@@ -128,6 +130,65 @@ class ToolRegistry:
                 "required": ["mode"],
             },
             func=self.switch_mode,
+        )
+        self.register(
+            name="draw_fibonacci",
+            description="在图表上绘制斐波那契回撤。需要起点/终点时间与价格。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "default": "BTCUSDT"},
+                    "time_from": {"type": "string", "description": "起点时间 ISO"},
+                    "price_from": {"type": "number"},
+                    "time_to": {"type": "string", "description": "终点时间 ISO"},
+                    "price_to": {"type": "number"},
+                    "name": {"type": "string"},
+                    "session_id": {"type": "string"},
+                },
+                "required": ["time_from", "price_from", "time_to", "price_to"],
+            },
+            func=self.draw_fibonacci,
+        )
+        self.register(
+            name="draw_horizontal",
+            description="绘制水平支撑/压力线",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "default": "BTCUSDT"},
+                    "price": {"type": "number"},
+                    "kind": {"type": "string", "enum": ["support", "resistance", "horizontal"], "default": "support"},
+                    "name": {"type": "string"},
+                    "session_id": {"type": "string"},
+                },
+                "required": ["price"],
+            },
+            func=self.draw_horizontal,
+        )
+        self.register(
+            name="clear_drawings",
+            description="清除图表上的绘图对象",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "type": {"type": "string", "description": "只清除某类型，如 fibonacci"},
+                },
+            },
+            func=self.clear_drawings,
+        )
+        self.register(
+            name="list_drawings",
+            description="列出当前图表上的绘图对象",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "session_id": {"type": "string"},
+                },
+            },
+            func=self.list_drawings,
         )
 
     def register(self, name: str, description: str, parameters: dict, func: ToolFunc) -> None:
@@ -255,3 +316,80 @@ class ToolRegistry:
     async def switch_mode(self, mode: str) -> dict:
         """只做预览，真正切换需 apply_config"""
         return await self.preview_config({"mode": mode})
+
+    async def draw_fibonacci(
+        self,
+        time_from: str,
+        price_from: float,
+        time_to: str,
+        price_to: float,
+        symbol: str = "BTCUSDT",
+        name: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> dict:
+        payload = {
+            "symbol": symbol,
+            "time_from": time_from,
+            "price_from": price_from,
+            "time_to": time_to,
+            "price_to": price_to,
+            "name": name,
+            "session_id": session_id,
+        }
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(f"{self.chart_url}/api/v1/drawings/fibonacci", json=payload)
+            r.raise_for_status()
+            return r.json()
+
+    async def draw_horizontal(
+        self,
+        price: float,
+        symbol: str = "BTCUSDT",
+        kind: str = "support",
+        name: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> dict:
+        payload = {
+            "symbol": symbol,
+            "price": price,
+            "kind": kind,
+            "name": name,
+            "session_id": session_id,
+        }
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(f"{self.chart_url}/api/v1/drawings/horizontal", json=payload)
+            r.raise_for_status()
+            return r.json()
+
+    async def clear_drawings(
+        self,
+        symbol: Optional[str] = None,
+        session_id: Optional[str] = None,
+        type: Optional[str] = None,
+    ) -> dict:
+        params = {}
+        if symbol:
+            params["symbol"] = symbol
+        if session_id:
+            params["session_id"] = session_id
+        if type:
+            params["type"] = type
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.delete(f"{self.chart_url}/api/v1/drawings", params=params)
+            r.raise_for_status()
+            return r.json()
+
+    async def list_drawings(
+        self,
+        symbol: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> dict:
+        params = {}
+        if symbol:
+            params["symbol"] = symbol
+        if session_id:
+            params["session_id"] = session_id
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"{self.chart_url}/api/v1/drawings", params=params)
+            r.raise_for_status()
+            return r.json()

@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI):
         config_url=settings.config_service_url,
         plugin_url=settings.plugin_service_url,
         backtest_url=settings.backtest_service_url,
+        chart_url=settings.chart_service_url,
     )
     orchestrator = AgentOrchestrator(llm=llm, tools=tools)
     logger.info(f"Agent ready: provider={settings.llm_provider} model={settings.llm_model}")
