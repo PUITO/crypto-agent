@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  data-service:
+    build:
+      context: .
+      dockerfile: services/data/Dockerfile
+    ports:
+      - "8001:8001"
+    env_file: .env
+    volumes:
+      - ./services/data:/app
+      - ./libs:/libs
+    depends_on:
+      - redis
+
+  config-service:
+    build:
+      context: .
+      dockerfile: services/config/Dockerfile
+    ports:
+      - "8002:8002"
+    env_file: .env
+    volumes:
+      - ./services/config:/app
+      - ./libs:/libs
+    depends_on:
+      - redis
+
+  # 其他服务可按相同模式补充...
+  # 当前骨架阶段更推荐本地直接 python -m 启动，方便调试
+
+volumes:
+  redis_data:

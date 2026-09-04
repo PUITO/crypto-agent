@@ -1,0 +1,24 @@
+# 核心
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+httpx>=0.27.0
+
+# 数据处理（Data / Backtest 服务会用到）
+pandas>=2.2.0
+numpy>=1.26.0
+# vectorbt  # 回测时按需安装
+# pandas-ta  # 指标计算按需安装
+
+# 消息与缓存（后期启用）
+# redis>=5.0.0
+
+# Agent（Agent 服务按需安装）
+# langchain>=0.3.0
+# langgraph>=0.2.0
+# langchain-openai
+# ollama
+
+# 工具
+python-dotenv>=1.0.0
