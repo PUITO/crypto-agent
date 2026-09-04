@@ -1,14 +1,16 @@
 """
-Plugin Service —— 策略/模型热插拔管理入口。
-可独立启动与测试。
+Plugin Service —— 策略/模型热插拔管理。
+支持扫描加载、列表、获取信息、卸载、重载、生成信号。
 """
 
-from contextlib import asynccontextmanager
-from typing import List, Dict, Any
+from __future__ import annotations
 
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from typing import Any, Optional
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import sys
 from pathlib import Path
@@ -21,33 +23,34 @@ from common.logging import setup_logging, get_logger
 from common.health import router as health_router
 from common.exceptions import AppException, app_exception_handler, unhandled_exception_handler
 
+from core.loader import PluginLoader
+
 
 class Settings(BaseServiceSettings):
     service_name: str = "plugin-service"
     port: int = 8003
-    plugins_dir: str = "./plugins"
+    # 默认指向仓库内的 plugins 目录
+    plugins_dir: str = str(Path(__file__).resolve().parents[1] / "plugins")
 
 
 settings = Settings()
 setup_logging(settings)
 logger = get_logger(settings.service_name)
 
-# 骨架：内存中的插件注册表
-_plugins: Dict[str, Dict[str, Any]] = {
-    "kdj_rsi_event": {
-        "name": "kdj_rsi_event",
-        "version": "1.0.0",
-        "modes": ["event_30m"],
-        "description": "KDJ+RSI 事件合约策略（参考现有技能）",
-        "status": "loaded",
-    }
-}
+loader = PluginLoader(settings.plugins_dir)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"{settings.service_name} starting on port {settings.port}")
-    # TODO: 扫描 plugins_dir 并热加载
+    logger.info(f"{settings.service_name} starting, plugins_dir={settings.plugins_dir}")
+    # 同时加载内置 plugins 目录（服务内）和仓库级 plugins 目录
+    builtin = Path(__file__).resolve().parents[1] / "plugins"
+    repo_plugins = ROOT / "services" / "plugin" / "plugins"
+    for d in [builtin, repo_plugins, Path(settings.plugins_dir)]:
+        if d.exists():
+            loader.plugins_dir = d
+            n = loader.scan_and_load()
+            logger.info(f"Scanned {d}: loaded {n} plugins")
     yield
     logger.info(f"{settings.service_name} shutting down")
 
@@ -56,10 +59,9 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Plugin Service",
         description="策略与训练模型热插拔管理",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
-
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -67,45 +69,102 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
     app.add_exception_handler(AppException, app_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)
     app.include_router(health_router)
 
     @app.get("/")
     async def root():
-        return {"service": settings.service_name, "status": "running", "docs": "/docs"}
+        return {
+            "service": settings.service_name,
+            "version": "0.2.0",
+            "plugins_loaded": len(loader.registry),
+            "docs": "/docs",
+        }
 
     @app.get("/api/v1/plugins")
     async def list_plugins():
-        return {"plugins": list(_plugins.values())}
+        return {"plugins": loader.list_plugins()}
 
     @app.get("/api/v1/plugins/{name}")
     async def get_plugin(name: str):
-        if name not in _plugins:
-            raise AppException(f"插件 {name} 未找到", code="PLUGIN_NOT_FOUND", status_code=404)
-        return _plugins[name]
+        plugin = loader.get(name)
+        if not plugin:
+            raise HTTPException(404, f"Plugin '{name}' not found")
+        return plugin.info()
 
-    @app.post("/api/v1/plugins/{name}/load")
-    async def load_plugin(name: str):
-        # TODO: 真实热加载逻辑
-        if name in _plugins:
-            _plugins[name]["status"] = "loaded"
-            return {"success": True, "message": f"插件 {name} 已加载"}
-        raise AppException(f"插件 {name} 不存在", code="PLUGIN_NOT_FOUND", status_code=404)
+    @app.post("/api/v1/plugins/{name}/reload")
+    async def reload_plugin(name: str):
+        ok = loader.reload(name)
+        if not ok:
+            raise HTTPException(404, f"Plugin '{name}' not found or reload failed")
+        return {"ok": True, "plugin": loader.get(name).info()}
 
-    @app.post("/api/v1/plugins/{name}/unload")
+    @app.delete("/api/v1/plugins/{name}")
     async def unload_plugin(name: str):
-        if name in _plugins:
-            _plugins[name]["status"] = "unloaded"
-            return {"success": True, "message": f"插件 {name} 已卸载"}
-        raise AppException(f"插件 {name} 不存在", code="PLUGIN_NOT_FOUND", status_code=404)
+        ok = loader.unload(name)
+        if not ok:
+            raise HTTPException(404, f"Plugin '{name}' not found")
+        return {"ok": True, "message": f"unloaded {name}"}
+
+    @app.post("/api/v1/plugins/scan")
+    async def rescan_plugins():
+        n = loader.scan_and_load()
+        return {"loaded": n, "plugins": loader.list_plugins()}
+
+    class SignalRequest(BaseModel):
+        symbol: str = "BTCUSDT"
+        interval: str = "5m"
+        limit: int = Field(200, ge=50, le=5000)
+        params: dict[str, Any] = Field(default_factory=dict)
+        # 可直接传 K 线，或让服务自己去 Data Service 拉
+        klines: Optional[list[dict]] = None
+
+    @app.post("/api/v1/plugins/{name}/signals")
+    async def generate_signals(name: str, req: SignalRequest):
+        """用指定插件生成信号。可传入 klines，或内部从 Data Service 拉取。"""
+        plugin = loader.get(name)
+        if not plugin:
+            raise HTTPException(404, f"Plugin '{name}' not found")
+
+        import pandas as pd
+
+        if req.klines:
+            df = pd.DataFrame(req.klines)
+            if "open_time" in df.columns:
+                df["open_time"] = pd.to_datetime(df["open_time"], utc=True)
+        else:
+            # 从 Data Service 拉
+            import httpx
+            data_url = settings.data_service_url.rstrip("/") + "/api/v1/klines"
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(data_url, params={
+                    "symbol": req.symbol,
+                    "interval": req.interval,
+                    "limit": req.limit,
+                    "source": "local",
+                })
+                r.raise_for_status()
+                payload = r.json()
+            df = pd.DataFrame(payload.get("data", []))
+            if df.empty:
+                raise HTTPException(400, "No kline data available. Fetch data first via Data Service.")
+            df["open_time"] = pd.to_datetime(df["open_time"], utc=True)
+
+        signals = plugin.generate_signals(df, params=req.params or None)
+        return {
+            "plugin": name,
+            "symbol": req.symbol,
+            "interval": req.interval,
+            "params": {**plugin.default_params(), **(req.params or {})},
+            "count": len(signals),
+            "signals": [s.to_dict() for s in signals],
+        }
 
     return app
 
 
 app = create_app()
-
 
 if __name__ == "__main__":
     import uvicorn
