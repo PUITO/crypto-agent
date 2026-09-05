@@ -48,24 +48,29 @@ class BinanceClient:
             self._client = None
 
     async def _request(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """公共行情接口，无需 API Key。主站失败时自动切换备用 base_url。"""
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=self.timeout)
 
-        url = f"{self.base_url}{path}"
+        bases = [self.base_url] + [b for b in self.BASE_URLS if b.rstrip("/") != self.base_url.rstrip("/")]
         last_err: Exception | None = None
 
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                resp = await self._client.get(url, params=params)
-                resp.raise_for_status()
-                return resp.json()
-            except Exception as e:
-                last_err = e
-                logger.warning(f"Binance request failed (attempt {attempt}/{self.max_retries}): {e}")
-                if attempt < self.max_retries:
-                    await asyncio.sleep(1.0 * attempt)
+        for base in bases:
+            url = f"{base.rstrip("/")}{path}"
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    resp = await self._client.get(url, params=params)
+                    resp.raise_for_status()
+                    if base.rstrip("/") != self.base_url.rstrip("/"):
+                        logger.warning(f"Binance degraded: using fallback base {base}")
+                    return resp.json()
+                except Exception as e:
+                    last_err = e
+                    logger.warning(f"Binance request failed ({base} attempt {attempt}): {e}")
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(0.5 * attempt)
 
-        raise RuntimeError(f"Binance request failed after {self.max_retries} retries: {last_err}")
+        raise RuntimeError(f"Binance public API failed after fallbacks: {last_err}")
 
     async def get_klines(
         self,

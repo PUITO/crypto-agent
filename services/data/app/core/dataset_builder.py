@@ -178,10 +178,16 @@ class DatasetBuilder:
         repo_id = repo_id or self.hf_repo_id
         token = self.hf_token
 
-        if not repo_id:
-            raise ValueError("hf_repo_id is required (or set HF_REPO_ID env)")
-        if not token:
-            raise ValueError("Hugging Face token is required (set HF_TOKEN or HUGGINGFACE_TOKEN env)")
+        if not repo_id or not token:
+            logger.warning(
+                "Hugging Face degraded: missing HF_REPO_ID or HF_TOKEN — skip upload, local dataset only"
+            )
+            return {
+                "degraded": True,
+                "reason": "missing_hf_credentials",
+                "message": "未配置 HF_TOKEN/HF_REPO_ID，已降级为仅本地保存，不同步 Hugging Face",
+                "repo_id": repo_id,
+            }
 
         try:
             from datasets import Dataset

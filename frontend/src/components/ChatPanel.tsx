@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import ChatSettingsDialog, { loadChatSettings, type ChatSettings } from "./ChatSettingsDialog";
 
 type Msg = { role: "user" | "assistant" | "system"; content: string };
 
@@ -22,12 +23,14 @@ export default function ChatPanel({ onConfigMaybeChanged }: Props) {
   const [messages, setMessages] = useState<Msg[]>([
     {
       role: "system",
-      content: "可以说：查看价格 / 查看配置 / 跑回测 / 切换到事件合约 / 画压力位",
+      content: "可以说：查看价格 / 查看配置 / 跑回测 / 切换到事件合约",
     },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId] = useState(getSessionId);
+  const [chatSettingsOpen, setChatSettingsOpen] = useState(false);
+  const [chatSettings, setChatSettings] = useState<ChatSettings>(loadChatSettings);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -35,22 +38,35 @@ export default function ChatPanel({ onConfigMaybeChanged }: Props) {
   }, [messages, loading]);
 
   async function send(text?: string) {
-    const content = (text ?? input).trim();
+    let content = (text ?? input).trim();
     if (!content || loading) return;
+    if (chatSettings.systemHint) {
+      content = `${chatSettings.systemHint}\n${content}`;
+    }
     setInput("");
-    setMessages((m) => [...m, { role: "user", content }]);
+    setMessages((m) => [...m, { role: "user", content: (text ?? input).trim() }]);
     setLoading(true);
     try {
       const res = await api.chat(content, sessionId);
       const reply = res.reply || JSON.stringify(res);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
-      if (res.pending_confirm) {
+      if (chatSettings.showToolTrace && res.tool_trace?.length) {
+        setMessages((m) => [
+          ...m,
+          {
+            role: "system",
+            content: "工具轨迹:\n" + JSON.stringify(res.tool_trace, null, 2).slice(0, 1500),
+          },
+        ]);
+      }
+      if (res.pending_confirm && chatSettings.requireConfirmHint) {
         setMessages((m) => [
           ...m,
           { role: "system", content: "有配置待确认：回复「确认」生效，或「取消」。" },
         ]);
       }
-      if (content.includes("确认") || content.includes("配置") || content.includes("切换")) {
+      const original = (text ?? input).trim();
+      if (original.includes("确认") || original.includes("配置") || original.includes("切换")) {
         onConfigMaybeChanged?.();
       }
     } catch (e: any) {
@@ -58,7 +74,7 @@ export default function ChatPanel({ onConfigMaybeChanged }: Props) {
         ...m,
         {
           role: "assistant",
-          content: `请求失败：${e.message}\n请确认 Gateway(:8000) 与 Agent(:8006) 已启动。`,
+          content: `请求失败：${e.message}\n请确认 Gateway 与 Agent 已启动。`,
         },
       ]);
     } finally {
@@ -71,6 +87,9 @@ export default function ChatPanel({ onConfigMaybeChanged }: Props) {
       <div className="chat-header">
         <span>Chat</span>
         <div className="actions">
+          <button className="btn" type="button" onClick={() => setChatSettingsOpen(true)}>
+            Chat设置
+          </button>
           <button className="btn" type="button" onClick={() => send("查看当前配置")}>
             配置
           </button>
@@ -105,6 +124,11 @@ export default function ChatPanel({ onConfigMaybeChanged }: Props) {
           发送
         </button>
       </div>
+      <ChatSettingsDialog
+        open={chatSettingsOpen}
+        onClose={() => setChatSettingsOpen(false)}
+        onSave={setChatSettings}
+      />
     </div>
   );
 }

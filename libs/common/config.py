@@ -29,6 +29,7 @@ class BaseServiceSettings(BaseSettings):
     # 日志
     log_level: str = "INFO"
     log_json: bool = False  # True 时输出 JSON 格式，方便后期采集
+    log_dir: str = ""  # 空则使用仓库根目录 logs/
 
     # Redis（消息队列 + 缓存）
     redis_url: str = "redis://localhost:6379/0"
@@ -41,6 +42,7 @@ class BaseServiceSettings(BaseSettings):
     chart_service_url: str = "http://localhost:8005"
     agent_service_url: str = "http://localhost:8006"
     multi_agent_service_url: str = "http://localhost:8007"
+    ops_service_url: str = "http://localhost:8008"
 
     # 可选：LLM 相关（Agent 服务会用到）
     ollama_base_url: str = "http://localhost:11434"
