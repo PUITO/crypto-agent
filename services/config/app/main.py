@@ -115,8 +115,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/config/schema")
     async def get_config_schema():
-        """前端分栏表单元数据。"""
-        return {"sections": CONFIG_SECTIONS}
+        """前端分栏表单元数据 + 重启策略说明。"""
+        return {
+            "sections": CONFIG_SECTIONS,
+            "restart_policy": {
+                "hot_reload": ["trading", "plugins", "risk", "backtest", "大部分 optimize"],
+                "needs_restart": ["data", "agent(LLM相关)", "services", "optimize.max_concurrency"],
+                "note": "保存后若 needs_restart，前端应提示并用 Ops 重启对应服务；环境变量仅启动兜底。",
+            },
+        }
 
     @app.get("/api/v1/config/section/{section}")
     async def get_config_section(section: str):

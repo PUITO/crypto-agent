@@ -249,6 +249,73 @@ def sync_legacy_flat(cfg: dict[str, Any]) -> dict[str, Any]:
     return cfg
 
 
+
+# 变更路径 → 需要重启的服务（前缀匹配）
+RESTART_PREFIX_RULES: list[tuple[str, list[str]]] = [
+    ("data.", ["data-service"]),
+    ("agent.llm_", ["agent-service"]),
+    ("agent.ollama_", ["agent-service"]),
+    ("agent.openai_", ["agent-service"]),
+    ("agent.temperature", ["agent-service"]),
+    ("agent.max_tool_rounds", ["agent-service"]),
+    ("services.", ["gateway", "agent-service", "data-service", "plugin-service", "backtest-service", "multi-agent-service", "chart-service"]),
+    ("optimize.max_concurrency", ["multi-agent-service"]),
+]
+
+# 可热更新、无需重启的路径前缀
+HOT_RELOAD_PREFIXES: list[str] = [
+    "trading.",
+    "plugins.",
+    "risk.",
+    "backtest.",
+    "optimize.metric",
+    "optimize.auto_optimize_on_start",
+    "optimize.apply_best_by_default",
+    "agent.require_confirm_on_config_change",
+    "mode",
+    "symbol",
+    "interval",
+    "hold_bars",
+    "enabled_plugins",
+    "active_plugin",
+    "strategy_params",
+    "require_confirm_on_config_change",
+    "optimize_metric",
+    "fee_rate",
+    "auto_close",
+    "max_position_pct",
+    "max_drawdown_stop",
+]
+
+
+def classify_changes(changes: list[dict]) -> dict:
+    """根据变更路径判断是否需要重启哪些服务。"""
+    restart: dict[str, list[str]] = {}  # service -> reasons
+    hot: list[str] = []
+    for ch in changes:
+        path = str(ch.get("path") or "")
+        is_hot = any(path == p or path.startswith(p) for p in HOT_RELOAD_PREFIXES)
+        matched_restart = False
+        for prefix, services in RESTART_PREFIX_RULES:
+            if path == prefix.rstrip(".") or path.startswith(prefix):
+                matched_restart = True
+                for svc in services:
+                    restart.setdefault(svc, []).append(path)
+        if is_hot and not matched_restart:
+            hot.append(path)
+        elif not matched_restart and path:
+            # 未知路径：保守要求相关服务注意，默认算热更新（交易类）
+            hot.append(path)
+    return {
+        "restart_required": [
+            {"service": svc, "paths": sorted(set(paths)), "message": f"修改了 {', '.join(sorted(set(paths))[:5])}，需重启后生效"}
+            for svc, paths in sorted(restart.items())
+        ],
+        "hot_reload_paths": sorted(set(hot)),
+        "needs_restart": bool(restart),
+    }
+
+
 class ConfigStore:
     def __init__(self, persist_path: str | Path = "./data/config/runtime_config.json"):
         self.persist_path = Path(persist_path)
@@ -339,7 +406,16 @@ class ConfigStore:
             self._audit.append(entry)
             self._save()
             logger.info(f"Config applied from {source}: {len(changes)} changes")
-            return {"applied": True, "changes": changes, "config": deepcopy(self._config), "audit_id": entry["id"]}
+            impact = classify_changes(changes)
+            return {
+                "applied": True,
+                "changes": changes,
+                "config": deepcopy(self._config),
+                "audit_id": entry["id"],
+                "impact": impact,
+                "needs_restart": impact["needs_restart"],
+                "restart_required": impact["restart_required"],
+            }
 
     def set_key(self, key: str, value: Any, source: str = "api", note: str = "") -> dict[str, Any]:
         parts = key.split(".")

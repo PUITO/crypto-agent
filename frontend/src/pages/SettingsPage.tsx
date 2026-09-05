@@ -53,6 +53,8 @@ export default function SettingsPage() {
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [restartRequired, setRestartRequired] = useState<{service:string;message:string;paths?:string[]}[]>([]);
+  const [restarting, setRestarting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -139,8 +141,15 @@ export default function SettingsPage() {
         patch.require_confirm_on_config_change = patch.agent.require_confirm_on_config_change;
       }
 
-      await api.applyConfig(patch, `settings:${current.id}`);
-      setMsg(`${current.title} 已保存`);
+      const res: any = await api.applyConfig(patch, `settings:${current.id}`);
+      const impact = res.impact || {};
+      const need = res.restart_required || impact.restart_required || [];
+      setRestartRequired(need);
+      if (need.length) {
+        setMsg(`${current.title} 已保存。以下配置需重启服务后生效，请点击下方「重启」。`);
+      } else {
+        setMsg(`${current.title} 已保存，已热更新生效，无需重启。`);
+      }
       await load();
     } catch (e: any) {
       setErr(e.message);
@@ -254,8 +263,68 @@ export default function SettingsPage() {
               </div>
             </>
           )}
+
+          {restartRequired.length > 0 && (
+            <div className="restart-banner">
+              <strong>需要重启服务后配置才生效</strong>
+              <p className="hint" style={{ margin: "8px 0" }}>
+                无需单独找运维：可在此直接重启。环境变量仍可作为启动兜底；运行中以 Config 为准。
+              </p>
+              <ul className="restart-list">
+                {restartRequired.map((r) => (
+                  <li key={r.service}>
+                    <span>
+                      <code>{r.service}</code>
+                      <span className="hint"> — {r.message || "需重启"}</span>
+                    </span>
+                    <button
+                      className="btn primary"
+                      type="button"
+                      disabled={restarting === r.service}
+                      onClick={async () => {
+                        setRestarting(r.service);
+                        setErr("");
+                        try {
+                          await api.restartService(r.service);
+                          setMsg(`已请求重启 ${r.service}`);
+                          setRestartRequired((prev) => prev.filter((x) => x.service !== r.service));
+                        } catch (e: any) {
+                          setErr(`重启 ${r.service} 失败: ${e.message}（请确认 Ops :8008 已启动）`);
+                        } finally {
+                          setRestarting(null);
+                        }
+                      }}
+                    >
+                      {restarting === r.service ? "重启中…" : "重启此服务"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button
+                className="btn"
+                type="button"
+                disabled={!!restarting}
+                onClick={async () => {
+                  setRestarting("all");
+                  try {
+                    for (const r of restartRequired) {
+                      await api.restartService(r.service);
+                    }
+                    setMsg("已请求重启全部相关服务");
+                    setRestartRequired([]);
+                  } catch (e: any) {
+                    setErr(e.message);
+                  } finally {
+                    setRestarting(null);
+                  }
+                }}
+              >
+                一键重启全部相关服务
+              </button>
+            </div>
+          )}
           <p className="hint">
-            所有微服务运行参数统一由 Config 服务管理。Chat 设置仍在首页 Chat 右上角 Dialog。
+            交易/策略/风险等多数项可热更新；数据源、LLM、服务 URL 等修改后需重启对应服务。环境变量仅作启动兜底。
           </p>
         </div>
       </div>

@@ -501,3 +501,32 @@ body,
   background: #1a2332;
   border-color: var(--border);
 }
+
+.restart-banner {
+  margin-top: 20px;
+  padding: 14px 16px;
+  border: 1px solid #854d0e;
+  background: #1c1917;
+  border-radius: var(--radius);
+}
+
+.restart-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+}
+
+.restart-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.restart-list code {
+  color: #fbbf24;
+  font-size: 13px;
+}
