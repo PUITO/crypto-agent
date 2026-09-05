@@ -86,6 +86,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "agent_service_url": "http://localhost:8006",
         "multi_agent_service_url": "http://localhost:8007",
         "ops_service_url": "http://localhost:8008",
+        "log_service_url": "http://localhost:8009",
         "gateway_url": "http://localhost:8000",
     },
     # legacy flat
@@ -210,6 +211,7 @@ CONFIG_SECTIONS: list[dict[str, Any]] = [
             {"key": "services.agent_service_url", "label": "Agent", "type": "string"},
             {"key": "services.multi_agent_service_url", "label": "Multi-Agent", "type": "string"},
             {"key": "services.ops_service_url", "label": "Ops", "type": "string"},
+            {"key": "services.log_service_url", "label": "Log", "type": "string"},
         ],
     },
 ]

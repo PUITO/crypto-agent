@@ -43,6 +43,8 @@ class BaseServiceSettings(BaseSettings):
     agent_service_url: str = "http://localhost:8006"
     multi_agent_service_url: str = "http://localhost:8007"
     ops_service_url: str = "http://localhost:8008"
+    log_service_url: str = "http://localhost:8009"
+    log_remote_enabled: bool = True  # 是否上报到 Log Service
 
     # 可选：LLM 相关（Agent 服务会用到）
     ollama_base_url: str = "http://localhost:11434"

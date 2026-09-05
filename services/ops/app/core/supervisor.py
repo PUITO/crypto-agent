@@ -35,6 +35,7 @@ class ServiceSpec:
 
 # 固定注册表（与当前项目一致）
 SERVICE_SPECS: list[ServiceSpec] = [
+    ServiceSpec("log-service", 8009, "services/log/app"),
     ServiceSpec("gateway", 8000, "services/gateway/app"),
     ServiceSpec("data-service", 8001, "services/data/app"),
     ServiceSpec("config-service", 8002, "services/config/app"),
@@ -48,8 +49,9 @@ SERVICE_SPECS: list[ServiceSpec] = [
 
 
 class Supervisor:
-    def __init__(self, repo_root: Path | None = None):
+    def __init__(self, repo_root: Path | None = None, log_service_url: str = "http://localhost:8009"):
         self.repo_root = repo_root or REPO_ROOT
+        self.log_service_url = log_service_url.rstrip("/")
         self._procs: dict[str, subprocess.Popen] = {}
         self._started_at: dict[str, float] = {}
         self.pid_dir = self.repo_root / "logs" / "pids"
@@ -198,6 +200,7 @@ class Supervisor:
     def start_all(self) -> list[dict[str, Any]]:
         # 先起依赖较少的服务，gateway 最后
         order = [
+            "log-service",
             "config-service",
             "data-service",
             "plugin-service",
@@ -220,7 +223,29 @@ class Supervisor:
         return results
 
     def logs(self, name: str, lines: int = 200) -> dict[str, Any]:
-        # 兼容 service_name 与文件名
+        """优先查 Log Service，失败再回落本地文件。"""
+        # 尝试集中日志
+        try:
+            import httpx
+            with httpx.Client(timeout=3.0) as client:
+                r = client.get(
+                    f"{self.log_service_url}/api/v1/logs/{name}/tail",
+                    params={"lines": lines},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("lines") or data.get("logs"):
+                        return {
+                            "service": name,
+                            "source": "log-service",
+                            "log_key": name,
+                            "lines": data.get("lines") or [
+                                f"{x.get('ts','')} | {x.get('level','')} | {x.get('message','')}"
+                                for x in (data.get("logs") or [])
+                            ],
+                        }
+        except Exception:
+            pass
         candidates = [name, name.replace("-service", ""), f"{name}-service"]
         lines_out: list[str] = []
         used = name
@@ -229,7 +254,6 @@ class Supervisor:
             if lines_out:
                 used = c
                 break
-        # 也试注册表里的标准名
         if not lines_out:
             lines_out = read_log_tail(name, lines=lines)
-        return {"service": name, "log_key": used, "lines": lines_out}
+        return {"service": name, "source": "local-file", "log_key": used, "lines": lines_out}

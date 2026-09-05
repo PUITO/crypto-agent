@@ -53,6 +53,7 @@ def _build_service_map() -> dict[str, str]:
         "multi-agent": settings.multi_agent_service_url.rstrip("/"),
         "multi_agent": settings.multi_agent_service_url.rstrip("/"),
         "ops": getattr(settings, "ops_service_url", "http://localhost:8008").rstrip("/"),
+        "log": getattr(settings, "log_service_url", "http://localhost:8009").rstrip("/"),
     }
 
 
@@ -156,6 +157,7 @@ def create_app() -> FastAPI:
                 "/agent/*": "Agent Service :8006",
                 "/multi-agent/*": "Multi-Agent Service :8007",
                 "/ops/*": "Ops Service :8008",
+                "/log/*": "Log Service :8009",
                 "/api/v1/health/all": "聚合健康检查",
             },
             "upstreams": _build_service_map(),
@@ -207,7 +209,7 @@ def create_app() -> FastAPI:
 
     methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
-    for key in ("data", "config", "plugin", "backtest", "chart", "agent", "multi-agent", "multi_agent", "ops"):
+    for key in ("data", "config", "plugin", "backtest", "chart", "agent", "multi-agent", "multi_agent", "ops", "log"):
         # /data 与 /data/{path}
         app.add_api_route(
             f"/{key}",

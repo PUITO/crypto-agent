@@ -78,6 +78,14 @@ export const api = {
     opsRequest(`/api/v1/services/stop_all`, { method: "POST" }),
   getLogs: (name: string, lines = 200) =>
     opsRequest(`/api/v1/logs/${name}?lines=${lines}`),
+  queryLogs: (params: { service?: string; level?: string; contains?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.service) q.set("service", params.service);
+    if (params.level) q.set("level", params.level);
+    if (params.contains) q.set("contains", params.contains);
+    q.set("limit", String(params.limit ?? 200));
+    return request(`/log/api/v1/logs?${q.toString()}`);
+  },
 };
 
 export default api;
