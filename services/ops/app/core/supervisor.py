@@ -44,6 +44,8 @@ SERVICE_SPECS: list[ServiceSpec] = [
     ServiceSpec("chart-service", 8005, "services/chart/app"),
     ServiceSpec("agent-service", 8006, "services/agent/app"),
     ServiceSpec("multi-agent-service", 8007, "services/multi_agent/app"),
+    ServiceSpec("sync-service", 8010, "services/sync/app"),
+    ServiceSpec("notify-service", 8011, "services/notify/app"),
     # ops 自身不通过自己启动，避免递归
 ]
 

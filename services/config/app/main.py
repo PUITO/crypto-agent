@@ -25,19 +25,21 @@ from common.health import router as health_router
 from common.exceptions import AppException, app_exception_handler, unhandled_exception_handler
 
 from core.store import ConfigStore, DEFAULT_CONFIG, CONFIG_SECTIONS
+from common.persist import path_for
 
 
 class Settings(BaseServiceSettings):
     service_name: str = "config-service"
     port: int = 8002
-    config_path: str = str(ROOT / "data" / "config" / "runtime_config.json")
+    config_path: str = ""  # 空则使用统一 persist 路径
 
 
 settings = Settings()
 setup_logging(settings)
 logger = get_logger(settings.service_name)
 
-store = ConfigStore(persist_path=settings.config_path)
+_cfg_path = settings.config_path or str(path_for("config", "runtime_config.json"))
+store = ConfigStore(persist_path=_cfg_path)
 
 
 class PatchRequest(BaseModel):

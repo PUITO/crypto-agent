@@ -215,3 +215,35 @@ cp .env.example .env   # 编辑密钥
    - `Debug: All Backend` 全量
 
 断点可打在任意 `services/*/app` 代码；`PYTHONPATH` 已指向 `libs/`。
+
+## 持久化与 GitHub 同步
+
+统一目录：`data/persist/{config,market,datasets,chart,plugins_state}`（**日志不同步**）。
+
+```bash
+# .env
+GITHUB_PAT=ghp_xxx
+GITHUB_SYNC_REPO=your/private-repo
+GITHUB_SYNC_CRON=0 12 * * *   # 默认每天 12:00 推送
+
+# 新机器恢复
+curl -X POST http://127.0.0.1:8010/api/v1/pull
+
+# 手动备份
+curl -X POST http://127.0.0.1:8010/api/v1/push
+```
+
+## 通知服务
+
+```bash
+curl -X POST http://127.0.0.1:8011/api/v1/notify \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"告警","message":"回测完成","channels":["webhook","telegram"]}'
+```
+
+支持：`webhook` / `telegram` / `emailjs`。
+
+## CI / Release
+
+- Push/PR → `.github/workflows/ci.yml`
+- Tag `v*` 或手动 → `.github/workflows/release.yml` 打 GitHub Release

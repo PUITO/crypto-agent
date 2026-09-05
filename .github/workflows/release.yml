@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.2.0)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Package source archive
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          mkdir -p dist
+          # 排除本地数据与 node_modules
+          tar --exclude='.git' --exclude='node_modules' --exclude='logs' \
+              --exclude='data/persist' --exclude='.venv' --exclude='dist' \
+              -czf "dist/crypto-agent-${TAG}.tar.gz" .
+          ls -lh dist/
+
+      - name: Frontend build (optional)
+        working-directory: frontend
+        continue-on-error: true
+        run: |
+          if [ -f package.json ]; then
+            npm ci || npm install
+            npm run build || true
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Release ${{ env.TAG }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

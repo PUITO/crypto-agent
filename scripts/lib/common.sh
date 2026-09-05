@@ -20,6 +20,8 @@ SERVICES=(
   "agent-service:services/agent/app:8006"
   "multi-agent-service:services/multi_agent/app:8007"
   "ops-service:services/ops/app:8008"
+  "sync-service:services/sync/app:8010"
+  "notify-service:services/notify/app:8011"
   "gateway:services/gateway/app:8000"
 )
 

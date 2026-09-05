@@ -530,3 +530,78 @@ body,
   color: #fbbf24;
   font-size: 13px;
 }
+
+/* ===== App / 移动端适配 ===== */
+@media (max-width: 768px) {
+  .header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .nav {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .nav-item {
+    flex: 1;
+    text-align: center;
+    white-space: nowrap;
+  }
+  .meta {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .main {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: minmax(240px, 42vh) 1fr;
+  }
+  .chart-wrap {
+    min-height: 220px;
+  }
+  .right {
+    min-height: 40vh;
+  }
+  .composer {
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+  .settings-tabs {
+    flex-direction: row;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+  .settings-tab {
+    white-space: nowrap;
+  }
+  .health-grid {
+    grid-template-columns: 1fr;
+  }
+  .ops-btns .btn {
+    padding: 8px 10px;
+  }
+  .msg {
+    font-size: 15px;
+  }
+}
+
+/* 触控优化 */
+@media (pointer: coarse) {
+  .btn, .nav-item, .settings-tab {
+    min-height: 40px;
+  }
+  .composer input {
+    font-size: 16px; /* 避免 iOS 缩放 */
+  }
+}
+
+/* PWA 安全区 */
+@supports (padding: max(0px)) {
+  .app {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
