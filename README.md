@@ -185,3 +185,33 @@ npm run dev
 ```
 
 请先启动 Gateway 与各后端服务，否则图表与 Chat 会显示离线。
+
+## 启动脚本
+
+```bash
+# 开发：后台启动全部微服务
+./scripts/start_dev.sh
+./scripts/status.sh
+./scripts/stop_all.sh
+
+# 只起某一个
+./scripts/start_dev.sh agent-service
+
+# 前台单服务（调试）
+./scripts/run_service.sh data
+
+# 生产（多 worker，读 .env）
+cp .env.example .env   # 编辑密钥
+./scripts/start_prod.sh
+```
+
+### VS Code 调试
+
+1. 安装推荐扩展（打开仓库时会提示）
+2. 创建 venv 并安装依赖：`python -m venv .venv && .venv/bin/pip install -r requirements.txt`
+3. 运行和调试 → 选择：
+   - `Service: Data` 等单服务
+   - `Debug: Core (Log+Config+Data+Gateway)` 组合
+   - `Debug: All Backend` 全量
+
+断点可打在任意 `services/*/app` 代码；`PYTHONPATH` 已指向 `libs/`。

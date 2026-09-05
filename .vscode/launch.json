@@ -1,0 +1,171 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Service: Log",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8009", "--log-level", "debug"],
+      "cwd": "${workspaceFolder}/services/log/app",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/libs",
+        "LOG_REMOTE_ENABLED": "false"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Service: Config",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8002", "--log-level", "debug"],
+      "cwd": "${workspaceFolder}/services/config/app",
+      "env": { "PYTHONPATH": "${workspaceFolder}/libs" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Service: Data",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8001", "--log-level", "debug"],
+      "cwd": "${workspaceFolder}/services/data/app",
+      "env": { "PYTHONPATH": "${workspaceFolder}/libs" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Service: Plugin",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8003", "--log-level", "debug"],
+      "cwd": "${workspaceFolder}/services/plugin/app",
+      "env": { "PYTHONPATH": "${workspaceFolder}/libs" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Service: Backtest",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8004", "--log-level", "debug"],
+      "cwd": "${workspaceFolder}/services/backtest/app",
+      "env": { "PYTHONPATH": "${workspaceFolder}/libs" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Service: Chart",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8005", "--log-level", "debug"],
+      "cwd": "${workspaceFolder}/services/chart/app",
+      "env": { "PYTHONPATH": "${workspaceFolder}/libs" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Service: Agent",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8006", "--log-level", "debug"],
+      "cwd": "${workspaceFolder}/services/agent/app",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/libs",
+        "LLM_PROVIDER": "ollama",
+        "LLM_MODEL": "qwen2.5:14b"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Service: Multi-Agent",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8007", "--log-level", "debug"],
+      "cwd": "${workspaceFolder}/services/multi_agent/app",
+      "env": { "PYTHONPATH": "${workspaceFolder}/libs" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Service: Ops",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8008", "--log-level", "debug"],
+      "cwd": "${workspaceFolder}/services/ops/app",
+      "env": { "PYTHONPATH": "${workspaceFolder}/libs" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Service: Gateway",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "debug"],
+      "cwd": "${workspaceFolder}/services/gateway/app",
+      "env": { "PYTHONPATH": "${workspaceFolder}/libs" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Python: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONPATH": "${workspaceFolder}/libs" },
+      "console": "integratedTerminal"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Debug: Core (Log+Config+Data+Gateway)",
+      "configurations": [
+        "Service: Log",
+        "Service: Config",
+        "Service: Data",
+        "Service: Gateway"
+      ],
+      "stopAll": true,
+      "presentation": { "order": 1, "group": "compound" }
+    },
+    {
+      "name": "Debug: Trading Path (Plugin+Backtest+Agent)",
+      "configurations": [
+        "Service: Plugin",
+        "Service: Backtest",
+        "Service: Agent"
+      ],
+      "stopAll": true,
+      "presentation": { "order": 2, "group": "compound" }
+    },
+    {
+      "name": "Debug: All Backend",
+      "configurations": [
+        "Service: Log",
+        "Service: Config",
+        "Service: Data",
+        "Service: Plugin",
+        "Service: Backtest",
+        "Service: Chart",
+        "Service: Agent",
+        "Service: Multi-Agent",
+        "Service: Ops",
+        "Service: Gateway"
+      ],
+      "stopAll": true,
+      "presentation": { "order": 3, "group": "compound" }
+    }
+  ]
+}
