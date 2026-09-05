@@ -165,3 +165,23 @@ python main.py
 # 例: GET http://localhost:8000/data/api/v1/latest_price
 # 例: POST http://localhost:8000/agent/api/v1/chat
 ```
+
+## 前端（用户端最小界面）
+
+目录：`frontend/`（Vite + React + TypeScript + Lightweight Charts）
+
+功能：
+- K 线图表（对接 Data / Chart）
+- Chat 对话（对接 Agent，支持配置确认）
+- 交易设置弹窗（模式 / 交易对 / 插件）
+- 通过 Gateway `:8000` 统一访问后端
+
+```bash
+cd frontend
+npm install
+npm run dev
+# http://localhost:5173
+# 开发代理：/gw → http://localhost:8000
+```
+
+请先启动 Gateway 与各后端服务，否则图表与 Chat 会显示离线。
