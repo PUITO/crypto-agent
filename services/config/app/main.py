@@ -24,7 +24,7 @@ from common.logging import setup_logging, get_logger
 from common.health import router as health_router
 from common.exceptions import AppException, app_exception_handler, unhandled_exception_handler
 
-from core.store import ConfigStore, DEFAULT_CONFIG
+from core.store import ConfigStore, DEFAULT_CONFIG, CONFIG_SECTIONS
 
 
 class Settings(BaseServiceSettings):
@@ -108,8 +108,22 @@ def create_app() -> FastAPI:
 
     # ---------- 读取 ----------
     @app.get("/api/v1/config")
-    async def get_all_config():
-        return {"config": store.get_all(), "defaults": DEFAULT_CONFIG}
+    async def get_all_config(raw: bool = False):
+        """默认返回脱敏配置；raw=true 返回完整（仅内网服务使用）。"""
+        cfg = store.get_all() if raw else store.public_view()
+        return {"config": cfg, "defaults": DEFAULT_CONFIG}
+
+    @app.get("/api/v1/config/schema")
+    async def get_config_schema():
+        """前端分栏表单元数据。"""
+        return {"sections": CONFIG_SECTIONS}
+
+    @app.get("/api/v1/config/section/{section}")
+    async def get_config_section(section: str):
+        val = store.get_section(section)
+        if val is None and section not in store.get_all():
+            raise HTTPException(404, f"section '{section}' not found")
+        return {"section": section, "value": val}
 
     @app.get("/api/v1/config/{key:path}")
     async def get_config_key(key: str):
@@ -195,7 +209,11 @@ def create_app() -> FastAPI:
     async def switch_mode(mode: str, confirm: bool = False):
         if mode not in ("perpetual", "event_30m", "both"):
             raise HTTPException(400, "mode must be perpetual | event_30m | both")
-        body = PatchRequest(patch={"mode": mode}, confirm=confirm, source="mode_api")
+        body = PatchRequest(
+            patch={"mode": mode, "trading": {"mode": mode}},
+            confirm=confirm,
+            source="mode_api",
+        )
         return await apply_config(body)
 
     return app

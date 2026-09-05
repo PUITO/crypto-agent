@@ -456,3 +456,48 @@ body,
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 8px;
+}
+
+.settings-tab {
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.settings-tab:hover {
+  color: var(--text);
+  background: #1a2332;
+}
+
+.settings-tab.active {
+  color: var(--text);
+  background: #1a2332;
+  border-color: var(--border);
+}

@@ -42,6 +42,7 @@ export const api = {
       `/data/api/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}&source=${source}`
     ),
   getConfig: () => request(`/config/api/v1/config`),
+  getConfigSchema: () => request(`/config/api/v1/config/schema`),
   previewConfig: (patch: object) =>
     request(`/config/api/v1/config/preview`, {
       method: "POST",
