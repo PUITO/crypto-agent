@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, Query, BackgroundTasks
+from fastapi import FastAPI, Query, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,31 @@ class Settings(BaseServiceSettings):
     # Hugging Face
     hf_repo_id: Optional[str] = None        # 例如 "PUITO/crypto-btc-5m"
     hf_token: Optional[str] = None
+
+
+
+class FetchRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    interval: str = "5m"
+    days: int = Field(7, ge=1, le=365, description="回填最近多少天")
+    force_full: bool = False
+
+
+class DatasetBuildRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    interval: str = "5m"
+    horizon: int = Field(6, description="未来看几根 K 线做标签（5m×6≈30分钟）")
+    push_to_hf: bool = False
+    hf_repo_id: Optional[str] = None
+    private: bool = False
+
+
+class HFPushRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    interval: str = "5m"
+    horizon: int = 6
+    repo_id: Optional[str] = None
+    private: bool = False
 
 
 settings = Settings()
@@ -181,14 +206,8 @@ def create_app() -> FastAPI:
         """列出本地已存储的 symbol / interval 及时间范围"""
         return {"items": storage.list_available()}
 
-    class FetchRequest(BaseModel):
-        symbol: str = "BTCUSDT"
-        interval: str = "5m"
-        days: int = Field(7, ge=1, le=365, description="回填最近多少天")
-        force_full: bool = False
-
     @app.post("/api/v1/fetch")
-    async def trigger_fetch(req: FetchRequest, background_tasks: BackgroundTasks):
+    async def trigger_fetch(req: FetchRequest = Body(...), background_tasks: BackgroundTasks = None):
         """手动触发一次采集（后台执行）。默认增量；force_full=true 时按 days 回填。"""
         async def _job():
             async with BinanceClient(base_url=settings.binance_base_url) as client:
@@ -229,16 +248,8 @@ def create_app() -> FastAPI:
         result = await scheduler.run_once()
         return {"ok": True, "result": result}
 
-    class DatasetBuildRequest(BaseModel):
-        symbol: str = "BTCUSDT"
-        interval: str = "5m"
-        horizon: int = Field(6, description="未来看几根 K 线做标签（5m×6≈30分钟）")
-        push_to_hf: bool = False
-        hf_repo_id: Optional[str] = None
-        private: bool = False
-
     @app.post("/api/v1/dataset/build")
-    async def build_dataset(req: DatasetBuildRequest):
+    async def build_dataset(req: DatasetBuildRequest = Body(...)):
         """从本地 K 线构建带特征 + 标签的数据集，可选推送到 Hugging Face。"""
         if req.push_to_hf:
             result = dataset_builder.build_and_push(
@@ -267,15 +278,8 @@ def create_app() -> FastAPI:
             }
         return result
 
-    class HFPushRequest(BaseModel):
-        symbol: str = "BTCUSDT"
-        interval: str = "5m"
-        horizon: int = 6
-        repo_id: Optional[str] = None
-        private: bool = False
-
     @app.post("/api/v1/dataset/push_hf")
-    async def push_dataset_to_hf(req: HFPushRequest):
+    async def push_dataset_to_hf(req: HFPushRequest = Body(...)):
         """构建数据集并推送到 Hugging Face Hub"""
         result = dataset_builder.build_and_push(
             symbol=req.symbol,

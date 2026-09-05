@@ -103,7 +103,7 @@ class AgentOrchestrator:
             try:
                 llm_out = await self.llm.chat(session.messages, tools=tool_schemas)
             except Exception as e:
-                logger.exception("LLM call failed")
+                logger.warning("LLM call failed, using fallback router: %s", e)
                 # 无 LLM 时的降级：简单规则路由
                 reply = await self._fallback_router(user_message, session)
                 session.add("assistant", reply)

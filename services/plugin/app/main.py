@@ -8,7 +8,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,16 @@ class Settings(BaseServiceSettings):
     port: int = 8003
     # 默认指向仓库内的 plugins 目录
     plugins_dir: str = str(Path(__file__).resolve().parents[1] / "plugins")
+
+
+
+
+class SignalRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    interval: str = "5m"
+    limit: int = Field(200, ge=50, le=5000)
+    params: dict[str, Any] = Field(default_factory=dict)
+    klines: Optional[list[dict]] = None
 
 
 settings = Settings()
@@ -112,16 +122,8 @@ def create_app() -> FastAPI:
         n = loader.scan_and_load()
         return {"loaded": n, "plugins": loader.list_plugins()}
 
-    class SignalRequest(BaseModel):
-        symbol: str = "BTCUSDT"
-        interval: str = "5m"
-        limit: int = Field(200, ge=50, le=5000)
-        params: dict[str, Any] = Field(default_factory=dict)
-        # 可直接传 K 线，或让服务自己去 Data Service 拉
-        klines: Optional[list[dict]] = None
-
     @app.post("/api/v1/plugins/{name}/signals")
-    async def generate_signals(name: str, req: SignalRequest):
+    async def generate_signals(name: str, req: SignalRequest = Body(...)):
         """用指定插件生成信号。可传入 klines，或内部从 Data Service 拉取。"""
         plugin = loader.get(name)
         if not plugin:
