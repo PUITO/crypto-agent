@@ -19,8 +19,8 @@ async function request<T = any>(
   const res = await fetch(url, { ...options, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = data?.message || data?.error || res.statusText;
-    throw new Error(`${res.status}: ${msg}`);
+    const msg = data?.message || data?.detail || data?.error || res.statusText;
+    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
   }
   return data as T;
 }
@@ -85,6 +85,49 @@ export const api = {
     if (params.contains) q.set("contains", params.contains);
     q.set("limit", String(params.limit ?? 200));
     return request(`/log/api/v1/logs?${q.toString()}`);
+  },
+  testConnection: (body: { type: string; [k: string]: any }) =>
+    request(`/config/api/v1/config/test-connection`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  testNotify: (body: object) =>
+    request(`/notify/api/v1/test-channel`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  testGithubPat: async (pat: string, repo: string) => {
+    const res = await fetch(`${BASE}/sync/api/v1/test-pat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-GitHub-PAT": pat,
+        "X-Sync-Repo": repo,
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || data.detail || res.statusText);
+    return data;
+  },
+  syncPull: async () => {
+    const { syncAuthHeaders } = await import("../lib/patCookie");
+    const res = await fetch(`${BASE}/sync/api/v1/pull`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...syncAuthHeaders() },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || data.detail || res.statusText);
+    return data;
+  },
+  syncPush: async () => {
+    const { syncAuthHeaders } = await import("../lib/patCookie");
+    const res = await fetch(`${BASE}/sync/api/v1/push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...syncAuthHeaders() },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || data.detail || res.statusText);
+    return data;
   },
 };
 

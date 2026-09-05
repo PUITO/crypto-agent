@@ -154,6 +154,16 @@ def create_app() -> FastAPI:
             raise HTTPException(502, {"message": "全部渠道失败", "errors": errors})
         return {"ok": True, "results": results, "errors": errors}
 
+
+    @app.post("/api/v1/test-channel")
+    async def test_channel(req: NotifyRequest):
+        """发送测试通知，验证 webhook/tg/emailjs 配置是否有效。"""
+        req.message = req.message or "Crypto Agent 通知渠道测试成功"
+        req.title = req.title or "配置测试"
+        if not req.channels:
+            req.channels = ["webhook"]
+        return await notify(req)
+
     return app
 
 

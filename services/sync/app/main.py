@@ -8,7 +8,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -47,14 +47,26 @@ _client: Optional[GitHubSyncClient] = None
 _scheduler: Optional[SyncScheduler] = None
 
 
-def _build_client() -> GitHubSyncClient:
+def _build_client(
+    token_override: str | None = None,
+    repo_override: str | None = None,
+) -> GitHubSyncClient:
+    """
+    生产推荐：token 仅从请求头传入（浏览器 Cookie → 前端 → Authorization），
+    服务端默认不持久化 PAT，避免公网实例被盗用。
+    """
     env = load_sync_settings_from_env()
-    token = settings.github_pat or env["token"]
-    repo = settings.github_sync_repo or env["repo"]
-    if not token or not repo:
+    token = (token_override or "").strip() or settings.github_pat or env["token"]
+    repo = (repo_override or "").strip() or settings.github_sync_repo or env["repo"]
+    if not token:
+        raise HTTPException(
+            401,
+            "缺少 GitHub PAT。请在前端配置并保存在浏览器 Cookie（不要写入服务器）。请求头: Authorization: Bearer <pat> 或 X-GitHub-PAT",
+        )
+    if not repo:
         raise HTTPException(
             400,
-            "缺少 GITHUB_PAT / GITHUB_SYNC_REPO。请在环境变量或 Config 中配置后才能同步。",
+            "缺少 GITHUB_SYNC_REPO（可在部署环境变量中配置公开的 owner/repo，不含 token）。",
         )
     return GitHubSyncClient(
         token=token,
@@ -62,6 +74,17 @@ def _build_client() -> GitHubSyncClient:
         branch=settings.github_sync_branch or env["branch"],
         remote_prefix=settings.github_sync_prefix or env["remote_prefix"],
     )
+
+
+def _pat_from_request(
+    authorization: str | None = None,
+    x_github_pat: str | None = None,
+) -> str | None:
+    if x_github_pat:
+        return x_github_pat.strip()
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return None
 
 
 class SyncConfigUpdate(BaseModel):
@@ -141,15 +164,60 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/v1/push")
-    async def push():
-        client = _build_client()
+    async def push(
+        authorization: str | None = Header(default=None),
+        x_github_pat: str | None = Header(default=None, alias="X-GitHub-PAT"),
+        x_sync_repo: str | None = Header(default=None, alias="X-Sync-Repo"),
+    ):
+        client = _build_client(_pat_from_request(authorization, x_github_pat), x_sync_repo)
         return client.push_all()
 
     @app.post("/api/v1/pull")
-    async def pull():
-        """新机器部署时调用：从私有仓库拉回配置与数据文件。"""
-        client = _build_client()
+    async def pull(
+        authorization: str | None = Header(default=None),
+        x_github_pat: str | None = Header(default=None, alias="X-GitHub-PAT"),
+        x_sync_repo: str | None = Header(default=None, alias="X-Sync-Repo"),
+    ):
+        """新机器/新部署后：用浏览器侧 PAT 从私有仓库拉回配置与数据（服务端不存 PAT）。"""
+        client = _build_client(_pat_from_request(authorization, x_github_pat), x_sync_repo)
         return client.pull_all()
+
+    @app.post("/api/v1/test-pat")
+    async def test_pat(
+        authorization: str | None = Header(default=None),
+        x_github_pat: str | None = Header(default=None, alias="X-GitHub-PAT"),
+        x_sync_repo: str | None = Header(default=None, alias="X-Sync-Repo"),
+    ):
+        """测试 PAT 与仓库是否可访问（不落盘、不写服务器）。"""
+        import json
+        from urllib.request import Request, urlopen
+        token = _pat_from_request(authorization, x_github_pat)
+        if not token:
+            raise HTTPException(401, "缺少 PAT")
+        env = load_sync_settings_from_env()
+        repo = (x_sync_repo or "").strip() or settings.github_sync_repo or env["repo"]
+        if not repo:
+            raise HTTPException(400, "缺少 repo")
+        req = Request(
+            f"https://api.github.com/repos/{repo}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "crypto-agent-sync",
+            },
+        )
+        try:
+            with urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode())
+            return {
+                "ok": True,
+                "repo": repo,
+                "private": data.get("private"),
+                "full_name": data.get("full_name"),
+                "message": "PAT 有效，可访问目标仓库",
+            }
+        except Exception as e:
+            raise HTTPException(400, f"PAT 或仓库无效: {e}")
 
     @app.post("/api/v1/config")
     async def update_config(body: SyncConfigUpdate):

@@ -1,0 +1,51 @@
+name: Deploy Production
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
+            if [ -z "$DEPLOY_PATH" ]; then DEPLOY_PATH=/opt/crypto-agent; fi
+            if [ ! -d "$DEPLOY_PATH/.git" ]; then
+              git clone https://github.com/${{ github.repository }}.git "$DEPLOY_PATH"
+            fi
+            cd "$DEPLOY_PATH"
+            git fetch origin
+            git reset --hard origin/${{ github.ref_name }}
+            if [ ! -d .venv ]; then python3 -m venv .venv; fi
+            .venv/bin/pip install -q -r requirements.txt
+            # 同步仓库名可写进 .env（无 PAT）
+            if [ -n "${{ secrets.GITHUB_SYNC_REPO }}" ]; then
+              grep -q GITHUB_SYNC_REPO .env 2>/dev/null || echo "GITHUB_SYNC_REPO=${{ secrets.GITHUB_SYNC_REPO }}" >> .env
+            fi
+            chmod +x scripts/*.sh scripts/lib/*.sh || true
+            ./scripts/stop_all.sh || true
+            export PATH="$DEPLOY_PATH/.venv/bin:$PATH"
+            ./scripts/start_prod.sh
+            ./scripts/status.sh || true
+            echo "PUBLIC_BASE_URL=${{ secrets.PUBLIC_BASE_URL }}"
+            echo "Deploy finished. Open: ${{ secrets.PUBLIC_BASE_URL }}"
+
+      - name: Print access URL
+        run: |
+          echo "### 公网访问" >> $GITHUB_STEP_SUMMARY
+          echo "- API/Gateway: ${{ secrets.PUBLIC_BASE_URL }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Docs: ${{ secrets.PUBLIC_BASE_URL }}/docs" >> $GITHUB_STEP_SUMMARY
+          echo "- Health: ${{ secrets.PUBLIC_BASE_URL }}/api/v1/health/all" >> $GITHUB_STEP_SUMMARY
+          echo "部署后请在前端 Cookie 中配置 PAT 并执行「拉取持久化」。" >> $GITHUB_STEP_SUMMARY

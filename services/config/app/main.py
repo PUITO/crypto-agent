@@ -225,6 +225,62 @@ def create_app() -> FastAPI:
         )
         return await apply_config(body)
 
+
+    @app.post("/api/v1/config/test-connection")
+    async def test_connection(body: dict):
+        """
+        测试各类密钥/连接是否有效。
+        body: { "type": "binance"|"hf"|"ollama"|"openai"|"github", ... }
+        GitHub PAT 建议只在前端持有，测试走 Sync /api/v1/test-pat。
+        """
+        import httpx
+        typ = (body.get("type") or "").lower()
+        try:
+            if typ == "binance":
+                base = body.get("base_url") or store.get("data.binance_base_url") or "https://data-api.binance.vision"
+                async with httpx.AsyncClient(timeout=10) as c:
+                    r = await c.get(f"{base.rstrip('/')}/api/v3/ping")
+                    r.raise_for_status()
+                return {"ok": True, "type": typ, "message": "Binance 公共 API 可达"}
+            if typ == "hf":
+                token = body.get("token") or ""
+                if not token or token == "***":
+                    return {"ok": False, "type": typ, "message": "请填写 HF Token（脱敏值不可测）"}
+                async with httpx.AsyncClient(timeout=15) as c:
+                    r = await c.get(
+                        "https://huggingface.co/api/whoami-v2",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    if r.status_code != 200:
+                        return {"ok": False, "type": typ, "message": f"HF 无效: HTTP {r.status_code}"}
+                    return {"ok": True, "type": typ, "message": f"HF 有效: {r.json().get('name') or r.json().get('fullname',{})}"}
+            if typ == "ollama":
+                url = (body.get("base_url") or store.get("agent.ollama_base_url") or "http://localhost:11434").rstrip("/")
+                async with httpx.AsyncClient(timeout=5) as c:
+                    r = await c.get(f"{url}/api/tags")
+                    r.raise_for_status()
+                    models = [m.get("name") for m in (r.json().get("models") or [])][:5]
+                return {"ok": True, "type": typ, "message": "Ollama 可达", "models": models}
+            if typ == "openai":
+                key = body.get("api_key") or ""
+                base = (body.get("base_url") or store.get("agent.openai_base_url") or "https://api.openai.com/v1").rstrip("/")
+                if not key or key == "***":
+                    return {"ok": False, "type": typ, "message": "请填写 API Key"}
+                async with httpx.AsyncClient(timeout=15) as c:
+                    r = await c.get(f"{base}/models", headers={"Authorization": f"Bearer {key}"})
+                    if r.status_code >= 400:
+                        return {"ok": False, "type": typ, "message": f"无效: HTTP {r.status_code} {r.text[:200]}"}
+                return {"ok": True, "type": typ, "message": "OpenAI 兼容 API Key 有效"}
+            if typ == "github":
+                return {
+                    "ok": False,
+                    "type": typ,
+                    "message": "GitHub PAT 请在浏览器 Cookie 中保存，并通过 Sync 服务 /api/v1/test-pat 测试（服务端不存储 PAT）",
+                }
+            return {"ok": False, "message": f"未知 type: {typ}"}
+        except Exception as e:
+            return {"ok": False, "type": typ, "message": str(e)}
+
     return app
 
 

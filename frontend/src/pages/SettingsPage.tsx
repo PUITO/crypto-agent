@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import SecretsTestPanel from "../components/SecretsTestPanel";
 
 type Field = {
   key: string;
@@ -55,6 +56,10 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [restartRequired, setRestartRequired] = useState<{service:string;message:string;paths?:string[]}[]>([]);
   const [restarting, setRestarting] = useState<string | null>(null);
+  const [pat, setPatState] = useState("");
+  const [syncRepo, setSyncRepoState] = useState("");
+  const [testMsg, setTestMsg] = useState("");
+  const [testing, setTesting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -89,6 +94,8 @@ export default function SettingsPage() {
 
   useEffect(() => {
     load();
+    setPatState(getPat());
+    setSyncRepoState(getSyncRepo());
   }, []);
 
   const current = useMemo(
@@ -328,6 +335,7 @@ export default function SettingsPage() {
           </p>
         </div>
       </div>
+      <SecretsTestPanel />
     </div>
   );
 }
