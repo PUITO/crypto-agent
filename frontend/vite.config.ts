@@ -1,12 +1,15 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+// GitHub Pages 项目站需要 base: '/crypto-agent/'
+const base = process.env.VITE_BASE || "/";
+
 export default defineConfig({
+  base,
   plugins: [react()],
   server: {
     port: 5173,
     proxy: {
-      // 开发时把 /api 指到 Gateway，避免 CORS 麻烦（Gateway 已开 CORS 也可直连）
       "/gw": {
         target: "http://localhost:8000",
         changeOrigin: true,

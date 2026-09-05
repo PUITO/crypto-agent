@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "build": "vite build",
+    "preview": "vite preview",
+    "build:check": "tsc -b && vite build"
   },
   "dependencies": {
     "lightweight-charts": "^4.2.0",

@@ -20,6 +20,14 @@
 - `加密市场自主Agent系统_方案与实施计划.md`（若存在）
 - `技术架构与技术选型说明.md`（若存在）
 
+## 在线前端入口（Actions → Pages）
+
+配置仓库 **Settings → Pages → GitHub Actions** 后，运行工作流 **Deploy Frontend (GitHub Pages)**。
+
+主入口形如：`https://<你的用户名>.github.io/crypto-agent/`
+
+后端 API 需自有服务器；在 Secrets 中设置 `PUBLIC_BASE_URL` 并配置 `DEPLOY_*` 后可用 **Run Stack on Server** 拉起服务。
+
 ## 30 秒启动
 
 ```bash

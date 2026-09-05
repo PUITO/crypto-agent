@@ -1,0 +1,67 @@
+name: Run Stack on Server
+
+# 在已配置 DEPLOY_* 的服务器上启动服务，并在摘要中输出访问链接
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, main]
+    paths:
+      - "scripts/**"
+      - "services/**"
+      - ".github/workflows/run-stack.yml"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check secrets
+        id: check
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_USER" ] || [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "ok=false" >> $GITHUB_OUTPUT
+            echo "### 无法在 Actions 内直接对外提供长驻服务" >> $GITHUB_STEP_SUMMARY
+            echo "GitHub 托管 Runner 不能作为稳定公网后端。" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**请任选：**" >> $GITHUB_STEP_SUMMARY
+            echo "1. 配置 Secrets \`DEPLOY_HOST\` / \`DEPLOY_USER\` / \`DEPLOY_SSH_KEY\` 后重新运行本工作流（在你的服务器上 start_prod）" >> $GITHUB_STEP_SUMMARY
+            echo "2. 仅前端：运行工作流 **Deploy Frontend (GitHub Pages)** → 主入口 \`https://<user>.github.io/crypto-agent/\`" >> $GITHUB_STEP_SUMMARY
+            echo "3. 本地：\`./scripts/start_dev.sh\` + \`cd frontend && npm run dev\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ok=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Start stack via SSH
+        if: steps.check.outputs.ok == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
+            [ -z "$DEPLOY_PATH" ] && DEPLOY_PATH=/opt/crypto-agent
+            cd "$DEPLOY_PATH"
+            git fetch origin && git reset --hard origin/${{ github.ref_name }} || true
+            export PATH="$DEPLOY_PATH/.venv/bin:$PATH"
+            chmod +x scripts/*.sh scripts/lib/*.sh || true
+            ./scripts/stop_all.sh || true
+            ./scripts/start_prod.sh
+            ./scripts/status.sh || true
+
+      - name: Publish access links
+        if: steps.check.outputs.ok == 'true'
+        run: |
+          BASE="${{ secrets.PUBLIC_BASE_URL }}"
+          FE="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          echo "### 访问链接" >> $GITHUB_STEP_SUMMARY
+          echo "- **前端主入口 (GitHub Pages):** $FE" >> $GITHUB_STEP_SUMMARY
+          echo "- **API Gateway:** ${BASE:-请配置 PUBLIC_BASE_URL}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$BASE" ]; then
+            echo "- Docs: $BASE/docs" >> $GITHUB_STEP_SUMMARY
+            echo "- Health: $BASE/api/v1/health/all" >> $GITHUB_STEP_SUMMARY
+          fi

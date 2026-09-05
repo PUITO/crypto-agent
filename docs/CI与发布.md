@@ -38,3 +38,26 @@ Release 产物示例：`crypto-agent-v0.0.1-dev.tar.gz`。
 ## 监控
 
 GitHub → Actions 查看每次 run；Deploy 摘要中会打印公网地址（若已配置）。
+
+
+## 前端主入口（GitHub Pages）
+
+工作流：`.github/workflows/pages.yml`（**Deploy Frontend (GitHub Pages)**）
+
+1. 仓库 Settings → Pages → Source 选 **GitHub Actions**
+2. 运行该工作流（push `frontend/**` 或手动）
+3. 主入口：
+
+```text
+https://<owner>.github.io/crypto-agent/
+```
+
+可选 Secret / 手动输入：`PUBLIC_BASE_URL` 或 `gateway_url`，构建时写入前端，用于请求公网 Gateway。
+
+## 在服务器上通过 Actions 拉起后端
+
+工作流：`Run Stack on Server`（`.github/workflows/run-stack.yml`）
+
+需配置 `DEPLOY_*`。摘要中输出 Pages 前端链接 + `PUBLIC_BASE_URL` 后端链接。
+
+> GitHub 托管 Runner **不能**长期对外提供 API；后端必须在你的服务器或其它云主机。
