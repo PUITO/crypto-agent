@@ -5,11 +5,11 @@
 
 ## Android 适配分支
 
-分支 **`android-app`**：面向 [crypto-app](https://github.com/PUITO/crypto-app) 的 Mobile API 与自动发布。
+分支 **`android-app`**：本仓库的 **独立 Android 客户端**（`android/`）+ Mobile API；与其它仓库的 crypto-app **无关**。
 
 - 文档：[docs/Android适配说明.md](docs/Android适配说明.md)
 - API 前缀：`/api/v1/mobile/*`
-- 推送到该分支会触发 **Android Branch CI & Release**
+- 推送到该分支会触发 **Android Branch CI & Release** 与 **Build Android App APK**（`android-app-latest`）
 
 ## 文档导航
 

@@ -1,4 +1,4 @@
-package com.puito.cryptoapp
+package com.puito.cryptoagent
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -7,17 +7,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import com.puito.cryptoapp.ui.AppNav
-import com.puito.cryptoapp.ui.theme.CryptoTheme
+import com.puito.cryptoagent.ui.AppNav
+import com.puito.cryptoagent.ui.theme.AgentTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val repo = (application as CryptoApp).repository
+        val app = application as AgentApp
         setContent {
-            CryptoTheme {
+            AgentTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    AppNav(repo)
+                    AppNav(app.api, app.prefs)
                 }
             }
         }

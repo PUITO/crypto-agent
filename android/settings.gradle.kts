@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "crypto-app"
+rootProject.name = "crypto-agent-android"
 include(":app")
