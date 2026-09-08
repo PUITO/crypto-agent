@@ -3,6 +3,14 @@
 专注 **BTC 等加密市场** 的历史/实时价格分析与自主 Agent 系统。  
 微服务架构：行情采集、统一配置、策略热插拔、回测、图表、LLM 对话、多 Agent 优化、运维、日志、持久化同步、通知。
 
+## Android 适配分支
+
+分支 **`android-app`**：面向 [crypto-app](https://github.com/PUITO/crypto-app) 的 Mobile API 与自动发布。
+
+- 文档：[docs/Android适配说明.md](docs/Android适配说明.md)
+- API 前缀：`/api/v1/mobile/*`
+- 推送到该分支会触发 **Android Branch CI & Release**
+
 ## 文档导航
 
 | 文档 | 说明 |

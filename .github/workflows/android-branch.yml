@@ -1,0 +1,87 @@
+name: Android Branch CI & Release
+
+on:
+  push:
+    branches: [android-app]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+          pip install httpx pydantic fastapi -q
+
+      - name: Syntax check mobile API
+        run: |
+          python -m compileall services/gateway/app/api/mobile.py
+          python -c "import ast; ast.parse(open('services/gateway/app/api/mobile.py').read())"
+          test -f schemas/android_strategy_config.schema.json
+          test -f docs/Android适配说明.md
+
+      - name: Package android-adapt archive
+        run: |
+          SHA="${GITHUB_SHA:0:7}"
+          DAY=$(date -u +%Y%m%d)
+          NAME="crypto-agent-android-${DAY}-${SHA}"
+          mkdir -p dist
+          tar -czf "dist/${NAME}.tar.gz" \
+            services/gateway/app/api/mobile.py \
+            schemas/android_strategy_config.schema.json \
+            docs/Android适配说明.md \
+            README.md \
+            requirements.txt \
+            || tar -czf "dist/${NAME}.tar.gz" schemas docs services/gateway/app/api
+          echo "ASSET_NAME=${NAME}.tar.gz" >> $GITHUB_ENV
+          echo "TAG=android-${DAY}-${SHA}" >> $GITHUB_ENV
+          echo "DAY=${DAY}" >> $GITHUB_ENV
+          echo "SHA=${SHA}" >> $GITHUB_ENV
+          ls -la dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crypto-agent-android-${{ env.SHA }}
+          path: dist/*
+          retention-days: 30
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Android Adapt ${{ env.DAY }} (${{ env.SHA }})
+          prerelease: true
+          body: |
+            ## crypto-agent `android-app` 分支自动发布
+            - commit: `${{ github.sha }}`
+            - Mobile API: `/api/v1/mobile/*`
+            - 文档: `docs/Android适配说明.md`
+            - Schema: `schemas/android_strategy_config.schema.json`
+
+            ### 配套 Android App
+            - 仓库: https://github.com/PUITO/crypto-app
+            - 最新 APK: https://github.com/PUITO/crypto-app/releases/tag/dev-latest
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Android 分支发布"
+            echo "- Tag: \`${{ env.TAG }}\`"
+            echo "- Release: https://github.com/${{ github.repository }}/releases/tag/${{ env.TAG }}"
+            echo "- App APK: https://github.com/PUITO/crypto-app/releases/tag/dev-latest"
+          } >> "$GITHUB_STEP_SUMMARY"

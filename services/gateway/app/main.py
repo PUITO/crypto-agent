@@ -143,6 +143,11 @@ def create_app() -> FastAPI:
     app.add_exception_handler(AppException, app_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)
     app.include_router(health_router)
+    try:
+        from api.mobile import router as mobile_router
+    except ImportError:
+        from .api.mobile import router as mobile_router
+    app.include_router(mobile_router)
 
     @app.get("/")
     async def root():

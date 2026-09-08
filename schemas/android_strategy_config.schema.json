@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AndroidStrategyConfig",
+  "description": "与 crypto-app StrategyConfig 对齐，供 Agent 与 App 共用",
+  "type": "object",
+  "required": ["title", "buy_rules", "sell_rules"],
+  "properties": {
+    "id": { "type": "string" },
+    "title": { "type": "string" },
+    "enabled": { "type": "boolean", "default": false },
+    "buy_rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/rule" }
+    },
+    "sell_rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/rule" }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "required": ["indicator", "op", "value"],
+      "properties": {
+        "indicator": { "enum": ["RSI", "MACD", "KDJ_J", "CLOSE"] },
+        "op": { "enum": ["GT", "GTE", "LT", "LTE"] },
+        "value": { "type": "number" }
+      }
+    }
+  }
+}
