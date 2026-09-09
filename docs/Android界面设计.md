@@ -1,33 +1,20 @@
-# Crypto-Agent Android 客户端界面设计
+# Crypto-Agent Android（本地完整运行）
 
-> **独立应用**：本客户端属于 `crypto-agent` 的 `android-app` 分支，**与仓库 PUITO/crypto-app 无任何代码/产品关系**。
+与 **crypto-app 无关**。本 App 在手机内完成：行情、策略信号、事件合约模拟、LLM 对话、后台监控。
 
-## 定位
+## 能力
 
-手机端访问 **master 微服务架构** 的 Gateway：
+| 模块 | 说明 |
+|------|------|
+| 行情图 | 仅 5m/10m/30m/1h；坐标轴+缩放；B/S |
+| 策略 | 指标 OR 规则；启用一套；模拟交易统计全部成交 |
+| 对话 | OpenAI 兼容 API（设置里配置） |
+| 后台 | 默认静默前台服务，约 60s 轮询，新信号通知 |
 
-- 行情 K 线（data / mobile API）
-- Agent 对话
-- 微服务健康
-- Gateway / 交易对 / 周期等连接配置
+## 导航
 
-## 底部导航
+行情 | 策略 | 对话 | 设置
 
-| Tab | 功能 |
-|-----|------|
-| 行情 | 币种、周期、K 线（坐标轴 + 缩放平移） |
-| 对话 | Agent Chat |
-| 健康 | `/api/v1/health/all` + mobile health |
-| 设置 | Gateway URL、默认交易对/周期、远端 config 预览 |
+## 存储
 
-## 主色
-
-背景 `#0B0E11`，主色 `#F0B90B`，涨 `#0ECB81`，跌 `#F6465D`。
-
-## 包名
-
-`com.puito.cryptoagent`（debug：`.debug`）
-
-## 自动化
-
-推送 `android-app` 分支且变更 `android/**` → 构建 APK → Release `android-app-latest`。
+只保留有限根 K 线（默认 500）与模拟摘要，不存 tick。

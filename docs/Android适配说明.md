@@ -1,23 +1,11 @@
-# Crypto-Agent Android 适配说明
+# Android 本地完整方案
 
-分支：`android-app`  
-**独立客户端**，不依赖、不引用 [crypto-app](https://github.com/PUITO/crypto-app)。
+分支 `android-app`：单机即可体验，不依赖自建微服务进程。
 
-## 源码
+1. 安装 APK（`android-app-latest`）
+2. 允许通知；可选关掉电池优化
+3. 打开即拉 Binance K 线并默认跑策略+后台
+4. 「设置」配置 LLM 后使用对话
+5. 「策略」编辑 RSI/MACD 等规则
 
-`android/` — Kotlin + Jetpack Compose，对接 Gateway。
-
-## API
-
-| 用途 | 路径 |
-|------|------|
-| 健康 | `GET /api/v1/health/all` |
-| Mobile | `GET /api/v1/mobile/*` |
-| K 线 | `GET /api/v1/mobile/klines` 或 `/data/api/v1/klines` |
-| 对话 | `POST /agent/api/v1/chat` |
-| 配置 | `GET /config/api/v1/config` |
-
-## 发布
-
-- Tag：`android-app-latest`
-- 工作流：`Build Android App APK`
+可选：同一仓库的 Gateway 仍可用于 PC；手机不需要连 Gateway。

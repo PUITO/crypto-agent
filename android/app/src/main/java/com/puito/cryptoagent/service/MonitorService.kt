@@ -1,0 +1,79 @@
+package com.puito.cryptoagent.service
+
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.os.IBinder
+import android.os.PowerManager
+import com.puito.cryptoagent.AgentApp
+import com.puito.cryptoagent.notify.Notify
+import kotlinx.coroutines.*
+
+class MonitorService : Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var job: Job? = null
+    private var wake: PowerManager.WakeLock? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        Notify.channels(this)
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "cryptoagent:mon").apply { setReferenceCounted(false) }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == STOP) {
+            stopMon(); stopSelf(); return START_NOT_STICKY
+        }
+        startMon()
+        return START_STICKY
+    }
+
+    private fun startMon() {
+        val repo = (application as AgentApp).repo
+        val s = repo.settings()
+        startForeground(1001, Notify.monitor(this, "${s.symbol} ${s.interval} 静默监控…"))
+        if (wake?.isHeld != true) wake?.acquire(8 * 60 * 60 * 1000L)
+        job?.cancel()
+        job = scope.launch {
+            while (isActive) {
+                try {
+                    val st = repo.settings()
+                    if (!st.strategyRunning) {
+                        update("${st.symbol} · 策略已暂停")
+                    } else {
+                        val fresh = repo.poll()
+                        fresh.forEach { Notify.signal(this@MonitorService, st.symbol, st.interval, it) }
+                        val stats = repo.stats
+                        update("${st.symbol} ${st.interval} · 成交${stats.trades} 胜率${"%.0f".format(stats.winRate * 100)}%")
+                    }
+                } catch (e: Exception) {
+                    update("监控异常: ${e.message?.take(40)}")
+                }
+                // 按周期降频：最小 60s，避免频繁请求与存储
+                delay(60_000L)
+            }
+        }
+    }
+
+    private fun update(text: String) {
+        val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+        nm.notify(1001, Notify.monitor(this, text))
+    }
+
+    private fun stopMon() {
+        job?.cancel(); job = null
+        try { wake?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
+        stopForeground(STOP_FOREGROUND_REMOVE)
+    }
+
+    override fun onDestroy() { stopMon(); scope.cancel(); super.onDestroy() }
+
+    companion object {
+        const val STOP = "com.puito.cryptoagent.STOP_MON"
+        fun start(ctx: Context) = ctx.startForegroundService(Intent(ctx, MonitorService::class.java))
+        fun stop(ctx: Context) = ctx.startService(Intent(ctx, MonitorService::class.java).setAction(STOP))
+    }
+}

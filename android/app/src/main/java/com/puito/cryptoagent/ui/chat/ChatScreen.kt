@@ -9,73 +9,67 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.puito.cryptoagent.data.ChatMessage
-import com.puito.cryptoagent.net.AgentApi
+import com.puito.cryptoagent.data.Repository
 import kotlinx.coroutines.launch
 
+data class Msg(val role: String, val text: String)
+
 @Composable
-fun ChatScreen(api: AgentApi) {
+fun ChatScreen(repo: Repository) {
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
-    var sending by remember { mutableStateOf(false) }
-    val messages = remember {
+    var busy by remember { mutableStateOf(false) }
+    val msgs = remember {
         mutableStateListOf(
-            ChatMessage("assistant", "我是 Crypto Agent 对话入口。请先在「设置」配置 Gateway，然后可问行情、指标或回测相关问题。"),
+            Msg("assistant", "本地 Agent 对话。请在「设置」配置 OpenAI 兼容的 LLM Base URL 与 API Key 后使用。"),
         )
     }
-    val listState = rememberLazyListState()
+    val state = rememberLazyListState()
+    val s = repo.settings()
 
     Column(Modifier.fillMaxSize().padding(12.dp)) {
-        Text("Agent 对话", style = MaterialTheme.typography.titleMedium)
-        Text("POST /agent/api/v1/chat", color = MaterialTheme.colorScheme.secondary)
-        Spacer(Modifier.height(8.dp))
-        LazyColumn(Modifier.weight(1f), state = listState) {
-            items(messages) { m ->
+        Text("LLM 对话", style = MaterialTheme.typography.titleMedium)
+        Text(
+            if (s.llmApiKey.isBlank()) "未配置 API Key" else "模型 ${s.llmModel}",
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        LazyColumn(Modifier.weight(1f), state = state) {
+            items(msgs) { m ->
                 val mine = m.role == "user"
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
                 ) {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (mine) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
-                            else MaterialTheme.colorScheme.surface,
-                        ),
-                    ) {
-                        Text(m.content, Modifier.padding(10.dp))
+                    Card {
+                        Text(m.text, Modifier.padding(10.dp))
                     }
                 }
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
-                value = input,
-                onValueChange = { input = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("输入消息…") },
-                singleLine = true,
+                input, { input = it }, Modifier.weight(1f),
+                placeholder = { Text("输入…") }, singleLine = true,
             )
             Spacer(Modifier.width(8.dp))
             Button(
-                enabled = input.isNotBlank() && !sending,
+                enabled = input.isNotBlank() && !busy,
                 onClick = {
-                    val text = input.trim()
-                    input = ""
-                    messages.add(ChatMessage("user", text))
+                    val t = input.trim(); input = ""
+                    msgs.add(Msg("user", t))
                     scope.launch {
-                        sending = true
+                        busy = true
                         try {
-                            val reply = api.chat(text)
-                            messages.add(ChatMessage("assistant", reply))
-                            listState.animateScrollToItem(messages.lastIndex)
+                            msgs.add(Msg("assistant", repo.chat(t)))
+                            state.animateScrollToItem(msgs.lastIndex)
                         } catch (e: Exception) {
-                            messages.add(ChatMessage("assistant", "错误: ${e.message}"))
+                            msgs.add(Msg("assistant", "错误: ${e.message}"))
                         } finally {
-                            sending = false
+                            busy = false
                         }
                     }
                 },
-            ) { Text(if (sending) "…" else "发送") }
+            ) { Text(if (busy) "…" else "发送") }
         }
     }
 }
