@@ -20,7 +20,7 @@ class BinanceClient(
 
     suspend fun fetch(symbol: String, interval: Interval, limit: Int): List<Candle> =
         withContext(Dispatchers.IO) {
-            val lim = limit.coerceIn(50, 1000)
+            val lim = limit.coerceIn(200, 1000) // 至少 200 根，避免指标/胜率失真
             when (interval) {
                 Interval.M10 -> aggregate10m(symbol, lim)
                 else -> native(symbol, interval.code, lim)
@@ -42,7 +42,7 @@ class BinanceClient(
     }
 
     private fun aggregate10m(symbol: String, limit: Int): List<Candle> {
-        val raw = native(symbol, "5m", (limit * 2).coerceAtMost(1000))
+        val raw = native(symbol, "5m", 1000) // 尽量用满 5m 历史再聚合成 10m
         val out = mutableListOf<Candle>()
         var i = 0
         while (i + 1 < raw.size) {

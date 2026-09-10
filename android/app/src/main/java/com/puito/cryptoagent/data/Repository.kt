@@ -91,14 +91,23 @@ class Repository(ctx: Context) {
         val s = settings()
         binance.updateBase(s.binanceBaseUrl)
         return try {
-            val bars = binance.fetch(s.symbol, Interval.from(s.interval), s.klineLimit)
+            val bars = binance.fetch(
+                s.symbol,
+                Interval.from(s.interval),
+                s.klineLimit.coerceIn(200, 1000),
+            )
             loadOverlays()
             if (s.strategyRunning) {
                 val cfg = enabledStrategy()
-                if (cfg != null) {
+                if (cfg != null && bars.size >= minBarsForSignal(s.interval)) {
                     runStrategy(s.symbol, s.interval, cfg, bars, notifyNew = false, updateUiState = true)
                 } else {
                     candles = bars
+                    if (cfg != null && bars.size < minBarsForSignal(s.interval)) {
+                        signals = emptyList()
+                        trades = emptyList()
+                        stats = Stats()
+                    }
                 }
             } else {
                 candles = bars
@@ -151,12 +160,28 @@ class Repository(ctx: Context) {
         }
     }
 
+    /** 通知关注的「近期已收盘」K 线数量：扩大窗口，保留足够近端历史，避免过窄失真 */
+    private fun notifyWatchBars(interval: String): Int = when (interval) {
+        "5m" -> 24   // ~2 小时
+        "10m" -> 24  // ~4 小时
+        "30m" -> 24  // ~12 小时
+        "1h" -> 24   // ~1 天
+        else -> 24
+    }
+
+    /** 策略/指标最少需要的历史根数 */
+    private fun minBarsForSignal(interval: String): Int = when (interval) {
+        "5m", "10m" -> 120
+        "30m", "1h" -> 100
+        else -> 100
+    }
+
     /**
      * 多周期新信号过滤：
-     * 1) 只看「最近已收盘」的 1～2 根 K（避免 takeLast(6) 历史信号刷屏）
+     * 1) 计算用全量历史 K（默认最多 1000 根）；通知窗口为近端约 24 根已收盘 K
      * 2) 按 symbol+interval+openTime+side 去重
-     * 3) 同周期同方向冷却：至少半个周期间隔才再通知
-     * 4) 首次接触某周期时先种子历史 key，只放行最新一根上的信号
+     * 3) 同周期同方向冷却：至少半个周期
+     * 4) 首次种子：窗口外历史记为已见，窗口内仍可通知（有近端历史参考）
      */
     private fun freshMarks(
         symbol: String,
@@ -166,17 +191,15 @@ class Repository(ctx: Context) {
         notifyNew: Boolean,
     ): List<SignalMark> {
         if (barData.isEmpty()) return emptyList()
-        // 以倒数第二根为「刚收盘」优先；若不足两根则用最后一根
-        val closedIdx = if (barData.size >= 2) barData.size - 2 else barData.size - 1
-        val watchTimes = buildSet {
-            add(barData[closedIdx].openTime)
-            if (barData.size >= 3) add(barData[barData.size - 3].openTime)
-        }
+        // 不含可能未收盘的最后一根，从倒数第 2 根往前取 watch 根
+        val endExclusive = if (barData.size >= 2) barData.size - 1 else barData.size
+        val watchCount = notifyWatchBars(interval).coerceAtMost(endExclusive)
+        val from = (endExclusive - watchCount).coerceAtLeast(0)
+        val watchTimes = barData.subList(from, endExclusive).map { it.openTime }.toSet()
 
         val prefix = "$symbol|$interval|"
         val hadSeed = notified.any { it.startsWith(prefix) }
         if (!hadSeed) {
-            // 种子：除 watch 窗口外全部记为已见，防止启动瞬间历史信号轰炸
             marks.forEach { m ->
                 if (m.openTime !in watchTimes) notified.add(key(symbol, interval, m))
             }
@@ -256,7 +279,11 @@ class Repository(ctx: Context) {
         val batch = mutableListOf<SignalNotifyPayload>()
         for (iv in allIntervals) {
             try {
-                val bars = binance.fetch(s.symbol, Interval.from(iv), s.klineLimit)
+                val bars = binance.fetch(s.symbol, Interval.from(iv), s.klineLimit.coerceIn(200, 1000))
+                if (bars.size < minBarsForSignal(iv)) {
+                    // 历史不足时不算信号，避免 RSI/MA 等在短样本上失真
+                    continue
+                }
                 val (marks, st) = runStrategy(
                     s.symbol, iv, cfg, bars,
                     notifyNew = true,

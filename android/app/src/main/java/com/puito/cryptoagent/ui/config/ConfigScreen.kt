@@ -36,7 +36,7 @@ fun ConfigScreen(repo: Repository) {
         OutlinedTextField(binance, { binance = it }, label = { Text("Binance Base URL") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(symbol, { symbol = it }, label = { Text("交易对") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(interval, { interval = it }, label = { Text("周期 5m/10m/30m/1h") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(limit, { limit = it }, label = { Text("K 线条数(建议≤500)") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(limit, { limit = it }, label = { Text("K 线条数(建议 500～1000，过小易失真)") }, modifier = Modifier.fillMaxWidth())
 
         Text("LLM（对话）", style = MaterialTheme.typography.titleSmall)
         OutlinedTextField(llmUrl, { llmUrl = it }, label = { Text("LLM Base URL") }, modifier = Modifier.fillMaxWidth())
@@ -56,7 +56,7 @@ fun ConfigScreen(repo: Repository) {
                 binanceBaseUrl = binance.trim(),
                 symbol = symbol.trim().uppercase(),
                 interval = interval.trim(),
-                klineLimit = limit.toIntOrNull()?.coerceIn(50, 1000) ?: 500,
+                klineLimit = limit.toIntOrNull()?.coerceIn(200, 1000) ?: 1000,
                 llmBaseUrl = llmUrl.trim(),
                 llmApiKey = llmKey.trim(),
                 llmModel = llmModel.trim(),

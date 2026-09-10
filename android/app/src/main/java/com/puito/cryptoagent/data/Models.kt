@@ -114,7 +114,7 @@ data class AppSettings(
     val binanceBaseUrl: String = "https://data-api.binance.vision",
     val symbol: String = "BTCUSDT",
     val interval: String = "10m",
-    val klineLimit: Int = 500,
+    val klineLimit: Int = 1000, // 足够历史，指标/回测更稳
     val strategyRunning: Boolean = true,
     val backgroundEnabled: Boolean = true,
     val llmBaseUrl: String = "https://api.openai.com/v1",
