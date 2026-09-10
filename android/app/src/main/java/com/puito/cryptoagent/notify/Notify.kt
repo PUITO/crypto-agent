@@ -71,6 +71,8 @@ object Notify {
         symbol: String,
         interval: String,
         m: SignalMark,
+        intervalWinRatePct: Double = 0.0,
+        intervalTrades: Int = 0,
         ai: AiEvalResult? = null,
     ) {
         channels(ctx)
@@ -78,6 +80,7 @@ object Notify {
         val directionShort = if (m.side == "B") "▲ 买入 B" else "▼ 卖出 S"
         val timeStr = timeFmt.format(Date(m.openTime))
         val shortTime = shortFmt.format(Date(m.openTime))
+        val wrLine = "周期总胜率 ${"%.1f".format(intervalWinRatePct)}% (${intervalTrades}笔)"
 
         val aiLine = when {
             ai == null -> null
@@ -87,21 +90,22 @@ object Notify {
                     false -> "未达阈值"
                     null -> ""
                 }
-                "AI胜率 ${"%.1f".format(ai.winRatePct)}% (阈值 ${"%.0f".format(ai.thresholdPct)}%) $pass"
+                "AI ${"%.1f".format(ai.winRatePct)}%/$pass"
             }
             else -> "AI: ${ai.summary.take(40)}"
         }
 
-        val title = "$directionShort · $symbol · $interval"
+        val title = "$directionShort · $symbol · 时间段 $interval"
         val summary = buildString {
-            append("时间 $shortTime · 价格 ${"%.2f".format(m.price)}")
+            append("$wrLine · 时间 $shortTime · 价 ${"%.2f".format(m.price)}")
             if (aiLine != null) append(" · ").append(aiLine)
         }
         val bigText = buildString {
             appendLine("方向：$direction")
             appendLine("时间：$timeStr")
             appendLine("品种：$symbol")
-            appendLine("周期：$interval")
+            appendLine("时间段（周期）：$interval")
+            appendLine("该时间段总胜率：${"%.1f".format(intervalWinRatePct)}%（模拟 ${intervalTrades} 笔）")
             appendLine("价格：${"%.4f".format(m.price)}")
             appendLine("信号侧：${m.side}")
             if (ai != null) {

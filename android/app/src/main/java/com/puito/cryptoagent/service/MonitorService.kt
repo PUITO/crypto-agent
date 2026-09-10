@@ -52,10 +52,20 @@ class MonitorService : Service() {
                         update("${st.symbol} · 策略暂停")
                     } else {
                         val fresh = repo.poll()
-                        fresh.forEach { Notify.signal(this@MonitorService, st.symbol, st.interval, it.mark, it.ai) }
+                        fresh.forEach {
+                            Notify.signal(
+                                this@MonitorService,
+                                st.symbol,
+                                it.interval,
+                                it.mark,
+                                it.intervalWinRatePct,
+                                it.intervalTrades,
+                                it.ai,
+                            )
+                        }
                         val stats = repo.stats
                         val auto = if (st.hibt.autoTrade) "·自动下单" else ""
-                        update("${st.symbol} ${st.interval} · 成交${stats.trades} 胜率${"%.0f".format(stats.winRate * 100)}%$auto")
+                        update("${st.symbol} 全周期监控 · 当前界面${st.interval} 成交${stats.trades} 胜率${"%.0f".format(stats.winRate * 100)}%$auto")
                     }
                 } catch (e: Exception) {
                     update("监控异常: ${e.message?.take(40)}")

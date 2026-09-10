@@ -87,11 +87,17 @@ class Repository(ctx: Context) {
         val s = settings()
         binance.updateBase(s.binanceBaseUrl)
         return try {
-            candles = binance.fetch(s.symbol, Interval.from(s.interval), s.klineLimit)
+            val bars = binance.fetch(s.symbol, Interval.from(s.interval), s.klineLimit)
             loadOverlays()
             if (s.strategyRunning) {
                 val cfg = enabledStrategy()
-                if (cfg != null) runStrategy(s.symbol, s.interval, cfg, notifyNew = false)
+                if (cfg != null) {
+                    runStrategy(s.symbol, s.interval, cfg, bars, notifyNew = false, updateUiState = true)
+                } else {
+                    candles = bars
+                }
+            } else {
+                candles = bars
             }
             Result.success(Unit)
         } catch (e: Exception) {
@@ -99,58 +105,108 @@ class Repository(ctx: Context) {
         }
     }
 
-    fun runStrategy(symbol: String, interval: String, cfg: StrategyConfig, notifyNew: Boolean): List<SignalMark> {
-        val marks = StrategyEngine.signals(candles, cfg)
-        signals = marks
-        val (t, st) = EventSim.backtest(candles, marks, symbol, interval)
-        trades = t
-        stats = st
+    /**
+     * 对指定 K 线与周期跑策略。
+     * @param updateUiState 是否写入当前界面用的 candles/signals/stats（仅选中周期为 true）
+     */
+    fun runStrategy(
+        symbol: String,
+        interval: String,
+        cfg: StrategyConfig,
+        barData: List<Candle>,
+        notifyNew: Boolean,
+        updateUiState: Boolean = false,
+    ): Pair<List<SignalMark>, Stats> {
+        val marks = StrategyEngine.signals(barData, cfg)
+        val (tlist, st) = EventSim.backtest(barData, marks, symbol, interval)
         sp.edit()
-            .putString("trades_$interval", gson.toJson(t))
+            .putString("trades_$interval", gson.toJson(tlist))
             .putString("stats_$interval", gson.toJson(st))
             .apply()
+        if (updateUiState) {
+            candles = barData
+            signals = marks
+            trades = tlist
+            stats = st
+        }
+        return marks to st
+    }
+
+    private fun freshMarks(
+        symbol: String,
+        interval: String,
+        marks: List<SignalMark>,
+        barData: List<Candle>,
+        notifyNew: Boolean,
+    ): List<SignalMark> {
         if (!notifyNew) {
-            notified.clear()
             marks.forEach { notified.add(key(symbol, interval, it)) }
             return emptyList()
         }
-        val recent = candles.takeLast(6).map { it.openTime }.toSet() // 放宽窗口，降低边界漏通知
+        val recent = barData.takeLast(6).map { it.openTime }.toSet()
         return marks.filter { it.openTime in recent && key(symbol, interval, it) !in notified }
             .onEach { notified.add(key(symbol, interval, it)) }
     }
 
     /**
-     * 后台轮询：刷新行情、检测新信号。
-     * AI 评估与真实下单解耦：只要开启 aiEvaluate 就会评估并用于通知；
-     * 仅当 autoTrade=true 且评估通过（或未开 AI）时才尝试下单。
+     * 后台轮询：对全部周期 5m/10m/30m/1h 生成信号并通知，避免只盯当前选中周期漏信号。
+     * AI 评估与真实下单解耦；实盘仅对「当前设置的默认周期」执行（避免四周期重复下单）。
      */
     suspend fun poll(): List<SignalNotifyPayload> {
         val s = settings()
         if (!s.strategyRunning) return emptyList()
         binance.updateBase(s.binanceBaseUrl)
-        candles = binance.fetch(s.symbol, Interval.from(s.interval), s.klineLimit)
         val cfg = enabledStrategy() ?: return emptyList()
-        val fresh = runStrategy(s.symbol, s.interval, cfg, notifyNew = true)
+        val allIntervals = listOf("5m", "10m", "30m", "1h")
         val out = mutableListOf<SignalNotifyPayload>()
-        for (m in fresh) {
-            val ai = if (s.hibt.aiEvaluate) evaluateSignal(s, m) else null
-            out.add(SignalNotifyPayload(m, ai))
-            if (s.hibt.autoTrade) {
-                maybeAutoOrder(s, m, ai)
+        for (iv in allIntervals) {
+            try {
+                val bars = binance.fetch(s.symbol, Interval.from(iv), s.klineLimit)
+                val (marks, st) = runStrategy(
+                    s.symbol, iv, cfg, bars,
+                    notifyNew = true,
+                    updateUiState = (iv == s.interval),
+                )
+                val fresh = freshMarks(s.symbol, iv, marks, bars, notifyNew = true)
+                for (m in fresh) {
+                    val ai = if (s.hibt.aiEvaluate) {
+                        evaluateSignal(s, m, iv, st.winRate * 100, st.trades)
+                    } else null
+                    out.add(
+                        SignalNotifyPayload(
+                            mark = m,
+                            interval = iv,
+                            intervalWinRatePct = st.winRate * 100,
+                            intervalTrades = st.trades,
+                            ai = ai,
+                        ),
+                    )
+                    // 实盘只跟当前选中周期，防止同一信号在多周期重复下单
+                    if (s.hibt.autoTrade && iv == s.interval) {
+                        maybeAutoOrder(s, m, ai)
+                    }
+                }
+            } catch (e: Exception) {
+                // 单周期失败不阻断其它周期
             }
         }
         return out
     }
 
-    /** 仅做 AI 评估，不依赖 autoTrade */
-    suspend fun evaluateSignal(s: AppSettings, m: SignalMark): AiEvalResult {
+    /** 仅做 AI 评估，不依赖 autoTrade；hist 为该时间段本地总胜率 */
+    suspend fun evaluateSignal(
+        s: AppSettings,
+        m: SignalMark,
+        interval: String = s.interval,
+        hist: Double = stats.winRate * 100,
+        tradeCount: Int = stats.trades,
+    ): AiEvalResult {
         val h = s.hibt
-        val hist = stats.winRate * 100
         val dir = if (m.side == "B") "买入/看涨" else "卖出/看跌"
         if (s.llmApiKey.isBlank()) {
             return AiEvalResult(
                 winRatePct = hist,
-                summary = "未配置 LLM Key，使用历史回测胜率 " + "%.1f".format(hist) + "% 作为参考",
+                summary = "未配置 LLM Key，使用该周期历史回测胜率 " + "%.1f".format(hist) + "% 作为参考",
                 passThreshold = hist >= h.aiMinWinRate,
                 thresholdPct = h.aiMinWinRate,
                 error = "no_llm_key",
@@ -161,9 +217,9 @@ class Repository(ctx: Context) {
                 "你是事件合约信号评估助手。根据给定信息估计该方向在指定周期内的胜率(0-100)。" +
                     "先给一行：WINRATE:数字 再给一两句中文理由。不要编造未提供的数据。"
             val user =
-                "品种: ${s.symbol} 周期: ${s.interval} 方向: $dir (${m.side}) " +
-                    "信号价格: ${m.price} 本地回测胜率: " + "%.1f".format(hist) +
-                    "% 成交笔数: ${stats.trades} 阈值: ${h.aiMinWinRate}%"
+                "品种: ${s.symbol} 周期: $interval 方向: $dir (${m.side}) " +
+                    "信号价格: ${m.price} 该周期本地回测胜率: " + "%.1f".format(hist) +
+                    "% 成交笔数: $tradeCount 阈值: ${h.aiMinWinRate}%"
             val ans = llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, user)
             val winEst = parseWinRate(ans) ?: hist
             val reason = ans.lines()

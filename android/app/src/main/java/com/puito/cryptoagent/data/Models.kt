@@ -53,6 +53,9 @@ data class AiEvalResult(
 
 data class SignalNotifyPayload(
     val mark: SignalMark,
+    val interval: String,
+    val intervalWinRatePct: Double,
+    val intervalTrades: Int = 0,
     val ai: AiEvalResult? = null,
 )
 
