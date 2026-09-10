@@ -114,7 +114,7 @@ class Repository(ctx: Context) {
             marks.forEach { notified.add(key(symbol, interval, it)) }
             return emptyList()
         }
-        val recent = candles.takeLast(3).map { it.openTime }.toSet()
+        val recent = candles.takeLast(6).map { it.openTime }.toSet() // 放宽窗口，降低边界漏通知
         return marks.filter { it.openTime in recent && key(symbol, interval, it) !in notified }
             .onEach { notified.add(key(symbol, interval, it)) }
     }
