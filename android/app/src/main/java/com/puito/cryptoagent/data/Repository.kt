@@ -22,7 +22,11 @@ class Repository(ctx: Context) {
     var trades: List<SimTrade> = emptyList(); private set
     var stats: Stats = Stats(); private set
     var overlays: List<ChartOverlay> = emptyList(); private set
-    private val notified = mutableSetOf<String>()
+    private val notified = linkedSetOf<String>() // 保序，便于裁剪
+    /** symbol|interval|side -> 上次通知时间戳 */
+    private val lastNotifyAt = mutableMapOf<String, Long>()
+    private val maxNotifiedKeys = 800
+
 
     fun settings(): AppSettings {
         val j = sp.getString("settings", null) ?: return AppSettings()
@@ -132,6 +136,28 @@ class Repository(ctx: Context) {
         return marks to st
     }
 
+    private fun intervalMs(code: String): Long = when (code) {
+        "5m" -> 5 * 60_000L
+        "10m" -> 10 * 60_000L
+        "30m" -> 30 * 60_000L
+        "1h" -> 60 * 60_000L
+        else -> 10 * 60_000L
+    }
+
+    private fun trimNotified() {
+        while (notified.size > maxNotifiedKeys) {
+            val first = notified.firstOrNull() ?: break
+            notified.remove(first)
+        }
+    }
+
+    /**
+     * 多周期新信号过滤：
+     * 1) 只看「最近已收盘」的 1～2 根 K（避免 takeLast(6) 历史信号刷屏）
+     * 2) 按 symbol+interval+openTime+side 去重
+     * 3) 同周期同方向冷却：至少半个周期间隔才再通知
+     * 4) 首次接触某周期时先种子历史 key，只放行最新一根上的信号
+     */
     private fun freshMarks(
         symbol: String,
         interval: String,
@@ -139,18 +165,87 @@ class Repository(ctx: Context) {
         barData: List<Candle>,
         notifyNew: Boolean,
     ): List<SignalMark> {
+        if (barData.isEmpty()) return emptyList()
+        // 以倒数第二根为「刚收盘」优先；若不足两根则用最后一根
+        val closedIdx = if (barData.size >= 2) barData.size - 2 else barData.size - 1
+        val watchTimes = buildSet {
+            add(barData[closedIdx].openTime)
+            if (barData.size >= 3) add(barData[barData.size - 3].openTime)
+        }
+
+        val prefix = "$symbol|$interval|"
+        val hadSeed = notified.any { it.startsWith(prefix) }
+        if (!hadSeed) {
+            // 种子：除 watch 窗口外全部记为已见，防止启动瞬间历史信号轰炸
+            marks.forEach { m ->
+                if (m.openTime !in watchTimes) notified.add(key(symbol, interval, m))
+            }
+            trimNotified()
+        }
         if (!notifyNew) {
-            marks.forEach { notified.add(key(symbol, interval, it)) }
+            marks.forEach { notified.add(key(symbol, interval, m)) }
+            trimNotified()
             return emptyList()
         }
-        val recent = barData.takeLast(6).map { it.openTime }.toSet()
-        return marks.filter { it.openTime in recent && key(symbol, interval, it) !in notified }
-            .onEach { notified.add(key(symbol, interval, it)) }
+
+        val now = System.currentTimeMillis()
+        val cooldown = intervalMs(interval) / 2
+        val sideCooldownKey = { side: String -> "$symbol|$interval|$side" }
+
+        return marks
+            .filter { it.openTime in watchTimes }
+            .filter { key(symbol, interval, it) !in notified }
+            .filter {
+                val last = lastNotifyAt[sideCooldownKey(it.side)] ?: 0L
+                now - last >= cooldown
+            }
+            .sortedBy { it.openTime }
+            .onEach {
+                notified.add(key(symbol, interval, it))
+                lastNotifyAt[sideCooldownKey(it.side)] = now
+            }
+            .also { trimNotified() }
     }
 
     /**
-     * 后台轮询：对全部周期 5m/10m/30m/1h 生成信号并通知，避免只盯当前选中周期漏信号。
-     * AI 评估与真实下单解耦；实盘仅对「当前设置的默认周期」执行（避免四周期重复下单）。
+     * 同一轮 poll 内跨周期过滤：
+     * - 全周期信号都保留通知（不漏周期）
+     * - 若同方向、时间接近（≤5m），按该周期总胜率降序，胜率明显更低的标记在 payload 中仍发送但去抖：
+     *   同向且 openTime 相差在 5 分钟内，只保留胜率最高的一条 + 与最高相差不超过 15% 的其它周期（共振）
+     */
+    private fun filterCrossInterval(batch: List<SignalNotifyPayload>): List<SignalNotifyPayload> {
+        if (batch.size <= 1) return batch
+        val result = mutableListOf<SignalNotifyPayload>()
+        val bySide = batch.groupBy { it.mark.side }
+        for ((_, list) in bySide) {
+            val sorted = list.sortedWith(
+                compareByDescending<SignalNotifyPayload> { it.intervalWinRatePct }
+                    .thenBy { intervalMs(it.interval) }, // 同胜率优先更短周期（更及时）
+            )
+            val best = sorted.first()
+            result.add(best)
+            for (p in sorted.drop(1)) {
+                val closeInTime = kotlin.math.abs(p.mark.openTime - best.mark.openTime) <= 5 * 60_000L
+                if (!closeInTime) {
+                    result.add(p)
+                    continue
+                }
+                // 时间接近：保留胜率不低于最佳 15 个百分点的共振周期
+                if (p.intervalWinRatePct >= best.intervalWinRatePct - 15.0) {
+                    result.add(p)
+                }
+                // 否则视为噪声，丢弃通知（仍已写入 notified，避免反复尝试）
+            }
+        }
+        return result.sortedWith(
+            compareByDescending<SignalNotifyPayload> { it.intervalWinRatePct }
+                .thenBy { it.mark.openTime },
+        )
+    }
+
+    /**
+     * 后台轮询：对全部周期 5m/10m/30m/1h 生成信号并通知。
+     * 实盘仅对当前选中周期执行，避免四周期重复下单。
      */
     suspend fun poll(): List<SignalNotifyPayload> {
         val s = settings()
@@ -158,7 +253,7 @@ class Repository(ctx: Context) {
         binance.updateBase(s.binanceBaseUrl)
         val cfg = enabledStrategy() ?: return emptyList()
         val allIntervals = listOf("5m", "10m", "30m", "1h")
-        val out = mutableListOf<SignalNotifyPayload>()
+        val batch = mutableListOf<SignalNotifyPayload>()
         for (iv in allIntervals) {
             try {
                 val bars = binance.fetch(s.symbol, Interval.from(iv), s.klineLimit)
@@ -172,7 +267,7 @@ class Repository(ctx: Context) {
                     val ai = if (s.hibt.aiEvaluate) {
                         evaluateSignal(s, m, iv, st.winRate * 100, st.trades)
                     } else null
-                    out.add(
+                    batch.add(
                         SignalNotifyPayload(
                             mark = m,
                             interval = iv,
@@ -181,13 +276,14 @@ class Repository(ctx: Context) {
                             ai = ai,
                         ),
                     )
-                    // 实盘只跟当前选中周期，防止同一信号在多周期重复下单
-                    if (s.hibt.autoTrade && iv == s.interval) {
-                        maybeAutoOrder(s, m, ai)
-                    }
                 }
-            } catch (e: Exception) {
-                // 单周期失败不阻断其它周期
+            } catch (_: Exception) {
+            }
+        }
+        val out = filterCrossInterval(batch)
+        for (p in out) {
+            if (s.hibt.autoTrade && p.interval == s.interval) {
+                maybeAutoOrder(s, p.mark, p.ai)
             }
         }
         return out
