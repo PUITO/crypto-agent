@@ -71,13 +71,17 @@ fun OrderScreen(repo: Repository) {
             Switch(h.dryRun, { persist(h.copy(dryRun = it)) })
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("启用 AI 评估后再下单", Modifier.weight(1f))
+            Text("启用 AI 评估信号（可只通知不实盘）", Modifier.weight(1f))
             Switch(h.aiEvaluate, { persist(h.copy(aiEvaluate = it)) })
         }
+        Text(
+            "开启后：新信号会先走 AI 评估，结果写入通知；与「自动化下单」独立，可只评估不实盘。",
+            color = MaterialTheme.colorScheme.secondary,
+        )
         OutlinedTextField(
             h.aiMinWinRate.toString(),
             { it.toDoubleOrNull()?.let { v -> persist(h.copy(aiMinWinRate = v)) } },
-            label = { Text("AI 下单阈值(胜率%)") },
+            label = { Text("AI 胜率阈值(%) · 通知与下单共用") },
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(

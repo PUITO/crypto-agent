@@ -12,6 +12,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.puito.cryptoagent.MainActivity
+import com.puito.cryptoagent.data.AiEvalResult
 import com.puito.cryptoagent.data.SignalMark
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -65,15 +66,37 @@ object Notify {
         nm.createNotificationChannel(bgCh)
     }
 
-    fun signal(ctx: Context, symbol: String, interval: String, m: SignalMark) {
+    fun signal(
+        ctx: Context,
+        symbol: String,
+        interval: String,
+        m: SignalMark,
+        ai: AiEvalResult? = null,
+    ) {
         channels(ctx)
         val direction = if (m.side == "B") "买入 / 看涨 (B)" else "卖出 / 看跌 (S)"
         val directionShort = if (m.side == "B") "▲ 买入 B" else "▼ 卖出 S"
         val timeStr = timeFmt.format(Date(m.openTime))
         val shortTime = shortFmt.format(Date(m.openTime))
 
+        val aiLine = when {
+            ai == null -> null
+            ai.winRatePct != null -> {
+                val pass = when (ai.passThreshold) {
+                    true -> "达阈值"
+                    false -> "未达阈值"
+                    null -> ""
+                }
+                "AI胜率 ${"%.1f".format(ai.winRatePct)}% (阈值 ${"%.0f".format(ai.thresholdPct)}%) $pass"
+            }
+            else -> "AI: ${ai.summary.take(40)}"
+        }
+
         val title = "$directionShort · $symbol · $interval"
-        val summary = "时间 $shortTime · 价格 ${"%.2f".format(m.price)}"
+        val summary = buildString {
+            append("时间 $shortTime · 价格 ${"%.2f".format(m.price)}")
+            if (aiLine != null) append(" · ").append(aiLine)
+        }
         val bigText = buildString {
             appendLine("方向：$direction")
             appendLine("时间：$timeStr")
@@ -81,6 +104,24 @@ object Notify {
             appendLine("周期：$interval")
             appendLine("价格：${"%.4f".format(m.price)}")
             appendLine("信号侧：${m.side}")
+            if (ai != null) {
+                appendLine("—— AI 评估 ——")
+                if (ai.winRatePct != null) {
+                    appendLine("预估胜率：${"%.1f".format(ai.winRatePct)}%")
+                }
+                appendLine("阈值：${"%.1f".format(ai.thresholdPct)}%")
+                appendLine(
+                    "是否达阈值：" + when (ai.passThreshold) {
+                        true -> "是（可考虑执行）"
+                        false -> "否（建议观望）"
+                        null -> "未知"
+                    },
+                )
+                if (ai.summary.isNotBlank()) appendLine("说明：${ai.summary}")
+                if (ai.error != null) appendLine("备注：${ai.error}")
+            } else {
+                appendLine("AI 评估：未开启（下单页可单独开启，无需真实交易）")
+            }
             append("请及时查看策略与下单设置。")
         }
 

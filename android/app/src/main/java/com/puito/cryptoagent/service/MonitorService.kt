@@ -52,7 +52,7 @@ class MonitorService : Service() {
                         update("${st.symbol} · 策略暂停")
                     } else {
                         val fresh = repo.poll()
-                        fresh.forEach { Notify.signal(this@MonitorService, st.symbol, st.interval, it) }
+                        fresh.forEach { Notify.signal(this@MonitorService, st.symbol, st.interval, it.mark, it.ai) }
                         val stats = repo.stats
                         val auto = if (st.hibt.autoTrade) "·自动下单" else ""
                         update("${st.symbol} ${st.interval} · 成交${stats.trades} 胜率${"%.0f".format(stats.winRate * 100)}%$auto")

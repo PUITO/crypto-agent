@@ -119,39 +119,95 @@ class Repository(ctx: Context) {
             .onEach { notified.add(key(symbol, interval, it)) }
     }
 
-    suspend fun poll(): List<SignalMark> {
+    /**
+     * 后台轮询：刷新行情、检测新信号。
+     * AI 评估与真实下单解耦：只要开启 aiEvaluate 就会评估并用于通知；
+     * 仅当 autoTrade=true 且评估通过（或未开 AI）时才尝试下单。
+     */
+    suspend fun poll(): List<SignalNotifyPayload> {
         val s = settings()
         if (!s.strategyRunning) return emptyList()
         binance.updateBase(s.binanceBaseUrl)
         candles = binance.fetch(s.symbol, Interval.from(s.interval), s.klineLimit)
         val cfg = enabledStrategy() ?: return emptyList()
         val fresh = runStrategy(s.symbol, s.interval, cfg, notifyNew = true)
-        // 自动化下单：新信号 + 配置
+        val out = mutableListOf<SignalNotifyPayload>()
         for (m in fresh) {
-            maybeAutoOrder(s, m)
+            val ai = if (s.hibt.aiEvaluate) evaluateSignal(s, m) else null
+            out.add(SignalNotifyPayload(m, ai))
+            if (s.hibt.autoTrade) {
+                maybeAutoOrder(s, m, ai)
+            }
         }
-        return fresh
+        return out
     }
 
-    private suspend fun maybeAutoOrder(s: AppSettings, m: SignalMark) {
+    /** 仅做 AI 评估，不依赖 autoTrade */
+    suspend fun evaluateSignal(s: AppSettings, m: SignalMark): AiEvalResult {
+        val h = s.hibt
+        val hist = stats.winRate * 100
+        val dir = if (m.side == "B") "买入/看涨" else "卖出/看跌"
+        if (s.llmApiKey.isBlank()) {
+            return AiEvalResult(
+                winRatePct = hist,
+                summary = "未配置 LLM Key，使用历史回测胜率 " + "%.1f".format(hist) + "% 作为参考",
+                passThreshold = hist >= h.aiMinWinRate,
+                thresholdPct = h.aiMinWinRate,
+                error = "no_llm_key",
+            )
+        }
+        return try {
+            val sys =
+                "你是事件合约信号评估助手。根据给定信息估计该方向在指定周期内的胜率(0-100)。" +
+                    "先给一行：WINRATE:数字 再给一两句中文理由。不要编造未提供的数据。"
+            val user =
+                "品种: ${s.symbol} 周期: ${s.interval} 方向: $dir (${m.side}) " +
+                    "信号价格: ${m.price} 本地回测胜率: " + "%.1f".format(hist) +
+                    "% 成交笔数: ${stats.trades} 阈值: ${h.aiMinWinRate}%"
+            val ans = llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, user)
+            val winEst = parseWinRate(ans) ?: hist
+            val reason = ans.lines()
+                .filter { !it.uppercase().contains("WINRATE") }
+                .joinToString(" ")
+                .trim()
+                .ifBlank { ans.take(120) }
+            AiEvalResult(
+                winRatePct = winEst,
+                summary = reason.take(160),
+                passThreshold = winEst >= h.aiMinWinRate,
+                thresholdPct = h.aiMinWinRate,
+            )
+        } catch (e: Exception) {
+            AiEvalResult(
+                winRatePct = hist,
+                summary = "AI 调用失败，回退历史胜率 " + "%.1f".format(hist) + "%",
+                passThreshold = hist >= h.aiMinWinRate,
+                thresholdPct = h.aiMinWinRate,
+                error = e.message,
+            )
+        }
+    }
+
+    private fun parseWinRate(text: String): Double? {
+        val patterns = listOf(
+            Regex("""WINRATE\s*[:=：]\s*(\d{1,3}(?:\.\d+)?)""", RegexOption.IGNORE_CASE),
+            Regex("""(\d{1,3}(?:\.\d+)?)\s*%"""),
+            Regex("""\b(\d{1,3}(?:\.\d+)?)\b"""),
+        )
+        for (p in patterns) {
+            val v = p.find(text)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+            if (v != null && v in 0.0..100.0) return v
+        }
+        return null
+    }
+
+    private suspend fun maybeAutoOrder(s: AppSettings, m: SignalMark, ai: AiEvalResult?) {
         val h = s.hibt
         if (!h.autoTrade) return
-        var pass = true
-        var winEst = stats.winRate * 100
-        if (h.aiEvaluate && s.llmApiKey.isNotBlank()) {
-            try {
-                val ans = llm.chat(
-                    s.llmBaseUrl, s.llmApiKey, s.llmModel,
-                    "你只输出一个0-100的数字，表示该事件合约方向在${s.interval}周期的胜率估计。",
-                    "品种${s.symbol} 周期${s.interval} 方向${m.side} 价格${m.price} 历史胜率${"%.1f".format(stats.winRate * 100)}%。只输出数字。",
-                )
-                winEst = Regex("""\d+(\.\d+)?""").find(ans)?.value?.toDoubleOrNull() ?: winEst
-                pass = winEst >= h.aiMinWinRate
-            } catch (_: Exception) {
-                pass = winEst >= h.aiMinWinRate
-            }
-        } else if (h.aiEvaluate) {
-            pass = winEst >= h.aiMinWinRate
+        val pass = when {
+            h.aiEvaluate && ai != null -> ai.passThreshold == true
+            h.aiEvaluate -> (stats.winRate * 100) >= h.aiMinWinRate
+            else -> true
         }
         if (!pass) return
         val unit = Interval.from(s.interval).timeUnit

@@ -42,6 +42,20 @@ data class StrategyConfig(
 
 data class SignalMark(val openTime: Long, val side: String, val price: Double)
 
+/** AI 对单条信号的评估（可与真实下单解耦） */
+data class AiEvalResult(
+    val winRatePct: Double? = null,
+    val summary: String = "",
+    val passThreshold: Boolean? = null,
+    val thresholdPct: Double = 55.0,
+    val error: String? = null,
+)
+
+data class SignalNotifyPayload(
+    val mark: SignalMark,
+    val ai: AiEvalResult? = null,
+)
+
 data class SimTrade(
     val id: String,
     val symbol: String,
