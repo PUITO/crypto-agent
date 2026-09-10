@@ -11,6 +11,7 @@ import com.puito.cryptoagent.data.Repository
 import com.puito.cryptoagent.ui.chat.ChatScreen
 import com.puito.cryptoagent.ui.config.ConfigScreen
 import com.puito.cryptoagent.ui.home.HomeScreen
+import com.puito.cryptoagent.ui.order.OrderScreen
 import com.puito.cryptoagent.ui.trade.TradeScreen
 
 @Composable
@@ -23,6 +24,7 @@ fun AppNav(repo: Repository) {
             NavigationBar {
                 listOf(
                     Triple("home", "行情", Icons.Default.ShowChart),
+                    Triple("order", "下单", Icons.Default.ShoppingCart),
                     Triple("trade", "策略", Icons.Default.Tune),
                     Triple("chat", "对话", Icons.Default.Chat),
                     Triple("config", "设置", Icons.Default.Settings),
@@ -39,6 +41,7 @@ fun AppNav(repo: Repository) {
     ) { pad ->
         NavHost(nav, "home", Modifier.padding(pad)) {
             composable("home") { HomeScreen(repo) }
+            composable("order") { OrderScreen(repo) }
             composable("trade") { TradeScreen(repo) }
             composable("chat") { ChatScreen(repo) }
             composable("config") { ConfigScreen(repo) }

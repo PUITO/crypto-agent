@@ -9,6 +9,9 @@ import com.puito.cryptoagent.AgentApp
 import com.puito.cryptoagent.notify.Notify
 import kotlinx.coroutines.*
 
+/**
+ * 前台服务：清理界面后仍可轮询行情、信号通知与（可选）自动下单。
+ */
 class MonitorService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
@@ -20,7 +23,9 @@ class MonitorService : Service() {
         super.onCreate()
         Notify.channels(this)
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "cryptoagent:mon").apply { setReferenceCounted(false) }
+        wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "cryptoagent:mon").apply {
+            setReferenceCounted(false)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -34,25 +39,27 @@ class MonitorService : Service() {
     private fun startMon() {
         val repo = (application as AgentApp).repo
         val s = repo.settings()
-        startForeground(1001, Notify.monitor(this, "${s.symbol} ${s.interval} 静默监控…"))
-        if (wake?.isHeld != true) wake?.acquire(8 * 60 * 60 * 1000L)
+        startForeground(1001, Notify.monitor(this, "${s.symbol} ${s.interval} 后台监控中"))
+        if (wake?.isHeld != true) wake?.acquire(12 * 60 * 60 * 1000L)
         job?.cancel()
         job = scope.launch {
             while (isActive) {
                 try {
                     val st = repo.settings()
-                    if (!st.strategyRunning) {
-                        update("${st.symbol} · 策略已暂停")
+                    if (!st.backgroundEnabled) {
+                        update("后台已关闭")
+                    } else if (!st.strategyRunning) {
+                        update("${st.symbol} · 策略暂停")
                     } else {
                         val fresh = repo.poll()
                         fresh.forEach { Notify.signal(this@MonitorService, st.symbol, st.interval, it) }
                         val stats = repo.stats
-                        update("${st.symbol} ${st.interval} · 成交${stats.trades} 胜率${"%.0f".format(stats.winRate * 100)}%")
+                        val auto = if (st.hibt.autoTrade) "·自动下单" else ""
+                        update("${st.symbol} ${st.interval} · 成交${stats.trades} 胜率${"%.0f".format(stats.winRate * 100)}%$auto")
                     }
                 } catch (e: Exception) {
                     update("监控异常: ${e.message?.take(40)}")
                 }
-                // 按周期降频：最小 60s，避免频繁请求与存储
                 delay(60_000L)
             }
         }
@@ -69,11 +76,17 @@ class MonitorService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
-    override fun onDestroy() { stopMon(); scope.cancel(); super.onDestroy() }
+    override fun onDestroy() {
+        stopMon(); scope.cancel(); super.onDestroy()
+    }
 
     companion object {
         const val STOP = "com.puito.cryptoagent.STOP_MON"
-        fun start(ctx: Context) = ctx.startForegroundService(Intent(ctx, MonitorService::class.java))
-        fun stop(ctx: Context) = ctx.startService(Intent(ctx, MonitorService::class.java).setAction(STOP))
+        fun start(ctx: Context) {
+            ctx.startForegroundService(Intent(ctx, MonitorService::class.java))
+        }
+        fun stop(ctx: Context) {
+            ctx.startService(Intent(ctx, MonitorService::class.java).setAction(STOP))
+        }
     }
 }
