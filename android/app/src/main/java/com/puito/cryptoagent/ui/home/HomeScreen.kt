@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -43,13 +44,13 @@ fun HomeScreen(repo: Repository) {
     var err by remember { mutableStateOf<String?>(null) }
     var tick by remember { mutableIntStateOf(0) }
     var scale by remember { mutableFloatStateOf(1f) }
-    var endOff by remember { mutableFloatStateOf(0f) }
+    var startIndex by remember { mutableFloatStateOf(-1f) } // <0 = stick to latest
     var showInd by remember { mutableStateOf(false) }
 
     fun reload() {
         scope.launch {
             loading = true; err = null
-            repo.refreshMarket().onFailure { err = it.message }.onSuccess { tick++ }
+            repo.refreshMarket().onFailure { err = it.message }.onSuccess { tick++; startIndex = -1f; scale = 1f }
             s = repo.settings()
             loading = false
         }
@@ -98,22 +99,33 @@ fun HomeScreen(repo: Repository) {
         err?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
 
         key(tick, s.chartIndicators) {
+            val candleCount = repo.candles.size
             Chart(
                 candles = repo.candles,
                 signals = if (s.strategyRunning) repo.signals else emptyList(),
                 indicators = s.chartIndicators.filter { it.enabled },
                 overlays = repo.overlays,
                 scale = scale,
-                endOffset = endOff,
+                startIndex = startIndex,
                 onScale = { scale = it },
-                onOffset = { endOff = it },
+                onPanBars = { deltaBars ->
+                    if (candleCount <= 0) return@Chart
+                    val vis = (48f / scale).roundToInt().coerceIn(15, candleCount.coerceAtLeast(15))
+                    val maxS = (candleCount - vis).coerceAtLeast(0).toFloat()
+                    val cur = if (startIndex < 0f) maxS else startIndex.coerceIn(0f, maxS)
+                    startIndex = (cur + deltaBars).coerceIn(0f, maxS)
+                },
+                onResetView = {
+                    scale = 1f
+                    startIndex = -1f
+                },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(300.dp)
+                    .height(340.dp)
                     .padding(top = 4.dp),
             )
         }
-        Text("左滑内容左移 · 双指缩放 · 双击重置", color = MaterialTheme.colorScheme.secondary, fontSize = 10.sp)
+        Text("单指滑动浏览 · 双指缩放 · 双击回到最新", color = MaterialTheme.colorScheme.secondary, fontSize = 10.sp)
 
         val st = repo.stats
         Text(
@@ -199,9 +211,10 @@ fun Chart(
     indicators: List<ChartIndicatorPref>,
     overlays: List<ChartOverlay>,
     scale: Float,
-    endOffset: Float,
+    startIndex: Float,
     onScale: (Float) -> Unit,
-    onOffset: (Float) -> Unit,
+    onPanBars: (Float) -> Unit,
+    onResetView: () -> Unit,
     modifier: Modifier,
 ) {
     val bull = Color(0xFF0ECB81)
@@ -209,201 +222,251 @@ fun Chart(
     val axis = Color(0xFF848E9C)
     val grid = Color(0xFF1E2329)
 
-    Card(modifier, colors = CardDefaults.cardColors(containerColor = Color(0xFF12161C))) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF12161C)),
+    ) {
         if (candles.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("加载 K 线…", color = Color.Gray)
             }
         } else {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .pointerInput(candles.size) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            val ns = (scale * zoom).coerceIn(0.4f, 8f)
-                            onScale(ns)
-                            val vis = (55 / ns).roundToInt().coerceIn(12, candles.size)
-                            // 左滑(pan.x<0) → 内容左移 → 看更新的 K 线（endOffset 减小）
-                            // 右滑(pan.x>0) → 内容右移 → 看更早历史（endOffset 增大）
-                            onOffset(
-                                (endOffset + pan.x / (size.width / vis))
-                                    .coerceIn(0f, max(0f, candles.size - vis.toFloat())),
-                            )
+            // 用 BoxWithConstraints 拿稳定宽度，手势与绘制同一坐标系，减少跳动
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val density = androidx.compose.ui.platform.LocalDensity.current
+                val widthPx = with(density) { maxWidth.toPx() }
+                val heightPx = with(density) { maxHeight.toPx() }
+
+                // 边距：给 Y 轴文字、X 轴时间留足空间，避免被裁切
+                val padL = 80f
+                val padR = 16f
+                val padT = 20f
+                val padB = 44f
+                val plotW = (widthPx - padL - padR).coerceAtLeast(1f)
+                val plotH = (heightPx - padT - padB).coerceAtLeast(1f)
+
+                val baseVisible = 48f
+                val visibleCount = (baseVisible / scale).roundToInt().coerceIn(15, candles.size.coerceAtLeast(15))
+                val maxStart = (candles.size - visibleCount).coerceAtLeast(0).toFloat()
+                // startIndex < 0 表示贴最新（在 Canvas 内解析）
+                val barW = plotW / visibleCount
+
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clipToBounds()
+                        .pointerInput(candles.size, barW, maxStart) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                if (zoom != 1f && zoom > 0f) {
+                                    onScale((scale * zoom).coerceIn(0.35f, 6f))
+                                }
+                                // 增量平移，避免闭包读到过期 startIndex 造成跳动
+                                if (pan.x != 0f && barW > 0f) {
+                                    onPanBars(-pan.x / barW)
+                                }
+                            }
                         }
-                    }
-                    .pointerInput(Unit) {
-                        detectTapGestures(onDoubleTap = { onScale(1f); onOffset(0f) })
-                    },
-            ) {
-                Canvas(Modifier.fillMaxSize().padding(6.dp)) {
-                    // 加大边距，避免 XY 轴文字被裁切
-                    val left = 72f
-                    val right = 12f
-                    val bot = 36f
-                    val top = 16f
-                    val pw = size.width - left - right
-                    val ph = size.height - top - bot
-                    if (pw <= 1f || ph <= 1f) return@Canvas
+                        .pointerInput(Unit) {
+                            detectTapGestures(onDoubleTap = { onResetView() })
+                        },
+                ) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        val startF = if (startIndex < 0f) maxStart else startIndex.coerceIn(0f, maxStart)
+                        val startI = startF.toInt().coerceIn(0, (candles.size - 1).coerceAtLeast(0))
+                        val endI = (startI + visibleCount).coerceAtMost(candles.size)
+                        if (startI >= endI) return@Canvas
+                        val win = candles.subList(startI, endI)
+                        val closesAll = candles.map { it.close }
+                        // 亚像素偏移：平滑滑动不跳动
+                        val pixelShift = (startF - startI) * barW
 
-                    val vis = (55 / scale).roundToInt().coerceIn(12, candles.size)
-                    val end = (candles.size - endOffset.roundToInt()).coerceIn(vis, candles.size)
-                    val start = (end - vis).coerceAtLeast(0)
-                    val win = candles.subList(start, end)
-                    val closesAll = candles.map { it.close }
-
-                    var maxH = win.maxOf { it.high }
-                    var minL = win.minOf { it.low }
-                    // 把叠加线纳入范围
-                    indicators.forEach { ind ->
-                        val series = when {
-                            ind.name.startsWith("MA", true) || ind.id.startsWith("ma") ->
-                                Indicators.sma(closesAll, ind.period)
-                            ind.name.startsWith("EMA", true) || ind.id.startsWith("ema") ->
-                                Indicators.ema(closesAll, ind.period)
-                            ind.name.startsWith("BOLL", true) || ind.id.startsWith("boll") -> {
-                                val (u, m, l) = Indicators.boll(closesAll, ind.period)
-                                listOf(u, m, l).forEach { ser ->
-                                    for (i in start until end) {
-                                        ser.getOrNull(i)?.let { v ->
-                                            maxH = max(maxH, v); minL = min(minL, v)
+                        var maxH = win.maxOf { it.high }
+                        var minL = win.minOf { it.low }
+                        indicators.forEach { ind ->
+                            val series = when {
+                                ind.name.startsWith("MA", true) || ind.id.startsWith("ma") ->
+                                    Indicators.sma(closesAll, ind.period)
+                                ind.name.startsWith("EMA", true) || ind.id.startsWith("ema") ->
+                                    Indicators.ema(closesAll, ind.period)
+                                ind.name.startsWith("BOLL", true) || ind.id.startsWith("boll") -> {
+                                    val (u, m, l) = Indicators.boll(closesAll, ind.period)
+                                    listOf(u, m, l).forEach { ser ->
+                                        for (i in startI until endI) {
+                                            ser.getOrNull(i)?.let { v ->
+                                                maxH = max(maxH, v); minL = min(minL, v)
+                                            }
                                         }
                                     }
+                                    emptyList()
                                 }
-                                emptyList()
+                                else -> emptyList()
                             }
-                            else -> emptyList()
-                        }
-                        for (i in start until end) {
-                            series.getOrNull(i)?.let { v ->
-                                maxH = max(maxH, v); minL = min(minL, v)
+                            for (i in startI until endI) {
+                                series.getOrNull(i)?.let { v ->
+                                    maxH = max(maxH, v); minL = min(minL, v)
+                                }
                             }
                         }
-                    }
-                    overlays.filter { it.type == "fib" }.forEach { o ->
-                        o.values.forEach { v -> maxH = max(maxH, v); minL = min(minL, v) }
-                    }
-
-                    val yMax = maxH + (maxH - minL) * 0.05
-                    val yMin = minL - (maxH - minL) * 0.05
-                    val yr = (yMax - yMin).coerceAtLeast(1e-8)
-                    fun xAt(i: Int) = left + (i + 0.5f) * (pw / win.size)
-                    fun yAt(p: Double) = top + ((yMax - p) / yr * ph).toFloat()
-
-                    val yp = android.graphics.Paint().apply {
-                        color = android.graphics.Color.parseColor("#848E9C")
-                        textSize = 26f
-                        textAlign = android.graphics.Paint.Align.RIGHT
-                        isAntiAlias = true
-                    }
-                    for (t in 0..4) {
-                        val pr = yMax - (yMax - yMin) * t / 4
-                        val y = yAt(pr)
-                        drawLine(grid, Offset(left, y), Offset(left + pw, y), 1f)
-                        drawContext.canvas.nativeCanvas.drawText(
-                            String.format(Locale.US, if (pr >= 1000) "%.1f" else "%.2f", pr),
-                            left - 8f, y + 8f, yp,
-                        )
-                    }
-                    drawLine(axis, Offset(left, top), Offset(left, top + ph), 2.5f)
-                    drawLine(axis, Offset(left, top + ph), Offset(left + pw, top + ph), 2.5f)
-
-                    val bw = (pw / win.size * 0.6f).coerceIn(2f, 22f)
-                    win.forEachIndexed { i, c ->
-                        val x = xAt(i)
-                        val col = if (c.close >= c.open) bull else bear
-                        drawLine(col, Offset(x, yAt(c.high)), Offset(x, yAt(c.low)), 2f)
-                        val t = min(yAt(c.open), yAt(c.close))
-                        val b = max(yAt(c.open), yAt(c.close))
-                        drawRect(col, Offset(x - bw / 2, t), Size(bw, max(2f, b - t)))
-                    }
-
-                    // 指标线
-                    fun drawSeries(ser: List<Double?>, color: Color) {
-                        var prev: Offset? = null
-                        win.forEachIndexed { i, _ ->
-                            val gi = start + i
-                            val v = ser.getOrNull(gi) ?: run { prev = null; return@forEachIndexed }
-                            val pt = Offset(xAt(i), yAt(v))
-                            prev?.let { drawLine(color, it, pt, 2.5f) }
-                            prev = pt
+                        overlays.filter { it.type == "fib" }.forEach { o ->
+                            o.values.forEach { v -> maxH = max(maxH, v); minL = min(minL, v) }
                         }
-                    }
-                    indicators.forEach { ind ->
-                        val col = Color(ind.colorArgb)
-                        when {
-                            ind.name.startsWith("BOLL", true) || ind.id.startsWith("boll") -> {
-                                val (u, m, l) = Indicators.boll(closesAll, ind.period)
-                                drawSeries(u, col.copy(alpha = 0.7f))
-                                drawSeries(m, col)
-                                drawSeries(l, col.copy(alpha = 0.7f))
-                            }
-                            ind.name.startsWith("EMA", true) || ind.id.startsWith("ema") ->
-                                drawSeries(Indicators.ema(closesAll, ind.period), col)
-                            ind.name.startsWith("RSI", true) -> { /* RSI 副图简化：跳过主图 */ }
-                            else -> drawSeries(Indicators.sma(closesAll, ind.period), col)
-                        }
-                    }
 
-                    // 斐波那契水平线
-                    overlays.filter { it.type == "fib" }.forEach { o ->
-                        val fibPaint = android.graphics.Paint().apply {
-                            color = android.graphics.Color.parseColor("#F0B90B")
-                            textSize = 20f
+                        val yMax = maxH + (maxH - minL) * 0.06
+                        val yMin = minL - (maxH - minL) * 0.06
+                        val yr = (yMax - yMin).coerceAtLeast(1e-8)
+                        fun xAt(iInWin: Int) = padL + (iInWin + 0.5f) * barW - pixelShift
+                        fun yAt(p: Double) = padT + ((yMax - p) / yr * plotH).toFloat()
+
+                        // 背景
+                        drawRect(Color(0xFF12161C), Offset.Zero, Size(size.width, size.height))
+
+                        val yp = android.graphics.Paint().apply {
+                            color = android.graphics.Color.parseColor("#B0B8C4")
+                            textSize = 28f
+                            textAlign = android.graphics.Paint.Align.RIGHT
                             isAntiAlias = true
                         }
-                        o.values.forEach { v ->
-                            val y = yAt(v)
-                            drawLine(Color(0xFFF0B90B).copy(alpha = 0.6f), Offset(left, y), Offset(left + pw, y), 1.5f)
-                            drawContext.canvas.nativeCanvas.drawText("%.1f".format(v), left + 4f, y - 4f, fibPaint)
+                        for (tIdx in 0..4) {
+                            val pr = yMax - (yMax - yMin) * tIdx / 4.0
+                            val y = yAt(pr)
+                            drawLine(grid, Offset(padL, y), Offset(padL + plotW, y), 1f)
+                            val label = if (pr >= 1000) String.format(Locale.US, "%.1f", pr)
+                            else String.format(Locale.US, "%.2f", pr)
+                            // 画在左侧边距内，完整可见
+                            drawContext.canvas.nativeCanvas.drawText(label, padL - 10f, y + 10f, yp)
                         }
-                    }
+                        drawLine(axis, Offset(padL, padT), Offset(padL, padT + plotH), 2.5f)
+                        drawLine(axis, Offset(padL, padT + plotH), Offset(padL + plotW, padT + plotH), 2.5f)
 
-                    val xp = android.graphics.Paint().apply {
-                        color = android.graphics.Color.parseColor("#848E9C")
-                        textSize = 22f
-                        textAlign = android.graphics.Paint.Align.CENTER
-                        isAntiAlias = true
-                    }
-                    val fmt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
-                    for (k in 0 until min(4, win.size)) {
-                        val i = if (win.size == 1) 0 else k * (win.size - 1) / 3
-                        val x = xAt(i)
-                        drawLine(grid, Offset(x, top), Offset(x, top + ph), 1f)
-                        drawContext.canvas.nativeCanvas.drawText(
-                            fmt.format(Date(win[i].openTime)), x, top + ph + 26f, xp,
-                        )
-                    }
-
-                    val map = signals.groupBy { it.openTime }
-                    val pb = android.graphics.Paint().apply {
-                        color = android.graphics.Color.parseColor("#0ECB81")
-                        textSize = 26f; isFakeBoldText = true
-                        textAlign = android.graphics.Paint.Align.CENTER
-                    }
-                    val ps = android.graphics.Paint().apply {
-                        color = android.graphics.Color.parseColor("#F6465D")
-                        textSize = 26f; isFakeBoldText = true
-                        textAlign = android.graphics.Paint.Align.CENTER
-                    }
-                    win.forEachIndexed { i, c ->
-                        map[c.openTime]?.forEach { m ->
+                        // 裁剪绘图区，避免蜡烛画出轴外
+                        val bodyW = (barW * 0.62f).coerceIn(2f, 28f)
+                        win.forEachIndexed { i, c ->
                             val x = xAt(i)
-                            if (m.side == "B") {
-                                val y = yAt(c.low) + 2f
-                                drawPath(Path().apply {
-                                    moveTo(x, y); lineTo(x - 8f, y + 14f); lineTo(x + 8f, y + 14f); close()
-                                }, bull)
-                                drawContext.canvas.nativeCanvas.drawText("B", x, y + 34f, pb)
-                            } else {
-                                val y = yAt(c.high) - 2f
-                                drawPath(Path().apply {
-                                    moveTo(x, y); lineTo(x - 8f, y - 14f); lineTo(x + 8f, y - 14f); close()
-                                }, bear)
-                                drawContext.canvas.nativeCanvas.drawText("S", x, y - 18f, ps)
+                            if (x < padL - bodyW || x > padL + plotW + bodyW) return@forEachIndexed
+                            val col = if (c.close >= c.open) bull else bear
+                            drawLine(col, Offset(x, yAt(c.high)), Offset(x, yAt(c.low)), 2f)
+                            val topB = min(yAt(c.open), yAt(c.close))
+                            val botB = max(yAt(c.open), yAt(c.close))
+                            drawRect(col, Offset(x - bodyW / 2f, topB), Size(bodyW, max(2f, botB - topB)))
+                        }
+
+                        fun drawSeries(ser: List<Double?>, color: Color) {
+                            var prev: Offset? = null
+                            win.forEachIndexed { i, _ ->
+                                val gi = startI + i
+                                val v = ser.getOrNull(gi) ?: run { prev = null; return@forEachIndexed }
+                                val pt = Offset(xAt(i), yAt(v))
+                                if (pt.x in (padL - 2f)..(padL + plotW + 2f)) {
+                                    prev?.let { drawLine(color, it, pt, 2.5f) }
+                                    prev = pt
+                                } else prev = null
                             }
                         }
+                        indicators.forEach { ind ->
+                            val col = Color(ind.colorArgb)
+                            when {
+                                ind.name.startsWith("BOLL", true) || ind.id.startsWith("boll") -> {
+                                    val (u, m, l) = Indicators.boll(closesAll, ind.period)
+                                    drawSeries(u, col.copy(alpha = 0.7f))
+                                    drawSeries(m, col)
+                                    drawSeries(l, col.copy(alpha = 0.7f))
+                                }
+                                ind.name.startsWith("EMA", true) || ind.id.startsWith("ema") ->
+                                    drawSeries(Indicators.ema(closesAll, ind.period), col)
+                                ind.name.startsWith("RSI", true) -> Unit
+                                else -> drawSeries(Indicators.sma(closesAll, ind.period), col)
+                            }
+                        }
+
+                        overlays.filter { it.type == "fib" }.forEach { o ->
+                            val fibPaint = android.graphics.Paint().apply {
+                                color = android.graphics.Color.parseColor("#F0B90B")
+                                textSize = 22f
+                                isAntiAlias = true
+                            }
+                            o.values.forEach { v ->
+                                val y = yAt(v)
+                                drawLine(
+                                    Color(0xFFF0B90B).copy(alpha = 0.55f),
+                                    Offset(padL, y),
+                                    Offset(padL + plotW, y),
+                                    1.5f,
+                                )
+                                drawContext.canvas.nativeCanvas.drawText(
+                                    "%.1f".format(v),
+                                    padL + 6f,
+                                    y - 4f,
+                                    fibPaint,
+                                )
+                            }
+                        }
+
+                        val xp = android.graphics.Paint().apply {
+                            color = android.graphics.Color.parseColor("#B0B8C4")
+                            textSize = 24f
+                            textAlign = android.graphics.Paint.Align.CENTER
+                            isAntiAlias = true
+                        }
+                        val fmt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+                        val labelCount = min(4, win.size)
+                        for (k in 0 until labelCount) {
+                            val i = if (win.size <= 1) 0 else k * (win.size - 1) / (labelCount - 1).coerceAtLeast(1)
+                            val x = xAt(i)
+                            if (x < padL || x > padL + plotW) continue
+                            drawLine(grid, Offset(x, padT), Offset(x, padT + plotH), 1f)
+                            drawContext.canvas.nativeCanvas.drawText(
+                                fmt.format(Date(win[i].openTime)),
+                                x,
+                                padT + plotH + 30f,
+                                xp,
+                            )
+                        }
+
+                        val map = signals.groupBy { it.openTime }
+                        val pb = android.graphics.Paint().apply {
+                            color = android.graphics.Color.parseColor("#0ECB81")
+                            textSize = 26f
+                            isFakeBoldText = true
+                            textAlign = android.graphics.Paint.Align.CENTER
+                        }
+                        val ps = android.graphics.Paint().apply {
+                            color = android.graphics.Color.parseColor("#F6465D")
+                            textSize = 26f
+                            isFakeBoldText = true
+                            textAlign = android.graphics.Paint.Align.CENTER
+                        }
+                        win.forEachIndexed { i, c ->
+                            map[c.openTime]?.forEach { m ->
+                                val x = xAt(i)
+                                if (x < padL || x > padL + plotW) return@forEach
+                                if (m.side == "B") {
+                                    val y = yAt(c.low) + 2f
+                                    drawPath(
+                                        Path().apply {
+                                            moveTo(x, y); lineTo(x - 8f, y + 14f); lineTo(x + 8f, y + 14f); close()
+                                        },
+                                        bull,
+                                    )
+                                    drawContext.canvas.nativeCanvas.drawText("B", x, y + 34f, pb)
+                                } else {
+                                    val y = yAt(c.high) - 2f
+                                    drawPath(
+                                        Path().apply {
+                                            moveTo(x, y); lineTo(x - 8f, y - 14f); lineTo(x + 8f, y - 14f); close()
+                                        },
+                                        bear,
+                                    )
+                                    drawContext.canvas.nativeCanvas.drawText("S", x, y - 18f, ps)
+                                }
+                            }
+                        }
+                        drawRect(
+                            axis.copy(alpha = 0.4f),
+                            Offset(padL, padT),
+                            Size(plotW, plotH),
+                            style = Stroke(1.5f),
+                        )
                     }
-                    drawRect(axis.copy(0.35f), Offset(left, top), Size(pw, ph), style = Stroke(1.2f))
                 }
             }
         }
