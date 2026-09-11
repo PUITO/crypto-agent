@@ -13,20 +13,53 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.puito.cryptoagent.data.Repository
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 data class Msg(val role: String, val text: String)
 
-private data class ChipTpl(val label: String, val fill: String, val withMarket: Boolean = false)
+/** 模板行为：直接发送 / 仅填入输入框待用户编辑发送 */
+private enum class TplAction {
+    /** 本地命令，立即发送，不带行情、不填输入框 */
+    SEND_CMD,
+    /** 带行情立即发送固定问题，不填输入框 */
+    SEND_MARKET,
+    /** 只写入输入框，打开附带行情，由用户改完再点发送 */
+    FILL_MARKET,
+}
+
+private data class ChipTpl(
+    val label: String,
+    val action: TplAction,
+    /** 真正发给后端/LLM 的文本；FILL 时作为输入框初值 */
+    val payload: String,
+)
 
 private val templates = listOf(
-    ChipTpl("行情分析", "请根据附带的K线数据，分析当前趋势、关键高低点、波动与短线风险，并给出事件合约视角的注意点。", withMarket = true),
-    ChipTpl("多空研判", "结合附带行情，判断偏多还是偏空？关键依据是什么？", withMarket = true),
-    ChipTpl("支撑阻力", "根据附带K线指出可能的支撑与阻力区间，并说明理由。", withMarket = true),
-    ChipTpl("斐波那契", "在当前可见区间绘制斐波那契", withMarket = false),
-    ChipTpl("清除绘图", "清除临时斐波那契等绘图", withMarket = false),
-    ChipTpl("打开MA20", "图表叠加 MA20", withMarket = false),
-    ChipTpl("列出策略", "查看已保存策略文件", withMarket = false),
+    ChipTpl(
+        "行情分析",
+        TplAction.SEND_MARKET,
+        "请根据附带的K线数据，分析当前趋势、关键高低点、波动与短线风险，并给出事件合约视角的注意点。",
+    ),
+    ChipTpl(
+        "多空研判",
+        TplAction.SEND_MARKET,
+        "结合附带行情，判断偏多还是偏空？关键依据是什么？",
+    ),
+    ChipTpl(
+        "支撑阻力",
+        TplAction.SEND_MARKET,
+        "根据附带K线指出可能的支撑与阻力区间，并说明理由。",
+    ),
+    ChipTpl(
+        "自定义行情问",
+        TplAction.FILL_MARKET,
+        "请结合附带K线分析：",
+    ),
+    ChipTpl("斐波那契", TplAction.SEND_CMD, "斐波那契"),
+    ChipTpl("清除绘图", TplAction.SEND_CMD, "清除绘图"),
+    ChipTpl("打开MA20", TplAction.SEND_CMD, "打开MA20"),
+    ChipTpl("列出策略", TplAction.SEND_CMD, "列出策略"),
 )
 
 @Composable
@@ -36,31 +69,69 @@ fun ChatScreen(repo: Repository) {
     var busy by remember { mutableStateOf(false) }
     var withMarket by remember { mutableStateOf(false) }
     var marketBars by remember { mutableIntStateOf(30) }
+    var sendJob by remember { mutableStateOf<Job?>(null) }
     val msgs = remember {
         mutableStateListOf(
             Msg(
                 "assistant",
-                "本地 Agent 对话。点「行情分析/多空研判/支撑阻力」会携带最近 N 根K线给 LLM；也可点下方条数后自由提问。命令类模板不需 API Key。",
+                "模板说明：\n" +
+                    "· 行情分析/多空/支撑阻力 → 直接发送（带K线，不改输入框）\n" +
+                    "· 自定义行情问 → 只填入输入框，改完再点发送\n" +
+                    "· 斐波那契等 → 本地命令，直接执行\n" +
+                    "条数芯片只改「附带根数」，不会自动发请求。",
             ),
         )
     }
     val state = rememberLazyListState()
     val s = repo.settings()
 
-    fun send(text: String, attach: Boolean = withMarket) {
-        if (text.isBlank() || busy) return
-        val show = if (attach) "📊[${marketBars}根K线] $text" else text
+    fun sendOnce(text: String, attach: Boolean) {
+        val body = text.trim()
+        if (body.isEmpty()) return
+        // 进行中直接忽略，避免双击/重组导致多次请求与 mutation interrupted
+        if (busy) return
+        busy = true
+        val show = if (attach) "📊[${marketBars}根K线] $body" else body
         msgs.add(Msg("user", show))
-        scope.launch {
-            busy = true
+        sendJob?.cancel()
+        sendJob = scope.launch {
             try {
                 val bars = if (attach) marketBars else 0
-                msgs.add(Msg("assistant", repo.chat(text, attachMarketBars = bars)))
-                state.animateScrollToItem(msgs.lastIndex)
+                val reply = repo.chat(body, attachMarketBars = bars)
+                msgs.add(Msg("assistant", reply))
+                try {
+                    state.animateScrollToItem(msgs.lastIndex)
+                } catch (_: Exception) {
+                }
             } catch (e: Exception) {
-                msgs.add(Msg("assistant", "错误: ${e.message}"))
+                val msg = e.message ?: e.toString()
+                if (!msg.contains("Mutation interrupted", ignoreCase = true) &&
+                    !msg.contains("standalone coroutine was cancelled", ignoreCase = true)
+                ) {
+                    msgs.add(Msg("assistant", "错误: $msg"))
+                }
             } finally {
                 busy = false
+            }
+        }
+    }
+
+    fun onTemplate(tpl: ChipTpl) {
+        if (busy) return
+        when (tpl.action) {
+            TplAction.SEND_CMD -> {
+                // 不填输入框、不带行情
+                sendOnce(tpl.payload, attach = false)
+            }
+            TplAction.SEND_MARKET -> {
+                // 不填输入框，直接带行情发送
+                withMarket = true
+                sendOnce(tpl.payload, attach = true)
+            }
+            TplAction.FILL_MARKET -> {
+                // 只填充，不发送
+                withMarket = true
+                input = tpl.payload
             }
         }
     }
@@ -69,7 +140,7 @@ fun ChatScreen(repo: Repository) {
         Text("LLM 对话", style = MaterialTheme.typography.titleMedium)
         Text(
             if (s.llmApiKey.isBlank()) {
-                "模板命令可不配 Key；行情分析需 API Key"
+                "命令模板可不配 Key；行情类需 API Key"
             } else {
                 "模型 ${s.llmModel} · ${s.symbol} ${s.interval} · 缓存K线 ${repo.candles.size}"
             },
@@ -77,7 +148,7 @@ fun ChatScreen(repo: Repository) {
             fontSize = 12.sp,
         )
 
-        // 携带行情条数
+        // 仅改条数 / 是否附带，不触发发送
         Row(
             Modifier.fillMaxWidth().padding(top = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -86,15 +157,14 @@ fun ChatScreen(repo: Repository) {
             FilterChip(
                 selected = withMarket,
                 onClick = { withMarket = !withMarket },
+                enabled = !busy,
                 label = { Text(if (withMarket) "已附带行情" else "附带行情") },
             )
             listOf(20, 30, 50, 80).forEach { n ->
                 FilterChip(
                     selected = marketBars == n,
-                    onClick = {
-                        marketBars = n
-                        withMarket = true
-                    },
+                    onClick = { marketBars = n },
+                    enabled = !busy,
                     label = { Text("${n}根") },
                 )
             }
@@ -105,24 +175,21 @@ fun ChatScreen(repo: Repository) {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             templates.forEach { tpl ->
+                val suffix = when (tpl.action) {
+                    TplAction.SEND_MARKET -> "·发"
+                    TplAction.FILL_MARKET -> "·填"
+                    TplAction.SEND_CMD -> ""
+                }
                 AssistChip(
-                    onClick = {
-                        if (tpl.withMarket) {
-                            withMarket = true
-                            input = tpl.fill
-                            // 直接发送模板问题 + 行情
-                            send(tpl.fill, attach = true)
-                        } else {
-                            send(tpl.label, attach = false)
-                        }
-                    },
-                    label = { Text(tpl.label) },
+                    onClick = { onTemplate(tpl) },
+                    enabled = !busy,
+                    label = { Text(tpl.label + suffix) },
                 )
             }
         }
 
         LazyColumn(Modifier.weight(1f), state = state) {
-            items(msgs) { m ->
+            items(msgs, key = { it.hashCode().toString() + it.text.take(24) }) { m ->
                 val mine = m.role == "user"
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -132,13 +199,20 @@ fun ChatScreen(repo: Repository) {
                 }
             }
         }
+
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
-                input,
-                { input = it },
-                Modifier.weight(1f),
+                value = input,
+                onValueChange = { input = it },
+                modifier = Modifier.weight(1f),
+                enabled = !busy,
                 placeholder = {
-                    Text(if (withMarket) "提问（将附带最近${marketBars}根K线）…" else "输入或点模板…")
+                    Text(
+                        when {
+                            withMarket -> "编辑后发送（附带${marketBars}根K线）…"
+                            else -> "输入消息…"
+                        },
+                    )
                 },
                 singleLine = true,
             )
@@ -148,13 +222,13 @@ fun ChatScreen(repo: Repository) {
                 onClick = {
                     val t = input.trim()
                     input = ""
-                    send(t, attach = withMarket)
+                    sendOnce(t, attach = withMarket)
                 },
             ) { Text(if (busy) "…" else "发送") }
         }
         if (withMarket) {
             Text(
-                "发送时将附带 ${s.symbol} ${s.interval} 最近 ${marketBars} 根K线摘要给模型",
+                "手动发送时将附带 ${s.symbol} ${s.interval} 最近 ${marketBars} 根K线",
                 color = MaterialTheme.colorScheme.secondary,
                 fontSize = 10.sp,
             )
