@@ -2,29 +2,41 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
 android {
     namespace = "com.puito.cryptoagent"
     compileSdk = 34
+
     defaultConfig {
-        // 固定包名，覆盖安装不丢 SharedPreferences
+        // 固定包名：覆盖安装保留 SharedPreferences
         applicationId = "com.puito.cryptoagent"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
+        // CI 会 sed 覆盖；本地默认也保持递增基数
+        versionCode = 100
         versionName = "1.0.0"
     }
+
     signingConfigs {
-        // CI 与本地统一签名，避免「应用未安装」/签名冲突导致无法覆盖
+        // 全渠道同一密钥，避免 CI 默认 debug.keystore 每次不同导致无法覆盖安装
         create("stable") {
             val ks = rootProject.file("keystore/crypto-agent-upload.jks")
+            if (!ks.exists()) {
+                throw GradleException(
+                    "Missing signing keystore: ${ks.absolutePath}. " +
+                        "See android/keystore/README.md",
+                )
+            }
             storeFile = ks
-            storePassword = "cryptoagent"
-            keyAlias = "cryptoagent"
-            keyPassword = "cryptoagent"
+            storePassword = System.getenv("CRYPTO_AGENT_STORE_PASSWORD") ?: "cryptoagent"
+            keyAlias = System.getenv("CRYPTO_AGENT_KEY_ALIAS") ?: "cryptoagent"
+            keyPassword = System.getenv("CRYPTO_AGENT_KEY_PASSWORD") ?: "cryptoagent"
         }
     }
+
     buildTypes {
         debug {
+            // 不要再加 applicationIdSuffix，否则与正式包名不一致无法覆盖
             versionNameSuffix = "-debug"
             isDebuggable = true
             signingConfig = signingConfigs.getByName("stable")
@@ -32,9 +44,13 @@ android {
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("stable")
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -44,6 +60,7 @@ android {
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }
+
 dependencies {
     val bom = platform("androidx.compose:compose-bom:2024.06.00")
     implementation(bom)

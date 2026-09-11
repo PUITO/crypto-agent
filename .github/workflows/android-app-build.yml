@@ -25,22 +25,30 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Verify stable keystore
+        working-directory: android
+        run: |
+          set -e
+          test -f keystore/crypto-agent-upload.jks
+          keytool -list -keystore keystore/crypto-agent-upload.jks \
+            -storepass cryptoagent -alias cryptoagent
+          echo "Stable keystore OK"
+
       - name: Ensure Gradle Wrapper
         working-directory: android
         run: |
           chmod +x gradlew 2>/dev/null || true
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "wrapper jar missing, generating..."
             gradle wrapper --gradle-version 8.7
           fi
-          ls -la gradle/wrapper/ || true
 
       - name: Bump versionCode
         id: ver
         working-directory: android
         run: |
-          CODE="${{ github.run_number }}"
-          NAME="0.2.${CODE}"
+          # 基数 10000，保证高于历史安装包，避免降级安装失败
+          CODE=$((10000 + ${{ github.run_number }}))
+          NAME="0.2.${{ github.run_number }}"
           SHA="${GITHUB_SHA:0:7}"
           echo "code=$CODE" >> $GITHUB_OUTPUT
           echo "name=$NAME" >> $GITHUB_OUTPUT
@@ -49,7 +57,7 @@ jobs:
           sed -i "s/versionName = \".*\"/versionName = \"$NAME\"/" app/build.gradle.kts
           grep -E "versionCode|versionName|applicationId" app/build.gradle.kts
 
-      - name: Build debug APK
+      - name: Build debug APK (stable signed)
         working-directory: android
         run: |
           set -e
@@ -57,13 +65,21 @@ jobs:
           ./gradlew assembleDebug --stacktrace --no-daemon
           mkdir -p dist
           SRC=$(find app/build/outputs/apk -name "*.apk" | head -1)
-          if [ -z "$SRC" ]; then
-            echo "APK not found"
-            find app/build -type f | head -50
-            exit 1
-          fi
+          test -n "$SRC"
           cp "$SRC" "dist/app-debug.apk"
           cp "$SRC" "dist/crypto-agent-app-${{ steps.ver.outputs.name }}-${{ steps.ver.outputs.sha }}.apk"
+          # 打印签名证书指纹，便于确认覆盖安装同一签名
+          if command -v apksigner >/dev/null 2>&1; then
+            apksigner verify --print-certs "dist/app-debug.apk" || true
+          else
+            # build-tools 可能在 SDK 路径
+            AS=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | tail -1 || true)
+            if [ -n "$AS" ]; then
+              "$AS" verify --print-certs "dist/app-debug.apk" || true
+            else
+              jarsigner -verify -verbose -certs "dist/app-debug.apk" 2>/dev/null | head -40 || true
+            fi
+          fi
           ls -lah dist/
 
       - name: Upload artifact
@@ -91,20 +107,16 @@ jobs:
           name: "Android App ${{ steps.ver.outputs.name }} (${{ steps.ver.outputs.sha }})"
           prerelease: true
           body: |
-            ## Crypto-Agent Android（分支 `android-app`）
+            ## Crypto-Agent Android（`android-app`）
             - versionName: `${{ steps.ver.outputs.name }}`
             - versionCode: `${{ steps.ver.outputs.code }}`
-            - commit: `${{ github.sha }}`
-            - 包名: `com.puito.cryptoagent.debug`
+            - applicationId: `com.puito.cryptoagent`（无 `.debug` 后缀）
+            - 签名: 仓库内固定 `android/keystore/crypto-agent-upload.jks`（全 CI 一致）
 
-            ### 本构建包含
-            - 全周期信号通知 + 周期胜率
-            - AI 评估（可只通知不实盘）
-            - 信号通知震动（设置可关，默认开）
-            - HiBT 下单页 / 本地策略 / 图表指标
-
-            包名 `com.puito.cryptoagent`，**固定 keystore 签名**，同系列 APK 可覆盖安装保留配置。
-            若曾安装旧 CI 随机签名包或 `*.debug` 包，**首次需卸载一次**，之后即可覆盖。
+            ### 覆盖安装说明
+            1. **若提示安装失败 / 与现有应用签名冲突**：先卸载手机上的旧版 Crypto Agent（含以前的 `.debug` 包），再安装本包。
+            2. **卸载这一次之后**，后续同签名版本可直接覆盖，配置（SharedPreferences）会保留。
+            3. 请安装带版本号的 `crypto-agent-app-*.apk`，不要混用其它分支产物。
           files: android/dist/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -112,7 +124,8 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "### Android APK 发布成功"
+            echo "### Android APK"
             echo "- https://github.com/${{ github.repository }}/releases/tag/android-app-latest"
-            echo "- version ${{ steps.ver.outputs.name }} / ${{ steps.ver.outputs.sha }}"
+            echo "- versionCode ${{ steps.ver.outputs.code }} / ${{ steps.ver.outputs.name }}"
+            echo "- 固定签名，支持覆盖安装（签名变更后需卸载一次）"
           } >> "$GITHUB_STEP_SUMMARY"
