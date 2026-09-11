@@ -123,42 +123,43 @@ object Notify {
         val directionShort = if (m.side == "B") "▲ 买入 B" else "▼ 卖出 S"
         val timeStr = timeFmt.format(Date(m.openTime))
         val shortTime = shortFmt.format(Date(m.openTime))
-        val wrLine = "回测总胜率 ${"%.1f".format(intervalWinRatePct)}% (${intervalTrades}笔)"
-
-        val aiLine = when {
-            ai == null -> null
-            ai.winRatePct != null -> {
-                val pass = when (ai.passThreshold) {
-                    true -> "≥阈值可下"
-                    false -> "未达阈值"
-                    null -> ""
-                }
-                "AI行情评估 ${"%.1f".format(ai.winRatePct)}%(阈${"%.0f".format(ai.thresholdPct)}) $pass"
-            }
-            ai.error != null -> "AI评估失败:${ai.error}"
-            else -> "AI: ${ai.summary.take(40)}"
+        // 折叠通知栏优先展示 AI；回测总胜率仅作次要参考，避免被当成「AI综合概率」
+        val passLabel = when (ai?.passThreshold) {
+            true -> "达阈值"
+            false -> "未达阈值"
+            null -> ""
         }
+        val aiCollapsed = when {
+            ai == null -> null
+            ai.winRatePct != null ->
+                "AI ${"%.1f".format(ai.winRatePct)}%(阈${"%.0f".format(ai.thresholdPct)}%)$passLabel"
+            ai.error != null -> "AI失败:${ai.error}"
+            else -> "AI:${ai.summary.take(28)}"
+        }
+        val backtestRef = "回测参考${"%.1f".format(intervalWinRatePct)}%(${intervalTrades}笔)"
 
-        val title = "$directionShort · $symbol · 时间段 $interval"
-        val summary = buildString {
-            append("$wrLine · 时间 $shortTime · 价 ${"%.2f".format(m.price)}")
-            if (aiLine != null) append(" · ").append(aiLine)
+        val title = buildString {
+            append("$directionShort · $symbol · $interval")
+            if (ai?.winRatePct != null) {
+                append(" · AI${"%.0f".format(ai.winRatePct)}%")
+            }
+        }
+        // 通知栏一行摘要：有 AI 时绝不把回测写在最前
+        val summary = when {
+            aiCollapsed != null && ai?.winRatePct != null ->
+                "$aiCollapsed · $shortTime · ${"%.2f".format(m.price)} · $backtestRef"
+            aiCollapsed != null ->
+                "$aiCollapsed · $shortTime · ${"%.2f".format(m.price)} · $backtestRef"
+            else ->
+                "$backtestRef(非AI) · $shortTime · 价${"%.2f".format(m.price)}"
         }
         val bigText = buildString {
-            appendLine("方向：$direction")
-            appendLine("时间：$timeStr")
-            appendLine("品种：$symbol")
-            appendLine("时间段（周期）：$interval")
-            appendLine("该时间段总胜率：${"%.1f".format(intervalWinRatePct)}%（模拟 ${intervalTrades} 笔）")
-            appendLine("价格：${"%.4f".format(m.price)}")
-            appendLine("信号侧：${m.side}")
-            appendLine("回测总胜率：${"%.1f".format(intervalWinRatePct)}%（${intervalTrades}笔，非AI）")
             if (ai != null) {
-                appendLine("—— AI 行情评估（本信号/本周期）——")
+                appendLine("【AI 行情评估 · 本信号本周期】")
                 if (ai.winRatePct != null) {
                     appendLine("AI预估胜率：${"%.1f".format(ai.winRatePct)}%")
                 } else {
-                    appendLine("AI预估胜率：无（未成功评估）")
+                    appendLine("AI预估胜率：无（评估未成功）")
                 }
                 appendLine("下单阈值：${"%.1f".format(ai.thresholdPct)}%")
                 appendLine(
@@ -170,9 +171,19 @@ object Notify {
                 )
                 if (ai.summary.isNotBlank()) appendLine("说明：${ai.summary}")
                 if (ai.error != null) appendLine("错误：${ai.error}")
+                appendLine()
             } else {
-                appendLine("AI 评估：未开启（下单页可开，仅评估不实盘也可）")
+                appendLine("【AI 评估】未开启")
+                appendLine()
             }
+            appendLine("【信号】")
+            appendLine("方向：$direction")
+            appendLine("时间：$timeStr")
+            appendLine("品种：$symbol · 周期 $interval")
+            appendLine("价格：${"%.4f".format(m.price)}")
+            appendLine()
+            appendLine("【回测参考 · 非AI】")
+            appendLine("该周期模拟总胜率：${"%.1f".format(intervalWinRatePct)}%（${intervalTrades}笔）")
             append("请及时查看策略与下单设置。")
         }
 
@@ -194,7 +205,13 @@ object Notify {
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setContentTitle(title)
             .setContentText(summary)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText).setSummaryText(directionShort))
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(bigText)
+                    .setBigContentTitle(title)
+                    .setSummaryText(aiCollapsed ?: backtestRef),
+            )
+            .setSubText(aiCollapsed ?: "未开AI")
             .setContentIntent(pi)
             .setAutoCancel(true)
             .setOnlyAlertOnce(false)
@@ -227,13 +244,14 @@ object Notify {
             val summaryNotif = NotificationCompat.Builder(ctx, channelId)
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
                 .setContentTitle("Crypto Agent 信号")
-                .setContentText("有新的交易信号")
+                .setContentText(aiCollapsed ?: summary)
                 .setStyle(
                     NotificationCompat.InboxStyle()
                         .setBigContentTitle("交易信号")
                         .addLine(title)
-                        .addLine(summary)
-                        .setSummaryText("信号提醒"),
+                        .addLine(aiCollapsed ?: summary)
+                        .addLine(backtestRef + "(非AI)")
+                        .setSummaryText(aiCollapsed ?: "信号提醒"),
                 )
                 .setGroup("crypto_agent_signals")
                 .setGroupSummary(true)
