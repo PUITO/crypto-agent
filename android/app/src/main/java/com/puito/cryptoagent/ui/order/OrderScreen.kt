@@ -75,7 +75,7 @@ fun OrderScreen(repo: Repository) {
             Switch(h.aiEvaluate, { persist(h.copy(aiEvaluate = it)) })
         }
         Text(
-            "开启后：新信号会先走 AI 评估，结果写入通知；与「自动化下单」独立，可只评估不实盘。",
+            "开启后：用该周期行情K线评估本信号胜率（非回测总胜率）；低于阈值不自动下单。需配置 LLM Key。可只评估不实盘。",
             color = MaterialTheme.colorScheme.secondary,
         )
         OutlinedTextField(

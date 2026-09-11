@@ -123,18 +123,19 @@ object Notify {
         val directionShort = if (m.side == "B") "▲ 买入 B" else "▼ 卖出 S"
         val timeStr = timeFmt.format(Date(m.openTime))
         val shortTime = shortFmt.format(Date(m.openTime))
-        val wrLine = "周期总胜率 ${"%.1f".format(intervalWinRatePct)}% (${intervalTrades}笔)"
+        val wrLine = "回测总胜率 ${"%.1f".format(intervalWinRatePct)}% (${intervalTrades}笔)"
 
         val aiLine = when {
             ai == null -> null
             ai.winRatePct != null -> {
                 val pass = when (ai.passThreshold) {
-                    true -> "达阈值"
+                    true -> "≥阈值可下"
                     false -> "未达阈值"
                     null -> ""
                 }
-                "AI ${"%.1f".format(ai.winRatePct)}%/$pass"
+                "AI行情评估 ${"%.1f".format(ai.winRatePct)}%(阈${"%.0f".format(ai.thresholdPct)}) $pass"
             }
+            ai.error != null -> "AI评估失败:${ai.error}"
             else -> "AI: ${ai.summary.take(40)}"
         }
 
@@ -151,23 +152,26 @@ object Notify {
             appendLine("该时间段总胜率：${"%.1f".format(intervalWinRatePct)}%（模拟 ${intervalTrades} 笔）")
             appendLine("价格：${"%.4f".format(m.price)}")
             appendLine("信号侧：${m.side}")
+            appendLine("回测总胜率：${"%.1f".format(intervalWinRatePct)}%（${intervalTrades}笔，非AI）")
             if (ai != null) {
-                appendLine("—— AI 评估 ——")
+                appendLine("—— AI 行情评估（本信号/本周期）——")
                 if (ai.winRatePct != null) {
-                    appendLine("预估胜率：${"%.1f".format(ai.winRatePct)}%")
+                    appendLine("AI预估胜率：${"%.1f".format(ai.winRatePct)}%")
+                } else {
+                    appendLine("AI预估胜率：无（未成功评估）")
                 }
-                appendLine("阈值：${"%.1f".format(ai.thresholdPct)}%")
+                appendLine("下单阈值：${"%.1f".format(ai.thresholdPct)}%")
                 appendLine(
                     "是否达阈值：" + when (ai.passThreshold) {
-                        true -> "是（可考虑执行）"
-                        false -> "否（建议观望）"
+                        true -> "是（允许自动下单）"
+                        false -> "否（拦截自动下单）"
                         null -> "未知"
                     },
                 )
                 if (ai.summary.isNotBlank()) appendLine("说明：${ai.summary}")
-                if (ai.error != null) appendLine("备注：${ai.error}")
+                if (ai.error != null) appendLine("错误：${ai.error}")
             } else {
-                appendLine("AI 评估：未开启（下单页可单独开启，无需真实交易）")
+                appendLine("AI 评估：未开启（下单页可开，仅评估不实盘也可）")
             }
             append("请及时查看策略与下单设置。")
         }

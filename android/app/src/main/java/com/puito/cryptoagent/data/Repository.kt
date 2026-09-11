@@ -299,7 +299,7 @@ class Repository(ctx: Context) {
                 val fresh = freshMarks(s.symbol, iv, marks, bars, notifyNew = true)
                 for (m in fresh) {
                     val ai = if (s.hibt.aiEvaluate) {
-                        evaluateSignal(s, m, iv, st.winRate * 100, st.trades)
+                        evaluateSignal(s, m, iv, bars, st.winRate * 100, st.trades)
                     } else null
                     batch.add(
                         SignalNotifyPayload(
@@ -323,79 +323,150 @@ class Repository(ctx: Context) {
         return out
     }
 
-    /** 仅做 AI 评估，不依赖 autoTrade；hist 为该时间段本地总胜率 */
+    /**
+     * AI 评估：根据该周期行情 K 线估计「本信号方向在对应交易时间段」的胜率。
+     * 与本地回测总胜率解耦；无 Key / 调用失败时不把总胜率当作 AI 结果。
+     */
     suspend fun evaluateSignal(
         s: AppSettings,
         m: SignalMark,
-        interval: String = s.interval,
+        interval: String,
+        barData: List<Candle>,
         hist: Double = stats.winRate * 100,
         tradeCount: Int = stats.trades,
     ): AiEvalResult {
         val h = s.hibt
         val dir = if (m.side == "B") "买入/看涨" else "卖出/看跌"
+        val threshold = h.aiMinWinRate
         if (s.llmApiKey.isBlank()) {
             return AiEvalResult(
-                winRatePct = hist,
-                summary = "未配置 LLM Key，使用该周期历史回测胜率 " + "%.1f".format(hist) + "% 作为参考",
-                passThreshold = hist >= h.aiMinWinRate,
-                thresholdPct = h.aiMinWinRate,
+                winRatePct = null,
+                summary = "未配置 LLM Key，无法做行情 AI 评估（不会用回测总胜率冒充）",
+                passThreshold = false,
+                thresholdPct = threshold,
                 error = "no_llm_key",
             )
         }
+        if (barData.size < 10) {
+            return AiEvalResult(
+                winRatePct = null,
+                summary = "该周期 K 线不足，无法评估",
+                passThreshold = false,
+                thresholdPct = threshold,
+                error = "insufficient_bars",
+            )
+        }
         return try {
-            val sys =
-                "你是事件合约信号评估助手。根据给定信息估计该方向在指定周期内的胜率(0-100)。" +
-                    "先给一行：WINRATE:数字 再给一两句中文理由。不要编造未提供的数据。"
-            val user =
-                "品种: ${s.symbol} 周期: $interval 方向: $dir (${m.side}) " +
-                    "信号价格: ${m.price} 该周期本地回测胜率: " + "%.1f".format(hist) +
-                    "% 成交笔数: $tradeCount 阈值: ${h.aiMinWinRate}%"
+            val market = buildSignalMarketBrief(s.symbol, interval, barData, m)
+            val sys = (
+                "你是加密事件合约信号评估助手。" +
+                    "仅根据提供的行情K线与信号，估计该信号方向在本交易周期内获胜的概率(0-100)。" +
+                    "必须基于K线结构独立判断，禁止把本地回测总胜率直接当答案。" +
+                    "第一行严格输出 WINRATE:数字 ，随后1-3句中文理由。"
+            )
+            val user = (
+                market +
+                    "\n【信号】方向: " + dir + " (" + m.side + ") 信号价: " + m.price +
+                    "\n【交易周期】" + interval +
+                    "\n【参考-本地回测总胜率】" + "%.1f".format(hist) + "% / " + tradeCount + "笔（勿直接照抄）" +
+                    "\n【程序阈值】" + "%.1f".format(threshold) + "%（你只需输出WINRATE，是否达阈值由程序判断）"
+            )
             val ans = llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, user)
-            val winEst = parseWinRate(ans) ?: hist
+            val winEst = parseWinRate(ans, avoidEcho = hist)
+            if (winEst == null) {
+                return@evaluateSignal AiEvalResult(
+                    winRatePct = null,
+                    summary = "AI 未返回可解析的 WINRATE: " + ans.take(100),
+                    passThreshold = false,
+                    thresholdPct = threshold,
+                    error = "parse_fail",
+                )
+            }
             val reason = ans.lines()
                 .filter { !it.uppercase().contains("WINRATE") }
                 .joinToString(" ")
                 .trim()
                 .ifBlank { ans.take(120) }
+            val pass = winEst >= threshold
             AiEvalResult(
                 winRatePct = winEst,
-                summary = reason.take(160),
-                passThreshold = winEst >= h.aiMinWinRate,
-                thresholdPct = h.aiMinWinRate,
+                summary = reason.take(180),
+                passThreshold = pass,
+                thresholdPct = threshold,
             )
         } catch (e: Exception) {
             AiEvalResult(
-                winRatePct = hist,
-                summary = "AI 调用失败，回退历史胜率 " + "%.1f".format(hist) + "%",
-                passThreshold = hist >= h.aiMinWinRate,
-                thresholdPct = h.aiMinWinRate,
+                winRatePct = null,
+                summary = "AI 调用失败: " + (e.message ?: "unknown"),
+                passThreshold = false,
+                thresholdPct = threshold,
                 error = e.message,
             )
         }
     }
 
-    private fun parseWinRate(text: String): Double? {
-        val patterns = listOf(
-            Regex("""WINRATE\s*[:=：]\s*(\d{1,3}(?:\.\d+)?)""", RegexOption.IGNORE_CASE),
-            Regex("""(\d{1,3}(?:\.\d+)?)\s*%"""),
-            Regex("""\b(\d{1,3}(?:\.\d+)?)\b"""),
+    private fun buildSignalMarketBrief(
+        symbol: String,
+        interval: String,
+        barData: List<Candle>,
+        m: SignalMark,
+    ): String {
+        val n = minOf(40, barData.size)
+        val bars = barData.takeLast(n)
+        val last = bars.last()
+        val hi = bars.maxOf { it.high }
+        val lo = bars.minOf { it.low }
+        val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+        val sb = StringBuilder()
+        sb.appendLine("【行情】" + symbol + " 周期=" + interval + " 近" + bars.size + "根")
+        sb.appendLine(
+            "最新: " + fmt.format(java.util.Date(last.openTime)) +
+                " O=" + "%.4f".format(last.open) +
+                " H=" + "%.4f".format(last.high) +
+                " L=" + "%.4f".format(last.low) +
+                " C=" + "%.4f".format(last.close),
         )
-        for (p in patterns) {
-            val v = p.find(text)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
-            if (v != null && v in 0.0..100.0) return v
+        sb.appendLine("近端区间高=" + "%.4f".format(hi) + " 低=" + "%.4f".format(lo))
+        sb.appendLine("信号时间: " + fmt.format(java.util.Date(m.openTime)))
+        sb.appendLine("【K线 time,O,H,L,C】")
+        val step = if (bars.size <= 24) 1 else (bars.size + 23) / 24
+        var i = 0
+        while (i < bars.size) {
+            val c = bars[i]
+            sb.appendLine(
+                fmt.format(java.util.Date(c.openTime)) + "," +
+                    "%.4f".format(c.open) + "," + "%.4f".format(c.high) + "," +
+                    "%.4f".format(c.low) + "," + "%.4f".format(c.close),
+            )
+            i += step
         }
-        return null
+        return sb.toString()
+    }
+
+    private fun parseWinRate(text: String, avoidEcho: Double? = null): Double? {
+        val primary = Regex("WINRATE\\s*[:=：]\\s*(\\d{1,3}(?:\\.\\d+)?)", RegexOption.IGNORE_CASE)
+        primary.find(text)?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.let { v ->
+            if (v in 0.0..100.0) return v
+        }
+        val pct = Regex("(\\d{1,3}(?:\\.\\d+)?)\\s*%")
+        val candidates = pct.findAll(text).mapNotNull { it.groupValues[1].toDoubleOrNull() }
+            .filter { it in 0.0..100.0 }
+            .toList()
+        if (candidates.isEmpty()) return null
+        if (avoidEcho != null) {
+            val filtered = candidates.filter { kotlin.math.abs(it - avoidEcho) > 0.15 }
+            if (filtered.isNotEmpty()) return filtered.first()
+        }
+        return candidates.firstOrNull()
     }
 
     private suspend fun maybeAutoOrder(s: AppSettings, m: SignalMark, ai: AiEvalResult?) {
         val h = s.hibt
         if (!h.autoTrade) return
-        val pass = when {
-            h.aiEvaluate && ai != null -> ai.passThreshold == true
-            h.aiEvaluate -> (stats.winRate * 100) >= h.aiMinWinRate
-            else -> true
+        // 开启 AI 评估时：必须有有效 AI 胜率且达到阈值（不用回测总胜率放行）
+        if (h.aiEvaluate) {
+            if (ai?.winRatePct == null || ai.passThreshold != true) return
         }
-        if (!pass) return
         val unit = Interval.from(s.interval).timeUnit
         hibt.placeEventOrder(h, s.symbol, m.side == "B", h.defaultAmount, unit)
     }
