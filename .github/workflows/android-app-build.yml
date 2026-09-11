@@ -103,8 +103,8 @@ jobs:
             - 信号通知震动（设置可关，默认开）
             - HiBT 下单页 / 本地策略 / 图表指标
 
-            包名固定 `com.puito.cryptoagent`，可直接覆盖安装，保留本地配置（需同一签名/debug 包）。
-            勿再卸载除非要清空数据。
+            包名 `com.puito.cryptoagent`，**固定 keystore 签名**，同系列 APK 可覆盖安装保留配置。
+            若曾安装旧 CI 随机签名包或 `*.debug` 包，**首次需卸载一次**，之后即可覆盖。
           files: android/dist/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -6,20 +6,32 @@ android {
     namespace = "com.puito.cryptoagent"
     compileSdk = 34
     defaultConfig {
+        // 固定包名，覆盖安装不丢 SharedPreferences
         applicationId = "com.puito.cryptoagent"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
     }
+    signingConfigs {
+        // CI 与本地统一签名，避免「应用未安装」/签名冲突导致无法覆盖
+        create("stable") {
+            val ks = rootProject.file("keystore/crypto-agent-upload.jks")
+            storeFile = ks
+            storePassword = "cryptoagent"
+            keyAlias = "cryptoagent"
+            keyPassword = "cryptoagent"
+        }
+    }
     buildTypes {
-        // 与 release 同一 applicationId，便于覆盖安装、保留本地配置
         debug {
             versionNameSuffix = "-debug"
             isDebuggable = true
+            signingConfig = signingConfigs.getByName("stable")
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stable")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
