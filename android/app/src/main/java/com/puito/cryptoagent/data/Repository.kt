@@ -465,17 +465,82 @@ class Repository(ctx: Context) {
         saveSettings(s.copy(chartIndicators = list))
     }
 
-    suspend fun chat(user: String): String {
+    /**
+     * 将最近 [n] 根 K 线整理成文本，供 LLM 分析（控制长度避免超上下文）。
+     */
+    fun buildMarketContext(n: Int = 30): String {
+        val s = settings()
+        val count = n.coerceIn(5, 120)
+        if (candles.isEmpty()) {
+            return "当前无K线数据，请先在行情页刷新。"
+        }
+        val bars = candles.takeLast(count)
+        val first = bars.first()
+        val last = bars.last()
+        val hi = bars.maxOf { it.high }
+        val lo = bars.minOf { it.low }
+        val chg = last.close - first.open
+        val chgPct = if (first.open != 0.0) chg / first.open * 100 else 0.0
+        val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+        val sb = StringBuilder()
+        sb.appendLine("【行情摘要】")
+        sb.appendLine("品种: ${s.symbol}  周期: ${s.interval}")
+        sb.appendLine("样本: 最近 ${bars.size} 根K线（共缓存 ${candles.size}）")
+        sb.appendLine("区间: ${fmt.format(java.util.Date(first.openTime))} ~ ${fmt.format(java.util.Date(last.openTime))}")
+        sb.appendLine("开:${"%.4f".format(first.open)} 最新收:${"%.4f".format(last.close)}")
+        sb.appendLine("区间高:${"%.4f".format(hi)} 区间低:${"%.4f".format(lo)}")
+        sb.appendLine("区间涨跌: ${"%.4f".format(chg)} (${"%+.2f".format(chgPct)}%)")
+        if (stats.trades > 0) {
+            sb.appendLine("本地模拟: ${stats.trades}笔 胜率 ${"%.1f".format(stats.winRate * 100)}%")
+        }
+        sb.appendLine("【K线明细 time,O,H,L,C】")
+        // 过长时抽样：头尾多、中间抽稀
+        val lines = if (bars.size <= 40) {
+            bars
+        } else {
+            val head = bars.take(12)
+            val tail = bars.takeLast(12)
+            val mid = bars.drop(12).dropLast(12)
+            val step = (mid.size / 16).coerceAtLeast(1)
+            head + mid.filterIndexed { i, _ -> i % step == 0 }.take(16) + tail
+        }
+        for (c in lines) {
+            sb.appendLine(
+                "${fmt.format(java.util.Date(c.openTime))}," +
+                    "${"%.4f".format(c.open)},${"%.4f".format(c.high)}," +
+                    "${"%.4f".format(c.low)},${"%.4f".format(c.close)}",
+            )
+        }
+        if (lines.size < bars.size) {
+            sb.appendLine("（中间已抽样，共输出 ${lines.size}/${bars.size} 根）")
+        }
+        return sb.toString()
+    }
+
+    /**
+     * @param attachMarketBars 若 >0，将最近 N 根行情附到 user 消息供分析
+     */
+    suspend fun chat(user: String, attachMarketBars: Int = 0): String {
         handleChatCommand(user)?.let { return it }
         val s = settings()
+        val market = if (attachMarketBars > 0) buildMarketContext(attachMarketBars) else ""
         val sys = """
-            你是手机端 Crypto Agent 助手。本地事件合约模拟。
-            当前: ${s.symbol} ${s.interval}, K线 ${candles.size}, 模拟 ${stats.trades} 笔, 胜率 ${"%.1f".format(stats.winRate * 100)}%.
-            用户可用命令: 斐波那契, 清除绘图, 打开MA20, 列出策略, 启用策略名, 添加策略：名称
-            用简洁中文回答。
+            你是手机端 Crypto Agent 助手，擅长加密行情与事件合约思路分析。
+            当前: ${s.symbol} ${s.interval}, 本地K线缓存 ${candles.size} 根, 模拟 ${stats.trades} 笔, 胜率 ${"%.1f".format(stats.winRate * 100)}%.
+            若用户消息附带【行情摘要】与K线明细，请据此分析趋势、支撑阻力、波动与风险，用简洁中文；不要编造未给出的数据。
+            本地命令仍可用: 斐波那契, 清除绘图, 打开MA20, 列出策略, 添加策略：名称
         """.trimIndent()
-        return llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, user)
+        val userPayload = if (market.isNotBlank()) {
+            "$market
+
+【用户问题】
+$user"
+        } else {
+            user
+        }
+        return llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, userPayload)
     }
+
 
     private fun key(symbol: String, interval: String, m: SignalMark) =
         "$symbol|$interval|${m.openTime}|${m.side}"
