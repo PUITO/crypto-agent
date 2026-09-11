@@ -108,8 +108,8 @@ fun HomeScreen(repo: Repository) {
                 scale = scale,
                 startIndex = startIndex,
                 onScale = { scale = it },
-                onPanBars = { deltaBars ->
-                    if (candleCount <= 0) return@Chart
+                onPanBars = pan@{ deltaBars ->
+                    if (candleCount <= 0) return@pan
                     val vis = (48f / scale).roundToInt().coerceIn(15, candleCount.coerceAtLeast(15))
                     val maxS = (candleCount - vis).coerceAtLeast(0).toFloat()
                     val cur = if (startIndex < 0f) maxS else startIndex.coerceIn(0f, maxS)
@@ -125,7 +125,7 @@ fun HomeScreen(repo: Repository) {
                     .padding(top = 4.dp),
             )
         }
-        Text("单指滑动浏览 · 双指缩放 · 双击回到最新", color = MaterialTheme.colorScheme.secondary, fontSize = 10.sp)
+        Text("单击K线看价格Tips · 拖动平移 · 双指缩放 · 双击回最新", color = MaterialTheme.colorScheme.secondary, fontSize = 10.sp)
 
         val st = repo.stats
         Text(
@@ -221,6 +221,8 @@ fun Chart(
     val bear = Color(0xFFF6465D)
     val axis = Color(0xFF848E9C)
     val grid = Color(0xFF1E2329)
+    var tipIdx by remember { mutableStateOf<Int?>(null) } // 全局 candles 下标
+    val tipFmt = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
     Card(
         modifier = modifier,
@@ -266,8 +268,36 @@ fun Chart(
                                 }
                             }
                         }
-                        .pointerInput(Unit) {
-                            detectTapGestures(onDoubleTap = { onResetView() })
+                        .pointerInput(candles.size, barW, maxStart, visibleCount, startIndex) {
+                            detectTapGestures(
+                                onTap = { offset ->
+                                    val startF = if (startIndex < 0f) maxStart else startIndex.coerceIn(0f, maxStart)
+                                    val startI = startF.toInt().coerceIn(0, (candles.size - 1).coerceAtLeast(0))
+                                    val pixelShift = (startF - startI) * barW
+                                    val localX = offset.x - padL + pixelShift
+                                    if (localX < 0f || localX > plotW) {
+                                        tipIdx = null
+                                    } else {
+                                        val iWin = (localX / barW).toInt().coerceIn(0, visibleCount - 1)
+                                        val gi = (startI + iWin).coerceIn(0, candles.lastIndex)
+                                        tipIdx = gi
+                                    }
+                                },
+                                onDoubleTap = {
+                                    tipIdx = null
+                                    onResetView()
+                                },
+                                onLongPress = { offset ->
+                                    val startF = if (startIndex < 0f) maxStart else startIndex.coerceIn(0f, maxStart)
+                                    val startI = startF.toInt().coerceIn(0, (candles.size - 1).coerceAtLeast(0))
+                                    val pixelShift = (startF - startI) * barW
+                                    val localX = offset.x - padL + pixelShift
+                                    if (localX >= 0f && localX <= plotW) {
+                                        val iWin = (localX / barW).toInt().coerceIn(0, visibleCount - 1)
+                                        tipIdx = (startI + iWin).coerceIn(0, candles.lastIndex)
+                                    }
+                                },
+                            )
                         },
                 ) {
                     Canvas(Modifier.fillMaxSize()) {
@@ -466,6 +496,68 @@ fun Chart(
                             Size(plotW, plotH),
                             style = Stroke(1.5f),
                         )
+
+                        // Tips 十字线
+                        val ti = tipIdx
+                        if (ti != null && ti in startI until endI) {
+                            val iWin = ti - startI
+                            val c = candles[ti]
+                            val x = xAt(iWin)
+                            val y = yAt(c.close)
+                            drawLine(
+                                Color(0xFFF0B90B).copy(alpha = 0.85f),
+                                Offset(x, padT),
+                                Offset(x, padT + plotH),
+                                1.5f,
+                            )
+                            drawLine(
+                                Color(0xFFF0B90B).copy(alpha = 0.85f),
+                                Offset(padL, y),
+                                Offset(padL + plotW, y),
+                                1.5f,
+                            )
+                            drawCircle(Color(0xFFF0B90B), 5f, Offset(x, y))
+                        }
+                    }
+
+                    // Tips 浮层：时间 + OHLC
+                    val ti = tipIdx
+                    if (ti != null && ti in candles.indices) {
+                        val c = candles[ti]
+                        val up = c.close >= c.open
+                        Card(
+                            Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 8.dp, start = 72.dp, end = 8.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xE612161C)),
+                        ) {
+                            Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                                Text(
+                                    tipFmt.format(Date(c.openTime)),
+                                    color = Color(0xFFF0B90B),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    "O ${"%.2f".format(c.open)}  H ${"%.2f".format(c.high)}",
+                                    color = Color(0xFFB0B8C4),
+                                    fontSize = 11.sp,
+                                )
+                                Text(
+                                    "L ${"%.2f".format(c.low)}  C ${"%.2f".format(c.close)}",
+                                    color = if (up) bull else bear,
+                                    fontSize = 11.sp,
+                                )
+                                val chg = c.close - c.open
+                                val chgPct = if (c.open != 0.0) chg / c.open * 100 else 0.0
+                                Text(
+                                    "涨跌 ${"%.2f".format(chg)} (${"%+.2f".format(chgPct)}%)",
+                                    color = if (up) bull else bear,
+                                    fontSize = 11.sp,
+                                )
+                                Text("点空白处关闭", color = Color(0xFF6B7280), fontSize = 9.sp)
+                            }
+                        }
                     }
                 }
             }
