@@ -531,10 +531,7 @@ class Repository(ctx: Context) {
             本地命令仍可用: 斐波那契, 清除绘图, 打开MA20, 列出策略, 添加策略：名称
         """.trimIndent()
         val userPayload = if (market.isNotBlank()) {
-            market + "
-
-【用户问题】
-" + user
+            market + "\n\n" + "【用户问题】" + "\n" + user
         } else {
             user
         }
