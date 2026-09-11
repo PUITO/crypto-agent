@@ -85,6 +85,8 @@ fun HomeScreen(repo: Repository) {
                     val ns = s.copy(strategyRunning = !s.strategyRunning)
                     repo.saveSettings(ns); s = ns
                     if (ns.strategyRunning) {
+                        // 启动时种子历史信号，禁止回测历史弹通知
+                        repo.resetNotificationState()
                         scope.launch {
                             repo.refreshMarket(); tick++
                             if (ns.backgroundEnabled) MonitorService.start(ctx)

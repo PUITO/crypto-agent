@@ -13,7 +13,11 @@ android {
         versionName = "1.0.0"
     }
     buildTypes {
-        debug { applicationIdSuffix = ".debug"; versionNameSuffix = "-debug" }
+        // 与 release 同一 applicationId，便于覆盖安装、保留本地配置
+        debug {
+            versionNameSuffix = "-debug"
+            isDebuggable = true
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

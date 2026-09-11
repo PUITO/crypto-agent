@@ -178,10 +178,10 @@ class Repository(ctx: Context) {
 
     /**
      * 多周期新信号过滤：
-     * 1) 计算用全量历史 K（默认最多 1000 根）；通知窗口为近端约 24 根已收盘 K
-     * 2) 按 symbol+interval+openTime+side 去重
-     * 3) 同周期同方向冷却：至少半个周期
-     * 4) 首次种子：窗口外历史记为已见，窗口内仍可通知（有近端历史参考）
+     * 1) 全量历史只用于计算/回测；通知只针对「启动后新出现」的信号
+     * 2) 首次接触某周期：把当前全部历史信号记为已见，不发任何通知（避免一打开狂推）
+     * 3) 去重 + 同周期同方向冷却
+     * 4) 仅最近已收盘窗口内、且启动后新出现的信号才通知
      */
     private fun freshMarks(
         symbol: String,
@@ -191,19 +191,20 @@ class Repository(ctx: Context) {
         notifyNew: Boolean,
     ): List<SignalMark> {
         if (barData.isEmpty()) return emptyList()
-        // 不含可能未收盘的最后一根，从倒数第 2 根往前取 watch 根
         val endExclusive = if (barData.size >= 2) barData.size - 1 else barData.size
-        val watchCount = notifyWatchBars(interval).coerceAtMost(endExclusive)
+        val watchCount = notifyWatchBars(interval).coerceAtMost(endExclusive.coerceAtLeast(1))
         val from = (endExclusive - watchCount).coerceAtLeast(0)
-        val watchTimes = barData.subList(from, endExclusive).map { it.openTime }.toSet()
+        val watchTimes = if (endExclusive > from) {
+            barData.subList(from, endExclusive).map { it.openTime }.toSet()
+        } else emptySet()
 
         val prefix = "$symbol|$interval|"
         val hadSeed = notified.any { it.startsWith(prefix) }
+        // 首次（或策略刚启动后清空过）：种子全部历史，绝不通知旧信号
         if (!hadSeed) {
-            marks.forEach { m ->
-                if (m.openTime !in watchTimes) notified.add(key(symbol, interval, m))
-            }
+            marks.forEach { m -> notified.add(key(symbol, interval, m)) }
             trimNotified()
+            return emptyList()
         }
         if (!notifyNew) {
             marks.forEach { mark -> notified.add(key(symbol, interval, mark)) }
@@ -228,6 +229,12 @@ class Repository(ctx: Context) {
                 lastNotifyAt[sideCooldownKey(it.side)] = now
             }
             .also { trimNotified() }
+    }
+
+    /** 策略启动时调用：清空通知状态并重新种子，避免历史回测信号弹通知 */
+    fun resetNotificationState() {
+        notified.clear()
+        lastNotifyAt.clear()
     }
 
     /**
