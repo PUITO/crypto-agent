@@ -9,6 +9,9 @@ import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.puito.cryptoagent.MainActivity
@@ -19,41 +22,58 @@ import java.util.Date
 import java.util.Locale
 
 object Notify {
-    /** v2 通道：高优先级+震动铃声，避免旧通道 IMPORTANCE 无法升级 */
-    const val CH_SIGNAL = "signals_v2"
+    /** 带震动 / 不震动 分通道，便于设置里开关（Android 8+ 通道属性创建后不可改） */
+    const val CH_SIGNAL_VIB = "signals_v3_vibrate"
+    const val CH_SIGNAL_QUIET = "signals_v3_quiet"
     const val CH_BG = "monitor"
-    private var idSeq = 4000
 
+    /** 默认震动节奏：等待,震,停,震,停,长震 */
+    val DEFAULT_VIBRATE_PATTERN = longArrayOf(0, 450, 180, 450, 180, 700)
+
+    private var idSeq = 5000
     private val timeFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
     private val shortFmt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
 
     fun channels(ctx: Context) {
         if (Build.VERSION.SDK_INT < 26) return
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
 
-        val signalCh = NotificationChannel(
-            CH_SIGNAL,
-            "交易信号（强提醒）",
+        val vibCh = NotificationChannel(
+            CH_SIGNAL_VIB,
+            "交易信号（震动）",
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
-            description = "策略产生买入/卖出信号时强提醒，含时间与方向"
+            description = "信号提醒，默认震动+铃声"
             enableVibration(true)
-            vibrationPattern = longArrayOf(0, 400, 200, 400, 200, 600)
+            vibrationPattern = DEFAULT_VIBRATE_PATTERN
             enableLights(true)
             lightColor = Color.YELLOW
             setShowBadge(true)
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
-            val sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-            val attrs = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build()
             setSound(sound, attrs)
-            if (Build.VERSION.SDK_INT >= 29) {
-                setAllowBubbles(true)
-            }
+            if (Build.VERSION.SDK_INT >= 29) setAllowBubbles(true)
         }
-        nm.createNotificationChannel(signalCh)
+        nm.createNotificationChannel(vibCh)
+
+        val quietCh = NotificationChannel(
+            CH_SIGNAL_QUIET,
+            "交易信号（无震动）",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "信号提醒，仅铃声不震动"
+            enableVibration(false)
+            enableLights(true)
+            lightColor = Color.YELLOW
+            setShowBadge(true)
+            lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            setSound(sound, attrs)
+        }
+        nm.createNotificationChannel(quietCh)
 
         val bgCh = NotificationChannel(
             CH_BG,
@@ -62,8 +82,29 @@ object Notify {
         ).apply {
             description = "常驻监控状态，低打扰"
             setShowBadge(false)
+            enableVibration(false)
         }
         nm.createNotificationChannel(bgCh)
+    }
+
+    fun vibrateNow(ctx: Context, pattern: LongArray = DEFAULT_VIBRATE_PATTERN) {
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= 31) {
+                val vm = ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vm.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                ctx.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            if (!vibrator.hasVibrator()) return
+            if (Build.VERSION.SDK_INT >= 26) {
+                vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(pattern, -1)
+            }
+        } catch (_: Exception) {
+        }
     }
 
     fun signal(
@@ -74,8 +115,10 @@ object Notify {
         intervalWinRatePct: Double = 0.0,
         intervalTrades: Int = 0,
         ai: AiEvalResult? = null,
+        vibrate: Boolean = true,
     ) {
         channels(ctx)
+        val channelId = if (vibrate) CH_SIGNAL_VIB else CH_SIGNAL_QUIET
         val direction = if (m.side == "B") "买入 / 看涨 (B)" else "卖出 / 看跌 (S)"
         val directionShort = if (m.side == "B") "▲ 买入 B" else "▼ 卖出 S"
         val timeStr = timeFmt.format(Date(m.openTime))
@@ -143,8 +186,7 @@ object Notify {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notifId = idSeq++
-        val n = NotificationCompat.Builder(ctx, CH_SIGNAL)
+        val builder = NotificationCompat.Builder(ctx, channelId)
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setContentTitle(title)
             .setContentText(summary)
@@ -155,19 +197,30 @@ object Notify {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setDefaults(NotificationCompat.DEFAULT_ALL)
-            .setVibrate(longArrayOf(0, 400, 200, 400, 200, 600))
-            .setLights(Color.YELLOW, 800, 400)
             .setWhen(m.openTime)
             .setShowWhen(true)
             .setNumber(1)
             .setGroup("crypto_agent_signals")
-            .build()
 
+        if (vibrate) {
+            builder
+                .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_LIGHTS)
+                .setVibrate(DEFAULT_VIBRATE_PATTERN)
+                .setLights(Color.YELLOW, 800, 400)
+        } else {
+            builder
+                .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_LIGHTS)
+                .setVibrate(null)
+        }
+
+        val notifId = idSeq++
         try {
-            NotificationManagerCompat.from(ctx).notify(notifId, n)
-            // 分组摘要，锁屏/通知栏更容易注意到多条信号
-            val summaryNotif = NotificationCompat.Builder(ctx, CH_SIGNAL)
+            NotificationManagerCompat.from(ctx).notify(notifId, builder.build())
+            if (vibrate) {
+                // 通道外再触发一次，提高部分机型前台/后台感知
+                vibrateNow(ctx)
+            }
+            val summaryNotif = NotificationCompat.Builder(ctx, channelId)
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
                 .setContentTitle("Crypto Agent 信号")
                 .setContentText("有新的交易信号")
@@ -182,6 +235,9 @@ object Notify {
                 .setGroupSummary(true)
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
+                .apply {
+                    if (vibrate) setVibrate(DEFAULT_VIBRATE_PATTERN) else setVibrate(null)
+                }
                 .build()
             NotificationManagerCompat.from(ctx).notify(1999, summaryNotif)
         } catch (_: SecurityException) {

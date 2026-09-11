@@ -61,6 +61,7 @@ class MonitorService : Service() {
                                 it.intervalWinRatePct,
                                 it.intervalTrades,
                                 it.ai,
+                                vibrate = st.notifyVibrate,
                             )
                         }
                         val stats = repo.stats

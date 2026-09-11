@@ -117,6 +117,7 @@ data class AppSettings(
     val klineLimit: Int = 1000, // 足够历史，指标/回测更稳
     val strategyRunning: Boolean = true,
     val backgroundEnabled: Boolean = true,
+    val notifyVibrate: Boolean = true, // 信号通知默认震动
     val llmBaseUrl: String = "https://api.openai.com/v1",
     val llmApiKey: String = "",
     val llmModel: String = "gpt-4o-mini",

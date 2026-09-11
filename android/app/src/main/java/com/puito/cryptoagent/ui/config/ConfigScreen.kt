@@ -23,6 +23,7 @@ fun ConfigScreen(repo: Repository) {
     var llmKey by remember { mutableStateOf(cur.llmApiKey) }
     var llmModel by remember { mutableStateOf(cur.llmModel) }
     var bg by remember { mutableStateOf(cur.backgroundEnabled) }
+    var vibrate by remember { mutableStateOf(cur.notifyVibrate) }
     var msg by remember { mutableStateOf<String?>(null) }
 
     Column(
@@ -46,10 +47,16 @@ fun ConfigScreen(repo: Repository) {
         Text("后台", style = MaterialTheme.typography.titleSmall)
         Row {
             Text("默认静默后台监控", modifier = Modifier.weight(1f))
-            Switch(bg, {
-                bg = it
-            })
+            Switch(bg, { bg = it })
         }
+        Row {
+            Text("信号通知震动（默认开）", modifier = Modifier.weight(1f))
+            Switch(vibrate, { vibrate = it })
+        }
+        Text(
+            "开启后信号通知使用震动节奏；可在系统设置中允许本应用通知与震动。",
+            color = MaterialTheme.colorScheme.secondary,
+        )
 
         Button({
             val s = cur.copy(
@@ -61,6 +68,7 @@ fun ConfigScreen(repo: Repository) {
                 llmApiKey = llmKey.trim(),
                 llmModel = llmModel.trim(),
                 backgroundEnabled = bg,
+                notifyVibrate = vibrate,
                 onboardingDone = true,
             )
             repo.saveSettings(s)
