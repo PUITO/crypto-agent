@@ -206,7 +206,7 @@ class Repository(ctx: Context) {
             trimNotified()
         }
         if (!notifyNew) {
-            marks.forEach { notified.add(key(symbol, interval, m)) }
+            marks.forEach { mark -> notified.add(key(symbol, interval, mark)) }
             trimNotified()
             return emptyList()
         }

@@ -3,10 +3,6 @@ name: Build Android App APK
 on:
   push:
     branches: [android-app]
-    paths:
-      - "android/**"
-      - ".github/workflows/android-app-build.yml"
-      - "docs/Android界面设计.md"
   workflow_dispatch:
 
 permissions:
@@ -29,6 +25,16 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Ensure Gradle Wrapper
+        working-directory: android
+        run: |
+          chmod +x gradlew 2>/dev/null || true
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "wrapper jar missing, generating..."
+            gradle wrapper --gradle-version 8.7
+          fi
+          ls -la gradle/wrapper/ || true
+
       - name: Bump versionCode
         id: ver
         working-directory: android
@@ -41,23 +47,24 @@ jobs:
           echo "sha=$SHA" >> $GITHUB_OUTPUT
           sed -i "s/versionCode = [0-9]*/versionCode = $CODE/" app/build.gradle.kts
           sed -i "s/versionName = \".*\"/versionName = \"$NAME\"/" app/build.gradle.kts
-          grep version app/build.gradle.kts
+          grep -E "versionCode|versionName|applicationId" app/build.gradle.kts
 
       - name: Build debug APK
         working-directory: android
         run: |
-          chmod +x gradlew 2>/dev/null || true
-          if [ -f gradlew ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
-            ./gradlew assembleDebug --stacktrace
-          else
-            gradle wrapper --gradle-version 8.7
-            ./gradlew assembleDebug --stacktrace
-          fi
+          set -e
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace --no-daemon
           mkdir -p dist
           SRC=$(find app/build/outputs/apk -name "*.apk" | head -1)
+          if [ -z "$SRC" ]; then
+            echo "APK not found"
+            find app/build -type f | head -50
+            exit 1
+          fi
           cp "$SRC" "dist/app-debug.apk"
           cp "$SRC" "dist/crypto-agent-app-${{ steps.ver.outputs.name }}-${{ steps.ver.outputs.sha }}.apk"
-          ls -la dist/
+          ls -lah dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -65,6 +72,7 @@ jobs:
           name: crypto-agent-app-${{ steps.ver.outputs.name }}
           path: android/dist/*.apk
           retention-days: 30
+          if-no-files-found: error
 
       - name: Recreate android-app-latest release
         if: github.event_name != 'pull_request'
@@ -73,6 +81,7 @@ jobs:
         run: |
           gh release delete android-app-latest --repo "${{ github.repository }}" --yes 2>/dev/null || true
           git push origin :refs/tags/android-app-latest 2>/dev/null || true
+          sleep 2
 
       - name: Publish APK Release
         if: github.event_name != 'pull_request'
@@ -82,15 +91,19 @@ jobs:
           name: "Android App ${{ steps.ver.outputs.name }} (${{ steps.ver.outputs.sha }})"
           prerelease: true
           body: |
-            ## Crypto-Agent Android 客户端（分支 android-app）
+            ## Crypto-Agent Android（分支 `android-app`）
             - versionName: `${{ steps.ver.outputs.name }}`
             - versionCode: `${{ steps.ver.outputs.code }}`
             - commit: `${{ github.sha }}`
             - 包名: `com.puito.cryptoagent.debug`
-            - 界面说明: `docs/Android界面设计.md`
-            - Mobile API: `/api/v1/mobile/*`
 
-            建议卸载旧包后安装。UI：币种/周期 Header、坐标轴图表缩放、配置 OR 规则、全部模拟统计。
+            ### 本构建包含
+            - 全周期信号通知 + 周期胜率
+            - AI 评估（可只通知不实盘）
+            - 信号通知震动（设置可关，默认开）
+            - HiBT 下单页 / 本地策略 / 图表指标
+
+            建议卸载旧包后安装。
           files: android/dist/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -98,7 +111,7 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "### Android APK"
+            echo "### Android APK 发布成功"
             echo "- https://github.com/${{ github.repository }}/releases/tag/android-app-latest"
-            echo "- version ${{ steps.ver.outputs.name }}"
+            echo "- version ${{ steps.ver.outputs.name }} / ${{ steps.ver.outputs.sha }}"
           } >> "$GITHUB_STEP_SUMMARY"
