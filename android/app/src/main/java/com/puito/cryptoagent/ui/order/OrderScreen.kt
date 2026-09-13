@@ -1,5 +1,6 @@
 package com.puito.cryptoagent.ui.order
 
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.layout.*
@@ -23,7 +24,7 @@ fun OrderScreen(repo: Repository) {
     val scope = rememberCoroutineScope()
     var s by remember { mutableStateOf(repo.settings()) }
     var h by remember { mutableStateOf(s.hibt) }
-    var status by remember { mutableStateOf("未测试") }
+    var status by remember { mutableStateOf("未查询") }
     var balance by remember { mutableStateOf("-") }
     var positions by remember { mutableStateOf("-") }
     var busy by remember { mutableStateOf(false) }
@@ -31,6 +32,7 @@ fun OrderScreen(repo: Repository) {
     var showPasteDialog by remember { mutableStateOf(false) }
     var pasteDraft by remember { mutableStateOf("") }
     var expandLog by remember { mutableStateOf(false) }
+    var toast by remember { mutableStateOf<String?>(null) }
 
     fun persist(nh: com.puito.cryptoagent.data.HibtSettings) {
         h = nh
@@ -41,9 +43,10 @@ fun OrderScreen(repo: Repository) {
     fun applyParsed(raw: String) {
         val r = HibtBundleParser.parse(raw, h)
         parseMsg = r.summary
-        if (r.ok || r.settings.xAuthToken.isNotBlank() || r.settings.apiBase != h.apiBase) {
+        if (r.ok || r.settings.xAuthToken.isNotBlank()) {
+            // 仅写入内存+本地配置供在线测试；不上传
             persist(r.settings)
-            status = r.summary
+            status = r.summary + " · 请点「查询余额/持仓」"
         }
     }
 
@@ -54,19 +57,19 @@ fun OrderScreen(repo: Repository) {
         return clip.getItemAt(0).coerceToText(ctx)?.toString().orEmpty()
     }
 
+    fun copyText(text: String) {
+        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("hibt-test", text))
+        toast = "已复制"
+    }
+
     Column(
         Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("HiBT 自动化 · ${s.interval}", style = MaterialTheme.typography.titleMedium)
+        Text("HiBT 在线测试 · ${s.interval}", style = MaterialTheme.typography.titleMedium)
         Text(
-            "周期与行情页头部一致。默认 Dry-Run，真实下单有资金风险，且非官方 API。",
-            color = MaterialTheme.colorScheme.secondary,
-            fontSize = 12.sp,
-        )
-
-        Text(
-            "电脑书签抓取 → 复制 → 剪贴板解析。",
+            "用途：填 token 后在线查余额与未平仓笔数、试下单。凭证仅存本机，不上传。",
             color = MaterialTheme.colorScheme.secondary,
             fontSize = 12.sp,
         )
@@ -76,11 +79,9 @@ fun OrderScreen(repo: Repository) {
                 onClick = {
                     val text = readClipboard()
                     if (text.isBlank()) {
-                        parseMsg = "剪贴板为空，可改用「粘贴解析」"
+                        parseMsg = "剪贴板为空"
                         showPasteDialog = true
-                    } else {
-                        applyParsed(text)
-                    }
+                    } else applyParsed(text)
                 },
                 modifier = Modifier.weight(1f),
             ) { Text("剪贴板解析") }
@@ -96,47 +97,53 @@ fun OrderScreen(repo: Repository) {
             Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
 
-        OutlinedTextField(h.apiBase, { persist(h.copy(apiBase = it)) }, label = { Text("API Base") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(h.xAuthToken, { persist(h.copy(xAuthToken = it)) }, label = { Text("x-auth-token（主）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(h.authToken, { persist(h.copy(authToken = it)) }, label = { Text("Authorization（可同 token）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(h.bgetKey, { persist(h.copy(bgetKey = it)) }, label = { Text("bgetKey") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(h.bgetId, { persist(h.copy(bgetId = it)) }, label = { Text("bgetId") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(h.langCode, { persist(h.copy(langCode = it)) }, label = { Text("langCode") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(
+            h.apiBase, { persist(h.copy(apiBase = it)) },
+            label = { Text("API Base（常用 https://api.hibt0.com）") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
+        )
+        OutlinedTextField(
+            h.xAuthToken, { persist(h.copy(xAuthToken = it, authToken = it.ifBlank { h.authToken })) },
+            label = { Text("x-auth-token / Authorization") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
+        )
+        OutlinedTextField(h.vParam, { persist(h.copy(vParam = it)) }, label = { Text("v 参数（下单常需要）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(h.bgetKey, { persist(h.copy(bgetKey = it)) }, label = { Text("bgetKey（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(h.bgetId, { persist(h.copy(bgetId = it)) }, label = { Text("bgetId（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(h.clientType, { persist(h.copy(clientType = it)) }, label = { Text("clientType web/h5") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(h.vParam, { persist(h.copy(vParam = it)) }, label = { Text("v 参数(可选)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
 
         Button(
             onClick = {
                 scope.launch {
                     busy = true
                     val r = repo.hibtTest()
-                    status = r.message
+                    status = buildString {
+                        append(r.message)
+                        if (!r.raw.isNullOrBlank()) append("\n---\n").append(r.raw)
+                    }
                     balance = r.balance ?: "—"
                     positions = r.positions ?: "—"
-                    if (!r.ok && !r.raw.isNullOrBlank()) {
-                        status = r.message + "\n" + r.raw!!.take(400)
-                    }
+                    expandLog = true
                     busy = false
                 }
             },
             enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (busy) "测试中…" else "测试连通性") }
+        ) { Text(if (busy) "查询中…" else "查询余额 / 持仓") }
 
-        // 账户摘要：固定两行，不挤布局
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("账户状态", style = MaterialTheme.typography.titleSmall)
-                Text("余额：$balance", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("事件合约持仓：$positions", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("账户状态（在线）", style = MaterialTheme.typography.titleSmall)
+                Text("余额：$balance", maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text("事件合约持仓：$positions", maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
 
-        // 测试日志：默认折叠一行，展开限高滚动
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("测试信息", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { copyText(status) }) { Text("复制") }
                     TextButton(onClick = { expandLog = !expandLog }) {
                         Text(if (expandLog) "收起" else "展开")
                     }
@@ -145,19 +152,13 @@ fun OrderScreen(repo: Repository) {
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 140.dp)
+                            .heightIn(max = 160.dp)
                             .verticalScroll(rememberScrollState()),
                     ) {
                         Text(status, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
                     }
                 } else {
-                    Text(
-                        status,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.secondary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Text(status, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -168,72 +169,73 @@ fun OrderScreen(repo: Repository) {
             Switch(h.autoTrade, { persist(h.copy(autoTrade = it)) })
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Dry-Run（推荐保持开启）", Modifier.weight(1f))
+            Text("Dry-Run（关=真实请求，慎用）", Modifier.weight(1f))
             Switch(h.dryRun, { persist(h.copy(dryRun = it)) })
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("启用 AI 评估信号（可只通知不实盘）", Modifier.weight(1f))
+            Text("启用 AI 评估", Modifier.weight(1f))
             Switch(h.aiEvaluate, { persist(h.copy(aiEvaluate = it)) })
         }
-        Text(
-            "AI 评估用该周期行情估胜率；低于阈值不自动下单。需 LLM Key。",
-            color = MaterialTheme.colorScheme.secondary,
-            fontSize = 12.sp,
-        )
         OutlinedTextField(
             h.aiMinWinRate.toString(),
             { it.toDoubleOrNull()?.let { v -> persist(h.copy(aiMinWinRate = v)) } },
             label = { Text("AI 胜率阈值(%)") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
         )
         OutlinedTextField(
             h.defaultAmount.toString(),
             { it.toDoubleOrNull()?.let { v -> persist(h.copy(defaultAmount = v)) } },
-            label = { Text("默认下单金额") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
+            label = { Text("默认下单金额（≥交易所最小额）") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
         )
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button({
                 scope.launch {
                     busy = true
-                    status = repo.hibtPlace(true).message
+                    val r = repo.hibtPlace(true)
+                    status = r.message + (r.raw?.let { "\n$it" } ?: "")
+                    expandLog = true
                     busy = false
                 }
             }, Modifier.weight(1f), enabled = !busy) { Text("测试买涨") }
             Button({
                 scope.launch {
                     busy = true
-                    status = repo.hibtPlace(false).message
+                    val r = repo.hibtPlace(false)
+                    status = r.message + (r.raw?.let { "\n$it" } ?: "")
+                    expandLog = true
                     busy = false
                 }
             }, Modifier.weight(1f), enabled = !busy) { Text("测试买跌") }
         }
+        Text(
+            "下单参数：symbol=btc_usdt/eth_usdt，timeUnit=行情周期分钟，需有效 v。参数错误时请复制测试信息对照。",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        toast?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
     }
 
     if (showPasteDialog) {
         AlertDialog(
             onDismissRequest = { showPasteDialog = false },
-            title = { Text("粘贴 HiBT 认证文本") },
+            title = { Text("粘贴认证文本") },
             text = {
                 OutlinedTextField(
                     value = pasteDraft,
                     onValueChange = { pasteDraft = it },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp),
-                    placeholder = { Text("粘贴 key=value 或 JSON…") },
+                    placeholder = { Text("token / key=value / JSON") },
                 )
             },
             confirmButton = {
                 TextButton({
                     applyParsed(pasteDraft)
                     showPasteDialog = false
-                }) { Text("解析并填入") }
+                }) { Text("解析") }
             },
-            dismissButton = {
-                TextButton({ showPasteDialog = false }) { Text("取消") }
-            },
+            dismissButton = { TextButton({ showPasteDialog = false }) { Text("取消") } },
         )
     }
 }

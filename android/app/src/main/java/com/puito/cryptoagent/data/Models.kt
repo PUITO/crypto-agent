@@ -99,7 +99,7 @@ data class ChartOverlay(
 )
 
 data class HibtSettings(
-    val apiBase: String = "https://api-ws.taichuwuji.com",
+    val apiBase: String = "https://api.hibt0.com",
     val authToken: String = "",
     val xAuthToken: String = "",
     val vParam: String = "",

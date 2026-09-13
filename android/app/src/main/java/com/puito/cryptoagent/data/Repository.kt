@@ -551,7 +551,11 @@ class Repository(ctx: Context) {
 
     suspend fun hibtPlace(up: Boolean, amount: Double? = null): HibtClient.OrderResult {
         val s = settings()
-        val unit = Interval.from(s.interval).timeUnit
+        // 事件合约 timeUnit 为分钟：5/10/30/60；1m 行情映射到 5
+        val unit = when (val u = Interval.from(s.interval).timeUnit) {
+            1 -> 5
+            else -> u
+        }
         return hibt.placeEventOrder(s.hibt, s.symbol, up, amount ?: s.hibt.defaultAmount, unit)
     }
 
