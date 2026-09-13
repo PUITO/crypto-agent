@@ -12,18 +12,25 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 class LlmClient(
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .build(),
     private val gson: Gson = Gson(),
 ) {
+    private fun clientFor(timeoutSec: Int): OkHttpClient {
+        val t = timeoutSec.coerceIn(10, 300)
+        return OkHttpClient.Builder()
+            .connectTimeout(minOf(30, t).toLong(), TimeUnit.SECONDS)
+            .readTimeout(t.toLong(), TimeUnit.SECONDS)
+            .writeTimeout(t.toLong(), TimeUnit.SECONDS)
+            .callTimeout((t + 5).toLong(), TimeUnit.SECONDS)
+            .build()
+    }
+
     suspend fun chat(
         baseUrl: String,
         apiKey: String,
         model: String,
         system: String,
         user: String,
+        timeoutSec: Int = 60,
     ): String = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             return@withContext "请先在「设置」填写 LLM API Key 与 Base URL（OpenAI 兼容，如官方 API 或中转）。"
@@ -43,7 +50,7 @@ class LlmClient(
             .header("Authorization", "Bearer $apiKey")
             .header("Content-Type", "application/json")
             .build()
-        client.newCall(req).execute().use { resp ->
+        clientFor(timeoutSec).newCall(req).execute().use { resp ->
             val s = resp.body?.string() ?: ""
             if (!resp.isSuccessful) error("LLM HTTP ${resp.code}: ${s.take(300)}")
             val o = JsonParser.parseString(s).asJsonObject

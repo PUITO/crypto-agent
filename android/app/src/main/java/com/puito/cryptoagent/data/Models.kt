@@ -121,6 +121,8 @@ data class AppSettings(
     val llmBaseUrl: String = "https://api.openai.com/v1",
     val llmApiKey: String = "",
     val llmModel: String = "gpt-4o-mini",
+    /** AI 评估 / 对话 HTTP 超时（秒）。原 poll 内硬编码 8s 易超时，默认 60 */
+    val llmTimeoutSec: Int = 60,
     val onboardingDone: Boolean = false,
     val chartIndicators: List<ChartIndicatorPref> = listOf(
         ChartIndicatorPref("ma7", "MA7", false, 7, 0xFF42A5F5),

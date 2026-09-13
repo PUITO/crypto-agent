@@ -360,8 +360,8 @@ class Repository(ctx: Context) {
                             if (!higherTfAgrees(barsHt, m.side)) return@mapNotNull null
                             if (isSignalExpired("1m", m.openTime)) return@mapNotNull null
                             val ai = if (s.hibt.aiEvaluate) {
-                                withTimeoutOrNull(8_000L) {
-                                    // AI 用「1m 近端 + 标注目标周期」；bars 用 HT 更贴事件合约时长
+                                val toMs = s.llmTimeoutSec.coerceIn(10, 300) * 1000L
+                                withTimeoutOrNull(toMs) {
                                     evaluateSignal(s, m, iv, barsHt, st.winRate * 100, st.trades)
                                 }
                             } else null
@@ -447,7 +447,7 @@ class Repository(ctx: Context) {
                     "\n【参考-本地回测总胜率】" + "%.1f".format(hist) + "% / " + tradeCount + "笔（勿直接照抄）" +
                     "\n【程序阈值】" + "%.1f".format(threshold) + "%（你只需输出WINRATE，是否达阈值由程序判断）"
             )
-            val ans = llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, user)
+            val ans = llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, user, s.llmTimeoutSec)
             val winEst = parseWinRate(ans, avoidEcho = hist)
             if (winEst == null) {
                 return@evaluateSignal AiEvalResult(
@@ -682,7 +682,7 @@ class Repository(ctx: Context) {
         } else {
             user
         }
-        return llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, userPayload)
+        return llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, userPayload, s.llmTimeoutSec)
     }
 
 

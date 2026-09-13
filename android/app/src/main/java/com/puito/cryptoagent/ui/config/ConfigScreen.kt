@@ -22,6 +22,7 @@ fun ConfigScreen(repo: Repository) {
     var llmUrl by remember { mutableStateOf(cur.llmBaseUrl) }
     var llmKey by remember { mutableStateOf(cur.llmApiKey) }
     var llmModel by remember { mutableStateOf(cur.llmModel) }
+    var llmTimeout by remember { mutableStateOf(cur.llmTimeoutSec.toString()) }
     var bg by remember { mutableStateOf(cur.backgroundEnabled) }
     var vibrate by remember { mutableStateOf(cur.notifyVibrate) }
     var msg by remember { mutableStateOf<String?>(null) }
@@ -43,6 +44,16 @@ fun ConfigScreen(repo: Repository) {
         OutlinedTextField(llmUrl, { llmUrl = it }, label = { Text("LLM Base URL") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(llmKey, { llmKey = it }, label = { Text("API Key") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(llmModel, { llmModel = it }, label = { Text("Model") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            llmTimeout,
+            { llmTimeout = it },
+            label = { Text("AI/对话超时(秒)，默认60，建议30～120") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "信号 AI 评估与 Chat 共用该超时。过小易显示评估失败/超时；过大则单轮监控变慢。",
+            color = MaterialTheme.colorScheme.secondary,
+        )
 
         Text("后台", style = MaterialTheme.typography.titleSmall)
         Row {
@@ -67,6 +78,7 @@ fun ConfigScreen(repo: Repository) {
                 llmBaseUrl = llmUrl.trim(),
                 llmApiKey = llmKey.trim(),
                 llmModel = llmModel.trim(),
+                llmTimeoutSec = llmTimeout.toIntOrNull()?.coerceIn(10, 300) ?: 60,
                 backgroundEnabled = bg,
                 notifyVibrate = vibrate,
                 onboardingDone = true,
