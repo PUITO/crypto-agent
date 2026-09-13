@@ -64,8 +64,7 @@ fun OrderScreen(repo: Repository) {
         if (r.message.contains(raw) || (raw.contains("form:") && r.message.contains("form:"))) {
             return r.message
         }
-        return r.message + "
-" + raw
+        return r.message + "\n" + raw
     }
 
     fun copyText(text: String) {
