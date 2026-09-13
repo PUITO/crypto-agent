@@ -71,7 +71,7 @@ class MonitorService : Service() {
                 } catch (e: Exception) {
                     update("监控异常: ${e.message?.take(40)}")
                 }
-                delay(60_000L)
+                delay(12_000L) // 约 12s 一轮，降低 5m 信号过期
             }
         }
     }

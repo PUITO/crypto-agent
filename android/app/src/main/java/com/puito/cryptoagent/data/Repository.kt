@@ -9,6 +9,12 @@ import com.puito.cryptoagent.net.BinanceClient
 import com.puito.cryptoagent.net.HibtClient
 import com.puito.cryptoagent.net.LlmClient
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class Repository(ctx: Context) {
     private val sp = ctx.getSharedPreferences("agent_local", Context.MODE_PRIVATE)
@@ -160,13 +166,25 @@ class Repository(ctx: Context) {
         }
     }
 
-    /** 通知关注的「近期已收盘」K 线数量：扩大窗口，保留足够近端历史，避免过窄失真 */
+    /** 仅盯最近已收盘 1～2 根，避免「半小时前的信号」被当成新信号推送 */
     private fun notifyWatchBars(interval: String): Int = when (interval) {
-        "5m" -> 24   // ~2 小时
-        "10m" -> 24  // ~4 小时
-        "30m" -> 24  // ~12 小时
-        "1h" -> 24   // ~1 天
-        else -> 24
+        "5m", "10m" -> 2
+        "30m", "1h" -> 2
+        else -> 2
+    }
+
+    /** 收盘后允许的最大延迟；超时视为过期，不再通知 */
+    private fun maxLateMs(interval: String): Long = when (interval) {
+        "5m" -> 90_000L
+        "10m" -> 120_000L
+        "30m" -> 180_000L
+        "1h" -> 240_000L
+        else -> 120_000L
+    }
+
+    private fun isSignalExpired(interval: String, openTime: Long, now: Long = System.currentTimeMillis()): Boolean {
+        val closedAt = openTime + intervalMs(interval)
+        return now - closedAt > maxLateMs(interval)
     }
 
     /** 策略/指标最少需要的历史根数 */
@@ -218,12 +236,14 @@ class Repository(ctx: Context) {
 
         return marks
             .filter { it.openTime in watchTimes }
+            .filter { !isSignalExpired(interval, it.openTime, now) }
             .filter { key(symbol, interval, it) !in notified }
             .filter {
                 val last = lastNotifyAt[sideCooldownKey(it.side)] ?: 0L
-                now - last >= cooldown
+                // 冷却缩短为周期的 1/4，避免漏掉相邻新信号
+                now - last >= (cooldown / 2).coerceAtLeast(30_000L)
             }
-            .sortedBy { it.openTime }
+            .sortedByDescending { it.openTime } // 最新优先
             .onEach {
                 notified.add(key(symbol, interval, it))
                 lastNotifyAt[sideCooldownKey(it.side)] = now
@@ -274,53 +294,61 @@ class Repository(ctx: Context) {
     }
 
     /**
-     * 后台轮询：对全部周期 5m/10m/30m/1h 生成信号并通知。
-     * 实盘仅对当前选中周期执行，避免四周期重复下单。
+     * 后台轮询：并行拉多周期，只推送未过期的新信号。
+     * AI 评估限时，避免拖慢通知。
      */
-    suspend fun poll(): List<SignalNotifyPayload> {
+    suspend fun poll(): List<SignalNotifyPayload> = withContext(Dispatchers.IO) {
         val s = settings()
-        if (!s.strategyRunning) return emptyList()
+        if (!s.strategyRunning) return@withContext emptyList()
         binance.updateBase(s.binanceBaseUrl)
-        val cfg = enabledStrategy() ?: return emptyList()
+        val cfg = enabledStrategy() ?: return@withContext emptyList()
         val allIntervals = listOf("5m", "10m", "30m", "1h")
-        val batch = mutableListOf<SignalNotifyPayload>()
-        for (iv in allIntervals) {
-            try {
-                val bars = binance.fetch(s.symbol, Interval.from(iv), s.klineLimit.coerceIn(200, 1000))
-                if (bars.size < minBarsForSignal(iv)) {
-                    // 历史不足时不算信号，避免 RSI/MA 等在短样本上失真
-                    continue
+        // 指标足够即可，减小拉取量以降低延迟
+        val limit = s.klineLimit.coerceIn(200, 500)
+
+        val batch = coroutineScope {
+            allIntervals.map { iv ->
+                async {
+                    try {
+                        val bars = binance.fetch(s.symbol, Interval.from(iv), limit)
+                        if (bars.size < minBarsForSignal(iv)) return@async emptyList()
+                        val (marks, st) = runStrategy(
+                            s.symbol, iv, cfg, bars,
+                            notifyNew = true,
+                            updateUiState = (iv == s.interval),
+                        )
+                        val fresh = freshMarks(s.symbol, iv, marks, bars, notifyNew = true)
+                        fresh.map { m ->
+                            // AI 最多等 8s，超时仍先推送信号（无 AI 结果）
+                            val ai = if (s.hibt.aiEvaluate) {
+                                withTimeoutOrNull(8_000L) {
+                                    evaluateSignal(s, m, iv, bars, st.winRate * 100, st.trades)
+                                }
+                            } else null
+                            SignalNotifyPayload(
+                                mark = m,
+                                interval = iv,
+                                intervalWinRatePct = st.winRate * 100,
+                                intervalTrades = st.trades,
+                                ai = ai,
+                            )
+                        }
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
                 }
-                val (marks, st) = runStrategy(
-                    s.symbol, iv, cfg, bars,
-                    notifyNew = true,
-                    updateUiState = (iv == s.interval),
-                )
-                val fresh = freshMarks(s.symbol, iv, marks, bars, notifyNew = true)
-                for (m in fresh) {
-                    val ai = if (s.hibt.aiEvaluate) {
-                        evaluateSignal(s, m, iv, bars, st.winRate * 100, st.trades)
-                    } else null
-                    batch.add(
-                        SignalNotifyPayload(
-                            mark = m,
-                            interval = iv,
-                            intervalWinRatePct = st.winRate * 100,
-                            intervalTrades = st.trades,
-                            ai = ai,
-                        ),
-                    )
-                }
-            } catch (_: Exception) {
-            }
+            }.awaitAll().flatten()
         }
-        val out = filterCrossInterval(batch)
+
+        // 再滤一次过期（AI 耗时后可能已过期）
+        val timely = batch.filter { !isSignalExpired(it.interval, it.mark.openTime) }
+        val out = filterCrossInterval(timely)
         for (p in out) {
             if (s.hibt.autoTrade && p.interval == s.interval) {
                 maybeAutoOrder(s, p.mark, p.ai)
             }
         }
-        return out
+        out
     }
 
     /**
