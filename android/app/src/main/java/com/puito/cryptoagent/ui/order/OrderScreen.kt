@@ -67,9 +67,9 @@ fun OrderScreen(repo: Repository) {
         Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("HiBT 在线测试 · ${s.interval}", style = MaterialTheme.typography.titleMedium)
+        Text("HiBT 在线测试 · 周期 ${s.interval}", style = MaterialTheme.typography.titleMedium)
         Text(
-            "用途：填 token 后在线查余额与未平仓笔数、试下单。凭证仅存本机，不上传。",
+            "优先使用下方 API Base（应与书签解析一致）。列表接口用 POST。下单 timeUnit=当前周期分钟。凭证仅本机。",
             color = MaterialTheme.colorScheme.secondary,
             fontSize = 12.sp,
         )

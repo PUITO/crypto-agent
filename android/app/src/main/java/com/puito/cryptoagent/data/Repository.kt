@@ -536,14 +536,23 @@ class Repository(ctx: Context) {
         return candidates.firstOrNull()
     }
 
+    /** 行情页选中周期 → 事件合约 timeUnit（分钟） */
+    private fun eventTimeUnitMinutes(intervalCode: String): Int {
+        return when (val u = Interval.from(intervalCode).timeUnit) {
+            1 -> 5   // 1m 信号源不对应合约，落到 5m
+            5, 10, 15, 30, 60 -> u
+            else -> u.coerceIn(5, 60)
+        }
+    }
+
     private suspend fun maybeAutoOrder(s: AppSettings, m: SignalMark, ai: AiEvalResult?) {
         val h = s.hibt
         if (!h.autoTrade) return
-        // 开启 AI 评估时：必须有有效 AI 胜率且达到阈值（不用回测总胜率放行）
         if (h.aiEvaluate) {
             if (ai?.winRatePct == null || ai.passThreshold != true) return
         }
-        val unit = Interval.from(s.interval).timeUnit
+        // 严格使用行情页当前选中周期
+        val unit = eventTimeUnitMinutes(s.interval)
         hibt.placeEventOrder(h, s.symbol, m.side == "B", h.defaultAmount, unit)
     }
 
@@ -551,11 +560,7 @@ class Repository(ctx: Context) {
 
     suspend fun hibtPlace(up: Boolean, amount: Double? = null): HibtClient.OrderResult {
         val s = settings()
-        // 事件合约 timeUnit 为分钟：5/10/30/60；1m 行情映射到 5
-        val unit = when (val u = Interval.from(s.interval).timeUnit) {
-            1 -> 5
-            else -> u
-        }
+        val unit = eventTimeUnitMinutes(s.interval)
         return hibt.placeEventOrder(s.hibt, s.symbol, up, amount ?: s.hibt.defaultAmount, unit)
     }
 

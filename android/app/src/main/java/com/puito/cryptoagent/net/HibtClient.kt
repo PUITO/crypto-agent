@@ -13,15 +13,15 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 /**
- * HiBT 事件合约 Web 接口客户端（非官方）。
- * 账户：优先 /option/option-account/info + /uc/member/my-info
- * 持仓：仅统计 /event|option/…/list 中「未平仓」条数，避免把币种列表当持仓。
- * 下单：对齐公开 curl（amount/direction/symbol/timeUnit/langCode + ?v=）
+ * HiBT 事件合约 Web 接口（非官方）。
+ * 日志结论：list / history-summary 需 POST；option-account/info 在部分站 404；
+ * 必须优先使用配置里的 apiBase（书签解析值），再回退。
  */
 class HibtClient(
     private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .writeTimeout(25, TimeUnit.SECONDS)
         .followRedirects(true)
         .build(),
 ) {
@@ -48,7 +48,6 @@ class HibtClient(
         val ct = cfg.clientType.ifBlank { "web" }
         val isH5 = ct.equals("h5", true)
         header("accept", "application/json, text/plain, */*")
-        header("content-type", "application/x-www-form-urlencoded")
         header("client-type", if (isH5) "h5" else "web")
         header("platform", if (isH5) "h5" else "PC")
         header("hc-platform", if (isH5) "h5" else "web")
@@ -73,39 +72,37 @@ class HibtClient(
         }
         val tok = tokenOf(cfg)
         if (tok.isNotBlank()) {
-            // 官方抓包通常 Authorization 与 x-auth-token 同值
-            header("x-auth-token", tok)
-            header("Authorization", tok)
-            if (cfg.authToken.isNotBlank() && cfg.authToken != tok) {
-                header("Authorization", cfg.authToken.trim())
-            }
-            if (cfg.xAuthToken.isNotBlank() && cfg.xAuthToken != tok) {
-                header("x-auth-token", cfg.xAuthToken.trim())
-            }
+            header("x-auth-token", cfg.xAuthToken.ifBlank { tok }.trim().removePrefix("Bearer ").trim())
+            header("Authorization", cfg.authToken.ifBlank { tok }.trim())
         }
         return this
     }
 
+    /** 解析到的 apiBase 永远排第一，且完整跑完再考虑回退 */
     private fun candidateBases(cfg: HibtSettings): List<String> {
         val primary = cfg.apiBase.trim().trimEnd('/')
-        return listOf(
-            primary,
+        val fallbacks = listOf(
             "https://api.hibt0.com",
             "https://api-ws.taichuwuji.com",
             "https://api.hibt.com",
-        ).map { it.trimEnd('/') }.filter { it.startsWith("http") }.distinct()
+        )
+        return (listOf(primary) + fallbacks)
+            .map { it.trimEnd('/') }
+            .filter { it.startsWith("http") }
+            .distinct()
     }
 
     private fun withV(url: String, cfg: HibtSettings): String {
         val v = cfg.vParam.trim()
         if (v.isEmpty()) return url
-        return if (url.contains("?")) "$url&v=${java.net.URLEncoder.encode(v, "UTF-8")}"
-        else "$url?v=${java.net.URLEncoder.encode(v, "UTF-8")}"
+        val enc = java.net.URLEncoder.encode(v, "UTF-8")
+        return if (url.contains("?")) "$url&v=$enc" else "$url?v=$enc"
     }
 
     private fun bizOk(code: Int, body: String): Boolean {
         if (code !in 200..299) return false
         if (body.isBlank()) return false
+        if (body.contains("\"status\":404") || body.contains("Not Found")) return false
         return try {
             val o = JsonParser.parseString(body).asJsonObject
             val c = when {
@@ -115,74 +112,89 @@ class HibtClient(
                 }
                 else -> 0
             }
-            // 0 / 200 常见成功；401/403 失败
+            // 500 且 method not supported 视为失败
+            if (body.contains("not supported", true)) return false
             c == null || c == 0 || c == 200
         } catch (_: Exception) {
             !body.contains("\"code\":401") && !body.contains("未登录")
         }
     }
 
-    private fun get(url: String, cfg: HibtSettings): Pair<Int, String> {
-        val req = Request.Builder().url(url).get().applyHibtHeaders(cfg).build()
-        client.newCall(req).execute().use { resp ->
+    private fun emptyForm(): FormBody = FormBody.Builder().build()
+
+    private fun pageForm(): FormBody = FormBody.Builder()
+        .add("pageNo", "1")
+        .add("pageNum", "1")
+        .add("page", "1")
+        .add("pageSize", "50")
+        .add("size", "50")
+        .add("limit", "50")
+        .add("status", "0")
+        .build()
+
+    private fun request(
+        method: String,
+        url: String,
+        cfg: HibtSettings,
+        body: FormBody? = null,
+    ): Pair<Int, String> {
+        val b = Request.Builder().url(url).applyHibtHeaders(cfg)
+        when (method) {
+            "POST" -> b.post(body ?: emptyForm()).header("content-type", "application/x-www-form-urlencoded")
+            else -> b.get()
+        }
+        client.newCall(b.build()).execute().use { resp ->
             return resp.code to resp.body?.string().orEmpty()
         }
     }
 
-    /** 仅从账户类接口抽余额，避免把 list 里的 amount 当成余额 */
+    private val balanceKeys = listOf(
+        "availableBalance", "usableBalance", "canUseAmount", "optionBalance",
+        "eventBalance", "walletBalance", "available", "balance", "usdtBalance",
+        "canUse", "money", "equity", "amount", "balanceStr", "availBalance",
+        "optionAvailable", "eventAvailable", "spotBalance", "totalBalance",
+    )
+
     private fun extractBalanceStrict(body: String): String? {
         return try {
-            val root = JsonParser.parseString(body)
-            val keys = listOf(
-                "availableBalance", "usableBalance", "canUseAmount", "optionBalance",
-                "eventBalance", "walletBalance", "available", "balance", "usdtBalance",
-                "canUse", "money", "equity",
-            )
             fun fromObj(o: JsonObject): String? {
-                for (k in keys) {
+                for (k in balanceKeys) {
                     if (!o.has(k) || o.get(k).isJsonNull) continue
                     val v = o.get(k)
                     if (v.isJsonPrimitive) {
                         val s = v.asString.trim()
-                        if (s.isNotEmpty() && s != "null" && s != "0" && s != "0.0") return s
-                        if (s == "0" || s == "0.0" || s == "0.00") return s // 真实 0 也显示
+                        if (s.isNotEmpty() && s != "null") return s.take(32)
                     }
                 }
                 return null
             }
-            fun walk(el: JsonElement?, depth: Int, underData: Boolean): String? {
-                if (el == null || depth > 5) return null
+            fun walk(el: JsonElement?, depth: Int): String? {
+                if (el == null || depth > 6) return null
                 if (el.isJsonObject) {
                     val o = el.asJsonObject
-                    // 优先 data / result / account
-                    for (w in listOf("data", "result", "account", "info")) {
-                        if (o.has(w)) walk(o.get(w), depth + 1, true)?.let { return it }
+                    for (w in listOf("data", "result", "account", "info", "wallet", "asset")) {
+                        if (o.has(w)) walk(o.get(w), depth + 1)?.let { return it }
                     }
-                    if (underData || depth <= 2) {
-                        fromObj(o)?.let { return it }
-                    }
+                    fromObj(o)?.let { return it }
                     for ((k, v) in o.entrySet()) {
                         if (k in listOf("list", "records", "rows", "orders")) continue
-                        walk(v, depth + 1, underData)?.let { return it }
+                        walk(v, depth + 1)?.let { return it }
                     }
+                } else if (el.isJsonArray) {
+                    for (item in el.asJsonArray) walk(item, depth + 1)?.let { return it }
                 }
                 return null
             }
-            walk(root, 0, false)
+            walk(JsonParser.parseString(body), 0)
         } catch (_: Exception) {
             null
         }
     }
 
-    /**
-     * 只统计「持仓列表」接口里的未平仓笔数。
-     * 不要用 option-coin/list 等全表长度。
-     */
     private fun extractOpenPositionCount(body: String): Int? {
         return try {
             val root = JsonParser.parseString(body)
             fun isOpenItem(o: JsonObject): Boolean {
-                // 已平仓常见字段
                 if (o.has("closeTime") && !o.get("closeTime").isJsonNull) {
                     val ct = o.get("closeTime")
                     if (ct.isJsonPrimitive) {
@@ -193,27 +205,20 @@ class HibtClient(
                 if (o.has("status") && o.get("status").isJsonPrimitive) {
                     val st = o.get("status")
                     val n = if (st.asJsonPrimitive.isNumber) st.asInt else st.asString.toIntOrNull()
-                    // 0 进行中 / 1 完成 等（不同站可能相反，优先看 isOpen/open）
-                    if (o.has("isOpen") && o.get("isOpen").isJsonPrimitive) {
-                        val io = o.get("isOpen")
-                        if (io.asJsonPrimitive.isBoolean) return io.asBoolean
-                        if (io.asString == "1" || io.asString.equals("true", true)) return true
-                        if (io.asString == "0" || io.asString.equals("false", true)) return false
-                    }
                     if (n != null) {
-                        // 多数：0 持仓中，1/2/3 已结束
                         if (n == 0) return true
-                        if (n in listOf(1, 2, 3, 4, 5)) return false
+                        if (n in 1..9) return false
                     }
                 }
-                // 有 direction + amount 且无 close 倾向视为持仓
-                return o.has("direction") || o.has("timeUnit") || o.has("openPrice") || o.has("symbol")
+                return o.has("direction") || o.has("timeUnit") || o.has("openPrice") ||
+                    o.has("symbol") || o.has("amount")
             }
             fun countList(arr: JsonArray): Int {
                 var n = 0
                 for (el in arr) {
-                    if (el.isJsonObject && isOpenItem(el.asJsonObject)) n++
-                    else if (!el.isJsonObject) n++ // 无法判断则计 1
+                    if (el.isJsonObject) {
+                        if (isOpenItem(el.asJsonObject)) n++
+                    }
                 }
                 return n
             }
@@ -239,78 +244,131 @@ class HibtClient(
 
     suspend fun testConnectivity(cfg: HibtSettings): AccountSnapshot = withContext(Dispatchers.IO) {
         if (tokenOf(cfg).isBlank()) {
-            return@withContext AccountSnapshot(false, "请填写 x-auth-token（或 Authorization）")
+            return@withContext AccountSnapshot(false, "请填写 x-auth-token")
         }
         val log = StringBuilder()
+        log.appendLine("使用 API Base 优先: ${cfg.apiBase.trim()}")
         var balance: String? = null
         var posCount: Int? = null
         var anyAuth = false
+        var usedBase: String? = null
 
-        val accountPaths = listOf(
-            "/option/option-account/info",
+        // GET 账户类
+        val getAccountPaths = listOf(
             "/uc/member/my-info",
-            "/option/option-order/history-summary",
-            "/event/event-order/history-summary",
+            "/option/option-account/info",
+            "/uc/asset/wallet",
+            "/uc/finance/wallet",
         )
-        val listPaths = listOf(
+        // POST 账户类（部分站 GET 404）
+        val postAccountPaths = listOf(
+            "/option/option-account/info",
+            "/option/option-account/get",
+            "/option/wallet/info",
+            "/event/event-account/info",
+        )
+        // 持仓列表：日志明确要求 POST
+        val postListPaths = listOf(
             "/event/event-order/list",
             "/option/option-order/list",
+            "/event/event-order/history-summary",
+            "/option/option-order/history-summary",
         )
 
-        for (base in candidateBases(cfg)) {
-            for (path in accountPaths) {
+        fun tryBase(base: String): Boolean {
+            var hit = false
+            for (path in getAccountPaths) {
                 val url = withV(base + path, cfg)
                 try {
-                    val (code, body) = get(url, cfg)
-                    log.appendLine("$code $path @ $base body=${body.take(80).replace("\n", " ")}")
+                    val (code, body) = request("GET", url, cfg)
+                    log.appendLine("GET $code $path @ $base ${body.take(70).replace("\n", " ")}")
                     if (!bizOk(code, body)) continue
-                    anyAuth = true
-                    if (balance.isNullOrBlank()) {
-                        extractBalanceStrict(body)?.let { balance = it }
-                    }
+                    hit = true
+                    if (balance.isNullOrBlank()) extractBalanceStrict(body)?.let { balance = it }
                 } catch (e: Exception) {
-                    log.appendLine("ERR $path ${e.message?.take(40)}")
+                    log.appendLine("GET ERR $path @ $base ${e.message?.take(48)}")
                 }
             }
-            for (path in listPaths) {
+            for (path in postAccountPaths) {
                 val url = withV(base + path, cfg)
                 try {
-                    val (code, body) = get(url, cfg)
-                    log.appendLine("$code $path @ $base body=${body.take(80).replace("\n", " ")}")
+                    val (code, body) = request("POST", url, cfg, emptyForm())
+                    log.appendLine("POST $code $path @ $base ${body.take(70).replace("\n", " ")}")
                     if (!bizOk(code, body)) continue
-                    anyAuth = true
-                    val n = extractOpenPositionCount(body)
-                    if (n != null) {
-                        // 取该路径的真实笔数；多路径时优先 event-order
-                        if (posCount == null || path.contains("event-order")) posCount = n
-                    }
+                    hit = true
+                    if (balance.isNullOrBlank()) extractBalanceStrict(body)?.let { balance = it }
                 } catch (e: Exception) {
-                    log.appendLine("ERR $path ${e.message?.take(40)}")
+                    log.appendLine("POST ERR $path @ $base ${e.message?.take(48)}")
                 }
             }
-            if (anyAuth && balance != null && posCount != null) break
+            for (path in postListPaths) {
+                val url = withV(base + path, cfg)
+                for (form in listOf(pageForm(), emptyForm())) {
+                    try {
+                        val (code, body) = request("POST", url, cfg, form)
+                        log.appendLine("POST $code $path @ $base ${body.take(70).replace("\n", " ")}")
+                        if (!bizOk(code, body)) continue
+                        hit = true
+                        // summary 可能带余额
+                        if (balance.isNullOrBlank()) extractBalanceStrict(body)?.let { balance = it }
+                        if (path.endsWith("/list")) {
+                            extractOpenPositionCount(body)?.let { n ->
+                                if (posCount == null || path.contains("event-order")) posCount = n
+                            }
+                        }
+                        break
+                    } catch (e: Exception) {
+                        log.appendLine("POST ERR $path @ $base ${e.message?.take(48)}")
+                    }
+                }
+            }
+            return hit
+        }
+
+        val bases = candidateBases(cfg)
+        // 1) 只用解析/配置的主域名
+        val primary = bases.first()
+        if (tryBase(primary)) {
+            anyAuth = true
+            usedBase = primary
+        }
+        // 2) 主域名未鉴权成功再回退
+        if (!anyAuth) {
+            for (base in bases.drop(1)) {
+                if (tryBase(base)) {
+                    anyAuth = true
+                    usedBase = base
+                    break
+                }
+            }
+        } else if (balance == null || posCount == null) {
+            // 主域名鉴权了但缺字段，再用回退补余额/持仓
+            for (base in bases.drop(1)) {
+                tryBase(base)
+                if (balance != null && posCount != null) break
+            }
         }
 
         if (!anyAuth) {
             return@withContext AccountSnapshot(
                 false,
-                "鉴权未通过或接口未命中。请确认 token / API Base（常用 https://api.hibt0.com）与可选 v 参数。",
-                raw = log.toString().take(1200),
+                "鉴权失败。请确认 API Base 与书签一致（当前优先 ${cfg.apiBase}），token 有效。",
+                raw = log.toString().take(1800),
             )
         }
 
         val posText = when (posCount) {
-            null -> "未解析到持仓列表（可能暂无持仓或路径变更）"
+            null -> "未解析到（已改 POST 拉列表）"
             else -> "未平仓 ${posCount} 笔"
         }
         AccountSnapshot(
             ok = true,
-            message = "在线查询完成" +
-                (if (balance == null) " · 余额字段未识别" else "") +
-                (if (posCount == null) " · 持仓列表未识别" else ""),
+            message = "在线查询完成 · base=${usedBase ?: primary}" +
+                (if (balance == null) " · 余额未识别" else "") +
+                (if (posCount == null) " · 持仓未识别" else ""),
             balance = balance ?: "—",
             positions = posText,
-            raw = log.toString().take(1500),
+            raw = log.toString().take(2000),
         )
     }
 
@@ -328,17 +386,20 @@ class HibtClient(
             else -> symbol.lowercase().replace("usdt", "_usdt")
         }
         val dir = if (directionUp) 1 else 0
-        // 周期分钟：5/10/30/60；官网亦有 15，原样透传
+        // 事件合约分钟：5/10/30/60（与行情页选中周期一致）
         val unit = when (timeUnit) {
-            1 -> 5 // 不应出现，兜底
-            else -> timeUnit.coerceIn(1, 120)
+            1 -> 5
+            in listOf(5, 10, 15, 30, 60) -> timeUnit
+            else -> timeUnit.coerceIn(5, 60)
         }
-        val amountStr = if (amount == amount.toLong().toDouble()) amount.toLong().toString() else amount.toString()
+        val amountStr =
+            if (amount == amount.toLong().toDouble()) amount.toLong().toString() else amount.toString()
 
         if (cfg.dryRun || !cfg.autoTrade) {
             return@withContext OrderResult(
                 true,
-                "DRY-RUN: symbol=$sym direction=$dir amount=$amountStr timeUnit=$unit（未真实提交）",
+                "DRY-RUN: symbol=$sym direction=$dir amount=$amountStr timeUnit=${unit}m" +
+                    "（行情周期映射，未真实提交；关 Dry-Run 且开自动化才实盘）",
                 dryRun = true,
             )
         }
@@ -360,9 +421,9 @@ class HibtClient(
         )
         val tries = StringBuilder()
         var lastRaw: String? = null
+        // 下单同样：优先配置 apiBase
         for (base in candidateBases(cfg)) {
             for (path in placePaths) {
-                // 有 v / 无 v 各试一次
                 val urls = buildList {
                     add(withV(base + path, cfg))
                     if (cfg.vParam.isNotBlank()) add(base + path)
@@ -371,29 +432,24 @@ class HibtClient(
                     try {
                         val req = Request.Builder().url(url).post(form)
                             .applyHibtHeaders(cfg)
+                            .header("content-type", "application/x-www-form-urlencoded")
                             .build()
                         client.newCall(req).execute().use { resp ->
                             val body = resp.body?.string().orEmpty()
                             lastRaw = body.take(400)
-                            tries.appendLine("${resp.code} $path ${body.take(100).replace("\n", " ")}")
-                            if (resp.isSuccessful && bizOk(resp.code, body)) {
-                                // 业务错误码
-                                val msg = try {
-                                    val o = JsonParser.parseString(body).asJsonObject
-                                    val m = when {
-                                        o.has("msg") -> o.get("msg").asString
-                                        o.has("message") -> o.get("message").asString
-                                        else -> body.take(80)
-                                    }
-                                    val c = if (o.has("code")) o.get("code").toString() else ""
-                                    "下单响应 code=$c msg=$m"
-                                } catch (_: Exception) {
-                                    body.take(120)
-                                }
-                                if (body.contains("参数") || body.contains("param", true)) {
-                                    return@withContext OrderResult(false, msg, false, lastRaw)
-                                }
-                                return@withContext OrderResult(true, msg, false, lastRaw)
+                            tries.appendLine("${resp.code} $path @ $base timeUnit=$unit ${body.take(100).replace("\n", " ")}")
+                            if (resp.isSuccessful && bizOk(resp.code, body) &&
+                                !body.contains("参数") && !body.contains("param", true)
+                            ) {
+                                return@withContext OrderResult(
+                                    true,
+                                    "下单成功 timeUnit=${unit}m · ${body.take(120)}",
+                                    false,
+                                    lastRaw,
+                                )
+                            }
+                            if (body.contains("参数") || body.contains("param", true)) {
+                                // 继续试其他 base/path
                             }
                         }
                     } catch (e: Exception) {
@@ -404,8 +460,7 @@ class HibtClient(
         }
         OrderResult(
             false,
-            "下单失败（参数/鉴权）。检查：symbol=btc_usdt、timeUnit 分钟、amount≥最小额、v 参数。\n" +
-                tries.toString().take(400),
+            "下单失败 timeUnit=${unit}m symbol=$sym。\n" + tries.toString().take(500),
             false,
             lastRaw,
         )
