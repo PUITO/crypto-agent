@@ -18,6 +18,7 @@
 </head>
 <body>
   <h1>HiBT 认证导入</h1>
+  <p><a href="./hibt-m.html">手机助手（余额摘要）</a></p>
   <p style="color:#8b9aab">从书签跳转或粘贴 JSON。将下列字段填入手机 App「下单」页。</p>
   <div id="status" class="card">等待数据…</div>
   <div class="card" id="fields" style="display:none">
@@ -76,6 +77,14 @@
     ].join("\n");
     document.getElementById("appText").value = txt;
     document.getElementById("fields").style.display = "block";
+    try {
+      localStorage.setItem("ca_hibt_mobile_v1", JSON.stringify({
+        token: pl.token, apiBase: pl.apiBaseUrl || pl.apiBase, apiBaseUrl: pl.apiBaseUrl || pl.apiBase,
+        bgetKey: pl.bgetKey, bgetId: pl.bgetId, langCode: pl.langCode, clientType: pl.clientType,
+        balance: pl.balance, positions: pl.positions, capturedAt: pl.capturedAt || Date.now(), source: pl.source
+      }));
+    } catch (e) {}
+
     document.getElementById("status").innerHTML = '<span class="ok">已解析 · 请复制到 App 下单页</span>';
     window.__pl = pl;
     window.__txt = txt;

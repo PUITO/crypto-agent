@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0e11" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>HiBT 手机助手 · Crypto Agent</title>
+  <style>
+    :root {
+      --bg:#0b0e11; --panel:#12161c; --border:#1e2530; --text:#e8ecf1;
+      --muted:#8b9aab; --accent:#3b82f6; --green:#22c55e; --warn:#f59e0b; --red:#ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0 auto; max-width: 480px; min-height: 100dvh;
+      padding: 12px 14px calc(24px + env(safe-area-inset-bottom));
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    h1 { font-size: 1.2rem; margin: 4px 0 6px; }
+    h2 { font-size: .95rem; margin: 18px 0 8px; color: #cbd5e1; }
+    p, li { color: var(--muted); font-size: .9rem; margin: 6px 0; }
+    a { color: var(--accent); }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 14px; padding: 14px; margin: 10px 0;
+    }
+    .warn { border-color: #78350f; background: #1c1408; color: #fde68a; font-size: .82rem; }
+    .ok { color: var(--green); }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    button, .btn {
+      flex: 1; min-width: 120px; padding: 12px 14px; border-radius: 12px;
+      border: 1px solid var(--border); background: #1e293b; color: #fff;
+      font-size: .95rem; font-weight: 600; cursor: pointer; text-align: center;
+      text-decoration: none; display: inline-block;
+    }
+    button.primary, .btn.primary { background: #2563eb; border-color: #2563eb; }
+    button.ghost { background: transparent; }
+    label { display: block; color: var(--muted); font-size: .75rem; margin: 10px 0 4px; }
+    input, textarea {
+      width: 100%; background: #0a0c10; border: 1px solid var(--border);
+      color: var(--text); border-radius: 10px; padding: 10px; font-size: 14px;
+    }
+    textarea { min-height: 88px; word-break: break-all; }
+    .stat { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .stat .box {
+      background: #0a0c10; border: 1px solid var(--border); border-radius: 12px; padding: 12px;
+    }
+    .stat .v { font-size: 1.15rem; font-weight: 700; color: #fff; margin-top: 4px; word-break: break-all; }
+    .badge { display: inline-block; font-size: .7rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+    ol { padding-left: 1.2rem; }
+    .steps li { margin: 8px 0; }
+    #toast {
+      display: none; position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+      background: #14532d; color: #bbf7d0; padding: 10px 16px; border-radius: 999px;
+      font-size: .85rem; z-index: 99; max-width: 90%;
+    }
+  </style>
+</head>
+<body>
+  <h1>HiBT 手机助手</h1>
+  <p class="badge">Chrome 手机 · 无需电脑</p>
+  <p>在手机 Chrome 登录 HiBT 后用书签抓 Token，本页保存并显示余额/持仓摘要，方便随时核对后填入 App。</p>
+
+  <div class="card warn">
+    Token 等同登录态，勿发到聊天群。余额以交易所页面为准；本页仅展示抓包/接口摘要，入金出金请在官网操作。
+  </div>
+
+  <h2>账户摘要</h2>
+  <div class="card">
+    <div class="stat">
+      <div class="box"><div class="muted" style="color:var(--muted);font-size:.75rem">余额</div><div class="v" id="bal">—</div></div>
+      <div class="box"><div class="muted" style="color:var(--muted);font-size:.75rem">持仓</div><div class="v" id="pos">—</div></div>
+    </div>
+    <p id="meta" style="font-size:.78rem;margin-top:10px">尚未导入凭证</p>
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="primary" id="btnCopyApp">复制给 App</button>
+      <button type="button" id="btnRefreshHint">如何刷新</button>
+    </div>
+  </div>
+
+  <h2>① 手机 Chrome 安装书签</h2>
+  <div class="card">
+    <ol class="steps">
+      <li>复制下方<strong>书签地址</strong>（整段 <code>javascript:...</code>）</li>
+      <li>Chrome → 星标收藏任意页 → <strong>编辑书签</strong></li>
+      <li>名称填 <code>HiBT取Token</code>，网址<strong>整段替换</strong>为刚复制的 javascript</li>
+      <li>打开并登录 HiBT（事件合约页）→ 地址栏旁或书签里点 <code>HiBT取Token</code></li>
+      <li>再点一下订单/首页触发接口，抓到后会跳回本站导入页并写入本地</li>
+    </ol>
+    <div class="row">
+      <button type="button" class="primary" id="copyBm">复制书签地址</button>
+      <a class="btn" href="https://hibt.com" target="_blank" rel="noopener">打开 HiBT</a>
+    </div>
+    <p style="font-size:.78rem;margin-top:8px">部分机型需在书签管理器里改网址；若点书签无反应，确认网址以 <code>javascript:</code> 开头且未被 Chrome 改成搜索词。</p>
+  </div>
+
+  <h2>② 手动粘贴 / 导入</h2>
+  <div class="card">
+    <label>粘贴 App 文本或 JSON</label>
+    <textarea id="manual" placeholder="apiBase=...&#10;xAuthToken=... 或 {&quot;token&quot;:...}"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button type="button" class="primary" id="btnParse">解析并保存</button>
+      <button type="button" id="btnClear">清除本地</button>
+    </div>
+  </div>
+
+  <h2>③ 已保存字段</h2>
+  <div class="card">
+    <label>API Base</label>
+    <input id="apiBase" />
+    <label>Token</label>
+    <textarea id="token" style="min-height:64px"></textarea>
+    <label>bgetKey</label>
+    <input id="bgetKey" />
+    <label>bgetId</label>
+    <input id="bgetId" />
+    <label>langCode / clientType</label>
+    <div class="row">
+      <input id="langCode" style="flex:1" />
+      <input id="clientType" style="flex:1" />
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="primary" id="btnSave">保存修改</button>
+      <a class="btn" id="linkOfficial" href="https://hibt.com" target="_blank" rel="noopener">去官网调余额</a>
+    </div>
+    <p style="font-size:.78rem">「调余额」指在官网入金/划转；本助手不能直接改交易所余额，只能刷新查看。</p>
+  </div>
+
+  <p style="font-size:.75rem;color:var(--muted)">
+    完整说明：<a href="./hibt-token.html">桌面版说明</a> ·
+    <a href="./hibt-import.html">导入页</a>
+  </p>
+  <div id="toast"></div>
+
+  <script>
+(function () {
+  var STORE = "ca_hibt_mobile_v1";
+  var DEFAULT_KEY = "HotsCoinLimboA@1";
+
+  function toast(m) {
+    var el = document.getElementById("toast");
+    el.textContent = m;
+    el.style.display = "block";
+    setTimeout(function () { el.style.display = "none"; }, 2200);
+  }
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(STORE) || "null") || {}; } catch (e) { return {}; }
+  }
+
+  function save(pl) {
+    localStorage.setItem(STORE, JSON.stringify(pl));
+  }
+
+  function appText(pl) {
+    return [
+      "apiBase=" + (pl.apiBase || pl.apiBaseUrl || ""),
+      "xAuthToken=" + (pl.token || pl.xAuthToken || ""),
+      "authToken=" + (pl.token || pl.authToken || ""),
+      "bgetKey=" + (pl.bgetKey || DEFAULT_KEY),
+      "bgetId=" + (pl.bgetId || ""),
+      "langCode=" + (pl.langCode || "zh_CN"),
+      "clientType=" + (pl.clientType === 2 || pl.clientType === "2" ? "h5" : (pl.clientType || "web"))
+    ].join("\n");
+  }
+
+  function fill(pl) {
+    pl = pl || {};
+    var ct = pl.clientType;
+    if (ct === 2 || ct === "2") ct = "h5";
+    if (ct === 1 || ct === "1") ct = "web";
+    document.getElementById("apiBase").value = pl.apiBase || pl.apiBaseUrl || "https://api-ws.taichuwuji.com";
+    document.getElementById("token").value = pl.token || pl.xAuthToken || "";
+    document.getElementById("bgetKey").value = pl.bgetKey || DEFAULT_KEY;
+    document.getElementById("bgetId").value = pl.bgetId || "";
+    document.getElementById("langCode").value = pl.langCode || "zh_CN";
+    document.getElementById("clientType").value = ct || "h5";
+    document.getElementById("bal").textContent = pl.balance || pl.bal || "—";
+    document.getElementById("pos").textContent = pl.positions || pl.pos || "—";
+    var t = pl.capturedAt ? new Date(pl.capturedAt).toLocaleString() : "";
+    document.getElementById("meta").textContent = pl.token
+      ? ("已保存" + (t ? " · " + t : "") + (pl.source ? " · " + pl.source : ""))
+      : "尚未导入凭证";
+    if (pl.apiBase || pl.apiBaseUrl) {
+      try {
+        var host = new URL(pl.apiBase || pl.apiBaseUrl).hostname;
+        // 官网入口仍用常见前台
+        document.getElementById("linkOfficial").href = "https://hibt.com";
+      } catch (e) {}
+    }
+  }
+
+  function fromUi() {
+    return {
+      apiBase: document.getElementById("apiBase").value.trim(),
+      apiBaseUrl: document.getElementById("apiBase").value.trim(),
+      token: document.getElementById("token").value.trim(),
+      xAuthToken: document.getElementById("token").value.trim(),
+      bgetKey: document.getElementById("bgetKey").value.trim(),
+      bgetId: document.getElementById("bgetId").value.trim(),
+      langCode: document.getElementById("langCode").value.trim() || "zh_CN",
+      clientType: document.getElementById("clientType").value.trim() || "h5",
+      balance: document.getElementById("bal").textContent,
+      positions: document.getElementById("pos").textContent,
+      capturedAt: Date.now(),
+      source: "manual"
+    };
+  }
+
+  function parseText(text) {
+    text = (text || "").trim();
+    if (!text) throw new Error("内容为空");
+    if (text.startsWith("{")) {
+      var o = JSON.parse(text);
+      return {
+        token: o.token || o.xAuthToken || o.authorization || "",
+        apiBase: o.apiBaseUrl || o.apiBase || "",
+        apiBaseUrl: o.apiBaseUrl || o.apiBase || "",
+        bgetKey: o.bgetKey || DEFAULT_KEY,
+        bgetId: o.bgetId || "",
+        langCode: o.langCode || "zh_CN",
+        clientType: o.clientType,
+        balance: o.balance || o.bal,
+        positions: o.positions || o.pos,
+        capturedAt: o.capturedAt || Date.now(),
+        source: o.source || "json"
+      };
+    }
+    var map = {};
+    text.split(/\n/).forEach(function (line) {
+      var m = line.match(/^([^=:]+)[=:](.*)$/);
+      if (!m) return;
+      map[m[1].trim().toLowerCase().replace(/[-_]/g, "")] = m[2].trim();
+    });
+    function g() {
+      for (var i = 0; i < arguments.length; i++) {
+        var k = arguments[i].toLowerCase().replace(/[-_]/g, "");
+        if (map[k]) return map[k];
+      }
+      return "";
+    }
+    return {
+      token: g("xauthtoken", "authtoken", "token", "authorization"),
+      apiBase: g("apibase", "apibaseurl"),
+      apiBaseUrl: g("apibase", "apibaseurl"),
+      bgetKey: g("bgetkey") || DEFAULT_KEY,
+      bgetId: g("bgetid"),
+      langCode: g("langcode", "lang") || "zh_CN",
+      clientType: g("clienttype") || "h5",
+      balance: g("balance", "bal"),
+      positions: g("positions", "pos"),
+      capturedAt: Date.now(),
+      source: "kv"
+    };
+  }
+
+  function decodeB64(s) {
+    try { return decodeURIComponent(escape(atob(s))); } catch (e) {
+      try { return atob(s); } catch (e2) { return ""; }
+    }
+  }
+
+  // 从 hash 导入（书签跳转）
+  function fromHash() {
+    var h = location.hash || "";
+    var m = h.match(/hibt-import=([^&]+)/);
+    if (!m) return false;
+    try {
+      var raw = decodeB64(decodeURIComponent(m[1]));
+      var pl = JSON.parse(raw);
+      pl.apiBase = pl.apiBaseUrl || pl.apiBase;
+      save(pl);
+      fill(pl);
+      toast("已从书签导入");
+      history.replaceState(null, "", location.pathname + location.search);
+      return true;
+    } catch (e) {
+      toast("导入失败");
+      return false;
+    }
+  }
+
+  // —— 书签（与桌面逻辑一致 + 同域拉余额）——
+  function bookmarkMain() {
+    var W = window;
+    var KEY = "__CRYPTOAGENT_HIBT_BUNDLE__";
+    var IMPORT_PAGE = "https://puito.github.io/crypto-agent/hibt-m.html";
+    var DEFAULT_BGET_KEY = "HotsCoinLimboA@1";
+    var TR = /(?:event\/event-order|uc\/member\/my-info|uc\/check\/login|option-order\/(?:history-summary|list|history|place)|event-order\/(?:history-summary|list|history|place)|option\/option-coin\/list|option\/option-account|option\/|uc\/)/i;
+    var KN = ["BGET_KEY", "bget_key", "bgetKey", "vKey"];
+    var IN = ["BGET_ID", "bget_id", "bgetId", "memberId", "uid"];
+
+    function T(v) { return v == null ? "" : String(v).trim(); }
+    function RC(n) {
+      try {
+        var m = document.cookie.match(new RegExp("(?:^|;\\s*)" + n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "=([^;]*)"));
+        return m ? decodeURIComponent(m[1]) : "";
+      } catch (_) { return ""; }
+    }
+    function RS(ns) {
+      var i, n, v;
+      for (i = 0; i < ns.length; i++) {
+        n = ns[i];
+        v = T(RC(n)); if (v) return v;
+        try { v = T(localStorage.getItem(n)); if (v) return v; } catch (_) {}
+        try { v = T(sessionStorage.getItem(n)); if (v) return v; } catch (_) {}
+      }
+      return "";
+    }
+    function NH(i) {
+      var o = {}, k;
+      if (!i) return o;
+      try {
+        if (typeof Headers !== "undefined" && i instanceof Headers) {
+          i.forEach(function (v, k) { o[String(k).toLowerCase()] = v; });
+          return o;
+        }
+      } catch (_) {}
+      if (Array.isArray(i)) {
+        for (var n = 0; n < i.length; n++) {
+          var p = i[n] || [];
+          if (p.length >= 2) o[String(p[0]).toLowerCase()] = p[1];
+        }
+        return o;
+      }
+      if (typeof i === "object") {
+        for (k in i) if (Object.prototype.hasOwnProperty.call(i, k)) o[String(k).toLowerCase()] = i[k];
+      }
+      return o;
+    }
+    function MH(a, b) {
+      var o = {}, k; a = a || {}; b = b || {};
+      for (k in a) if (Object.prototype.hasOwnProperty.call(a, k)) o[k] = a[k];
+      for (k in b) if (Object.prototype.hasOwnProperty.call(b, k)) o[k] = b[k];
+      return o;
+    }
+    function IP(u) {
+      try { return TR.test(String(new URL(String(u || ""), location.href).pathname || "")); }
+      catch (_) { return false; }
+    }
+    function AT(v) {
+      var t = T(v).replace(/^Bearer\s+/i, "");
+      try { t = decodeURIComponent(t); } catch (_) {}
+      return (!t || /\s/.test(t) || t.length < 20) ? "" : t;
+    }
+    function RLT(h) {
+      var o = NH(h || {}), t = AT(o["x-auth-token"] || o.authorization);
+      if (t) return t;
+      t = AT(RC("bget_token")); if (t) return t;
+      try { var ss = sessionStorage.getItem("bget_token"); if (ss) return AT(ss); } catch (_) {}
+      return "";
+    }
+    function EID(jwt) {
+      try {
+        var p = jwt.split(".")[1], pad = p.length % 4;
+        if (pad) p += "====".slice(pad);
+        var b = JSON.parse(decodeURIComponent(escape(atob(p.replace(/-/g, "+").replace(/_/g, "/"))))).body;
+        return b && (b.fUId != null ? String(b.fUId) : b.id != null ? String(b.id) : "");
+      } catch (_) { return ""; }
+    }
+    function IH(h) {
+      h = String(h || "").toLowerCase();
+      return h.indexOf("hibt") >= 0 || h.indexOf("bget") >= 0 || h.indexOf("taichuwuji") >= 0 ||
+        h.indexOf("s0e9tu") >= 0 || h.indexOf("dutbgwv") >= 0;
+    }
+    function RAB(u) {
+      try {
+        var x = new URL(String(u || ""), location.href);
+        if (IH(x.hostname)) return x.protocol + "//" + x.host;
+      } catch (_) {}
+      return "https://api-ws.taichuwuji.com";
+    }
+    function CBH() {
+      var h = {};
+      try { if (navigator.userAgent) h["user-agent"] = navigator.userAgent; } catch (_) {}
+      return h;
+    }
+    function CT(h) {
+      h = h || {};
+      if (/^h5$/i.test(T(h.platform)) || /^h5$/i.test(T(h["client-type"]))) return 2;
+      if (/iPhone|Android/i.test(T(h["user-agent"]))) return 2;
+      return 1;
+    }
+    function EP(p) {
+      try { return btoa(unescape(encodeURIComponent(JSON.stringify(p)))); } catch (_) { return ""; }
+    }
+    function pickBal(obj, depth) {
+      if (!obj || depth > 5) return "";
+      var keys = ["availableBalance","usableBalance","canUseAmount","walletBalance","available","balance","equity","amount","usdtBalance","optionBalance"];
+      if (typeof obj === "object" && !Array.isArray(obj)) {
+        for (var i = 0; i < keys.length; i++) {
+          if (obj[keys[i]] != null && String(obj[keys[i]]).length) return String(obj[keys[i]]);
+        }
+        for (var k in obj) {
+          var r = pickBal(obj[k], depth + 1);
+          if (r) return r;
+        }
+      }
+      return "";
+    }
+    function pickPos(obj) {
+      try {
+        function cnt(el, d) {
+          if (!el || d > 5) return null;
+          if (Array.isArray(el)) return el.length;
+          if (typeof el === "object") {
+            for (var k of ["list","records","rows","openList","positions","data","result"]) {
+              if (el[k] != null) {
+                var c = cnt(el[k], d + 1);
+                if (c != null) return c;
+              }
+            }
+          }
+          return null;
+        }
+        var n = cnt(obj, 0);
+        return n != null ? ("持仓 " + n + " 笔") : "";
+      } catch (_) { return ""; }
+    }
+    function enrich(pl, done) {
+      var base = pl.apiBaseUrl || RAB("");
+      var paths = ["/option/option-account/info", "/uc/member/my-info", "/event/event-order/list", "/option/option-order/list"];
+      var left = paths.length;
+      paths.forEach(function (path) {
+        try {
+          fetch(base + path, {
+            credentials: "include",
+            headers: MH(CBH(), {
+              "x-auth-token": pl.token,
+              "client-type": pl.clientType === 2 ? "h5" : "web",
+              "hc-language": pl.langCode || "zh_CN",
+              "accept": "application/json"
+            })
+          }).then(function (r) { return r.text(); }).then(function (txt) {
+            try {
+              var j = JSON.parse(txt);
+              if (!pl.balance) pl.balance = pickBal(j, 0);
+              if (!pl.positions) pl.positions = pickPos(j);
+            } catch (_) {}
+          }).catch(function () {}).finally(function () {
+            left--;
+            if (left <= 0) done(pl);
+          });
+        } catch (_) {
+          left--;
+          if (left <= 0) done(pl);
+        }
+      });
+      setTimeout(function () { if (left > 0) { left = 0; done(pl); } }, 4000);
+    }
+    function FIN(pl) {
+      if (!pl || !pl.token) return false;
+      if (!pl.bgetId) pl.bgetId = EID(pl.token);
+      if (!pl.bgetKey) pl.bgetKey = DEFAULT_BGET_KEY;
+      pl.clientType = CT(pl.headers || {});
+      try { localStorage.setItem(KEY, JSON.stringify(pl)); } catch (_) {}
+      enrich(pl, function (full) {
+        var enc = EP(full);
+        if (enc) {
+          alert("已抓到认证" + (full.balance ? "与余额" : "") + "，正在打开手机导入页");
+          location.href = IMPORT_PAGE + "#venue=hibt&hibt-import=" + encodeURIComponent(enc);
+        } else {
+          prompt("请复制：", JSON.stringify(full));
+        }
+      });
+      return true;
+    }
+    function PL(url, m, h) {
+      var nh = MH(CBH(), NH(h)), tk = RLT(nh);
+      if (!tk) return null;
+      var fu = String(url || "");
+      try { fu = new URL(fu, location.href).href; } catch (_) {}
+      return {
+        token: tk,
+        bgetKey: RS(KN),
+        bgetId: RS(IN) || EID(tk),
+        apiBaseUrl: RAB(fu),
+        langCode: T(nh["hc-language"] || nh.lang || "zh_CN"),
+        headers: nh,
+        clientType: CT(nh),
+        capturedAt: Date.now(),
+        source: "hook-mobile"
+      };
+    }
+    function MG(a, b) {
+      if (!a) return b; if (!b) return a;
+      return {
+        token: b.token || a.token,
+        bgetKey: b.bgetKey || a.bgetKey,
+        bgetId: b.bgetId || a.bgetId,
+        apiBaseUrl: b.apiBaseUrl || a.apiBaseUrl,
+        langCode: b.langCode || a.langCode,
+        headers: MH(a.headers, b.headers),
+        clientType: b.clientType || a.clientType,
+        capturedAt: b.capturedAt || a.capturedAt,
+        source: b.source || a.source,
+        balance: b.balance || a.balance,
+        positions: b.positions || a.positions
+      };
+    }
+    function RDY(pl) { return !!(pl && pl.token && (pl.bgetId || EID(pl.token))); }
+
+    if (!IH(location.hostname)) {
+      alert("请在已登录的 HiBT 页面使用（hibt/bget/taichuwuji/dutbgwv 等）");
+      return;
+    }
+    var st = W[KEY + "_STATE"] = W[KEY + "_STATE"] || { installed: 0, bundle: null };
+    if (st.installed) {
+      alert("监听已开，请点订单/首页触发 API");
+      return;
+    }
+    st.installed = 1;
+    var tk0 = RLT({});
+    if (tk0) {
+      st.bundle = {
+        token: tk0, bgetKey: RS(KN), bgetId: RS(IN) || EID(tk0),
+        apiBaseUrl: "https://api-ws.taichuwuji.com", langCode: "zh_CN",
+        headers: CBH(), clientType: 2, capturedAt: Date.now(), source: "storage-mobile"
+      };
+      if (RDY(st.bundle)) FIN(st.bundle);
+    }
+    var OF = W.fetch;
+    if (typeof OF === "function") {
+      W.fetch = function () {
+        try {
+          var req = arguments[0], init = arguments[1] || {};
+          var url = typeof req === "string" ? req : (req && req.url) || "";
+          var hdr = MH(NH(req && req.headers), NH(init.headers));
+          if (IP(url)) {
+            var pl = PL(url, init.method || "GET", hdr);
+            if (pl) {
+              st.bundle = MG(st.bundle, pl);
+              if (RDY(st.bundle)) FIN(st.bundle);
+            }
+          }
+        } catch (_) {}
+        return OF.apply(this, arguments);
+      };
+    }
+    if (typeof XMLHttpRequest !== "undefined" && XMLHttpRequest.prototype) {
+      var OO = XMLHttpRequest.prototype.open, OS = XMLHttpRequest.prototype.setRequestHeader, OE = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (m, u) {
+        this.__caM = m; this.__caU = u; this.__caH = {};
+        return OO.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.setRequestHeader = function (n, v) {
+        try { this.__caH[n] = v; } catch (_) {}
+        return OS.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function () {
+        try {
+          if (IP(this.__caU || "")) {
+            var pl = PL(this.__caU, this.__caM, this.__caH);
+            if (pl) {
+              st.bundle = MG(st.bundle, pl);
+              if (RDY(st.bundle)) FIN(st.bundle);
+            }
+          }
+        } catch (_) {}
+        return OE.apply(this, arguments);
+      };
+    }
+    alert("手机监听已开。请点期权/订单/首页，抓到后跳转导入页。");
+  }
+
+  var bmHref = "javascript:" + ("(" + bookmarkMain.toString() + ")();").replace(/\s+/g, " ");
+  document.getElementById("copyBm").onclick = function () {
+    navigator.clipboard.writeText(bmHref).then(function () { toast("书签地址已复制"); }).catch(function () {
+      prompt("长按复制：", bmHref);
+    });
+  };
+  document.getElementById("btnCopyApp").onclick = function () {
+    var pl = fromUi();
+    navigator.clipboard.writeText(appText(pl)).then(function () { toast("已复制，打开 App 下单页解析"); });
+  };
+  document.getElementById("btnParse").onclick = function () {
+    try {
+      var pl = parseText(document.getElementById("manual").value);
+      save(pl); fill(pl); toast("已解析保存");
+    } catch (e) { toast(e.message || "解析失败"); }
+  };
+  document.getElementById("btnSave").onclick = function () {
+    var pl = fromUi();
+    save(pl); fill(pl); toast("已保存到本机");
+  };
+  document.getElementById("btnClear").onclick = function () {
+    localStorage.removeItem(STORE);
+    fill({});
+    toast("已清除");
+  };
+  document.getElementById("btnRefreshHint").onclick = function () {
+    alert("刷新余额：\n1. 手机 Chrome 打开已登录的 HiBT\n2. 点书签「HiBT取Token」\n3. 点一下订单/首页\n4. 自动回到本页并更新余额摘要\n\n入金/划转请点「去官网调余额」。");
+  };
+
+  if (!fromHash()) fill(load());
+})();
+  </script>
+</body>
+</html>

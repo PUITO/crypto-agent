@@ -38,7 +38,9 @@ jobs:
           # HiBT Token 书签助手：替换 Pages 主入口，便于手机扫/电脑收藏
           cp -f hibt-token.html dist/hibt-token.html
           cp -f hibt-import.html dist/hibt-import.html
-          cp -f hibt-token.html dist/index.html
+          cp -f hibt-m.html dist/hibt-m.html
+          cp -f hibt-m.html dist/index.html
+          cp -f hibt-token.html dist/hibt-token.html
           ls -la dist
 
       - name: Upload artifact
