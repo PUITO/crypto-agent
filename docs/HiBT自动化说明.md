@@ -110,6 +110,32 @@ App / 本仓库 **不鼓励、也不默认实现** 用邮箱密码 + TOTP 在第
 - `amount`：默认金额（界面默认 3）  
 - `timeUnit`：与行情周期分钟数一致（5 / 10 / 30 / 60）
 
+### 4.1 下单 API 规范（重点：时间档与金额）
+
+对齐公开 Web 抓包（学习向，非官方承诺）：
+
+```http
+POST {apiBase}/option/option-order/place?v={v}
+Content-Type: application/x-www-form-urlencoded
+
+amount={金额}&direction={0|1}&symbol={btc_usdt|eth_usdt}&timeUnit={分钟}&langCode=zh_CN
+```
+
+| 字段 | 取值 | 说明 |
+|------|------|------|
+| **symbol** | `btc_usdt` / `eth_usdt` | 行情页交易对映射 |
+| **direction** | `1` 涨 / `0` 跌 | 信号 B / S |
+| **amount** | ≥ **2** USDT（官网说明约最小 2） | 默认下单金额，默认 3 |
+| **timeUnit** | **5 / 10 / 15 / 30 / 60** | **必须等于行情页当前选中周期（分钟）** |
+| **langCode** | 如 `zh_CN` | |
+| **v** | URL 查询参数 | 建议填写，部分环境无 v 拒单 |
+| **Authorization / x-auth-token** | 会话 token | 请求头双带 |
+
+**App 周期映射**：5m→5，10m→10，30m→30，1h→60。
+
+实盘前：Dry-Run 预览参数 → 小额 → 再开自动化。
+
+
 接口形态参考公开逆向说明中的 Web 下单路径（如 `/option/option-order/place`），**随时可能被官网改版导致失效**。
 
 ---
