@@ -57,6 +57,17 @@ fun OrderScreen(repo: Repository) {
         return clip.getItemAt(0).coerceToText(ctx)?.toString().orEmpty()
     }
 
+    fun formatOrderStatus(r: com.puito.cryptoagent.net.HibtClient.OrderResult): String {
+        // 避免 message 已含 preview 时再拼 raw 导致「点一次显示两份」
+        val raw = r.raw?.trim().orEmpty()
+        if (raw.isEmpty()) return r.message
+        if (r.message.contains(raw) || (raw.contains("form:") && r.message.contains("form:"))) {
+            return r.message
+        }
+        return r.message + "
+" + raw
+    }
+
     fun copyText(text: String) {
         val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("hibt-test", text))

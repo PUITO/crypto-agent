@@ -21,6 +21,10 @@ class Repository(ctx: Context) {
     private val gson = Gson()
     private val binance = BinanceClient()
     private val llm = LlmClient()
+    /** 已实盘提交过的信号键，防止同一信号重复下单 */
+    private val placedOrderKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val placeLock = Any()
+
     private val hibt = HibtClient()
 
     var candles: List<Candle> = emptyList(); private set
@@ -560,9 +564,19 @@ class Repository(ctx: Context) {
         if (h.aiEvaluate) {
             if (ai?.winRatePct == null || ai.passThreshold != true) return
         }
-        // 严格使用行情页当前选中周期
         val unit = eventTimeUnitMinutes(s.interval)
-        hibt.placeEventOrder(h, s.symbol, m.side == "B", h.defaultAmount, unit)
+        // 同一根 K + 方向 + 周期只允许实盘一次
+        val key = "${s.symbol}|${m.side}|${m.openTime}|${unit}"
+        synchronized(placeLock) {
+            if (!placedOrderKeys.add(key)) {
+                return // 已下过，直接跳过
+            }
+        }
+        val result = hibt.placeEventOrder(h, s.symbol, m.side == "B", h.defaultAmount, unit)
+        // Dry-Run 或失败时允许后续重试（移除 key）
+        if (result.dryRun || !result.ok) {
+            placedOrderKeys.remove(key)
+        }
     }
 
     suspend fun hibtTest() = hibt.testConnectivity(settings().hibt)
@@ -570,6 +584,7 @@ class Repository(ctx: Context) {
     suspend fun hibtPlace(up: Boolean, amount: Double? = null): HibtClient.OrderResult {
         val s = settings()
         val unit = eventTimeUnitMinutes(s.interval)
+        // 手动测试不走信号去重，但 dry-run/实盘仍只打一次 HTTP 成功路径
         return hibt.placeEventOrder(s.hibt, s.symbol, up, amount ?: s.hibt.defaultAmount, unit)
     }
 
