@@ -152,6 +152,7 @@ class Repository(ctx: Context) {
     }
 
     private fun intervalMs(code: String): Long = when (code) {
+        "1m" -> 60_000L
         "5m" -> 5 * 60_000L
         "10m" -> 10 * 60_000L
         "30m" -> 30 * 60_000L
@@ -168,13 +169,13 @@ class Repository(ctx: Context) {
 
     /** 仅盯最近已收盘 1～2 根，避免「半小时前的信号」被当成新信号推送 */
     private fun notifyWatchBars(interval: String): Int = when (interval) {
-        "5m", "10m" -> 2
-        "30m", "1h" -> 2
+        "1m" -> 2
         else -> 2
     }
 
-    /** 收盘后允许的最大延迟；超时视为过期，不再通知 */
+    /** 收盘后允许的最大延迟；1m 主源更严，避免过期推送 */
     private fun maxLateMs(interval: String): Long = when (interval) {
+        "1m" -> 50_000L
         "5m" -> 90_000L
         "10m" -> 120_000L
         "30m" -> 180_000L
@@ -189,9 +190,28 @@ class Repository(ctx: Context) {
 
     /** 策略/指标最少需要的历史根数 */
     private fun minBarsForSignal(interval: String): Int = when (interval) {
+        "1m" -> 120
         "5m", "10m" -> 120
         "30m", "1h" -> 100
         else -> 100
+    }
+
+    /**
+     * 高周期确认：1m 出信号后，用目标交易周期的近端结构做同向过滤，减少噪声。
+     * 计算仍用完整 HT 历史；此处只做方向偏置，不替代 1m 触发。
+     */
+    private fun higherTfAgrees(barsHt: List<Candle>, side: String): Boolean {
+        if (barsHt.size < 25) return true
+        val closed = if (barsHt.size >= 2) barsHt.dropLast(1) else barsHt
+        val window = closed.takeLast(20)
+        val ma = window.map { it.close }.average()
+        val last = window.last().close
+        // 软确认：不与近端均线强烈逆向即可
+        return when (side) {
+            "B" -> last >= ma * 0.997
+            "S" -> last <= ma * 1.003
+            else -> true
+        }
     }
 
     /**
@@ -294,35 +314,55 @@ class Repository(ctx: Context) {
     }
 
     /**
-     * 后台轮询：并行拉多周期，只推送未过期的新信号。
-     * AI 评估限时，避免拖慢通知。
+     * 后台轮询（低延迟）：
+     * - 以 1m K 线为信号触发主源（约每分钟可出新信号，不再等 5m 收盘）
+     * - 对每个事件合约周期 5m/10m/30m/1h：用该周期完整历史做回测统计 + 同向软确认
+     * - 通知打在对应交易周期上，便于 HiBT 时间单位与胜率展示
      */
     suspend fun poll(): List<SignalNotifyPayload> = withContext(Dispatchers.IO) {
         val s = settings()
         if (!s.strategyRunning) return@withContext emptyList()
         binance.updateBase(s.binanceBaseUrl)
         val cfg = enabledStrategy() ?: return@withContext emptyList()
-        val allIntervals = listOf("5m", "10m", "30m", "1h")
-        // 指标足够即可，减小拉取量以降低延迟
-        val limit = s.klineLimit.coerceIn(200, 500)
+        val tradeIntervals = listOf("5m", "10m", "30m", "1h")
+        val limit1m = s.klineLimit.coerceIn(200, 500)
+        val limitHt = s.klineLimit.coerceIn(200, 500)
 
+        // 1) 主源：1m
+        val bars1m = try {
+            binance.fetch(s.symbol, Interval.M1, limit1m)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (bars1m.size < minBarsForSignal("1m")) return@withContext emptyList()
+
+        val (marks1m, _) = runStrategy(
+            s.symbol, "1m", cfg, bars1m,
+            notifyNew = true,
+            updateUiState = false,
+        )
+        val fresh1m = freshMarks(s.symbol, "1m", marks1m, bars1m, notifyNew = true)
+        if (fresh1m.isEmpty()) return@withContext emptyList()
+
+        // 2) 并行拉高周期，确认 + 统计
         val batch = coroutineScope {
-            allIntervals.map { iv ->
+            tradeIntervals.map { iv ->
                 async {
                     try {
-                        val bars = binance.fetch(s.symbol, Interval.from(iv), limit)
-                        if (bars.size < minBarsForSignal(iv)) return@async emptyList()
-                        val (marks, st) = runStrategy(
-                            s.symbol, iv, cfg, bars,
-                            notifyNew = true,
+                        val barsHt = binance.fetch(s.symbol, Interval.from(iv), limitHt)
+                        if (barsHt.size < minBarsForSignal(iv)) return@async emptyList()
+                        val (_, st) = runStrategy(
+                            s.symbol, iv, cfg, barsHt,
+                            notifyNew = false,
                             updateUiState = (iv == s.interval),
                         )
-                        val fresh = freshMarks(s.symbol, iv, marks, bars, notifyNew = true)
-                        fresh.map { m ->
-                            // AI 最多等 8s，超时仍先推送信号（无 AI 结果）
+                        fresh1m.mapNotNull { m ->
+                            if (!higherTfAgrees(barsHt, m.side)) return@mapNotNull null
+                            if (isSignalExpired("1m", m.openTime)) return@mapNotNull null
                             val ai = if (s.hibt.aiEvaluate) {
                                 withTimeoutOrNull(8_000L) {
-                                    evaluateSignal(s, m, iv, bars, st.winRate * 100, st.trades)
+                                    // AI 用「1m 近端 + 标注目标周期」；bars 用 HT 更贴事件合约时长
+                                    evaluateSignal(s, m, iv, barsHt, st.winRate * 100, st.trades)
                                 }
                             } else null
                             SignalNotifyPayload(
@@ -340,9 +380,17 @@ class Repository(ctx: Context) {
             }.awaitAll().flatten()
         }
 
-        // 再滤一次过期（AI 耗时后可能已过期）
-        val timely = batch.filter { !isSignalExpired(it.interval, it.mark.openTime) }
-        val out = filterCrossInterval(timely)
+        val timely = batch.filter { !isSignalExpired("1m", it.mark.openTime) }
+        // 跨周期去重：同一 1m 信号可能打到多个 HT，保留当前选中周期优先，否则胜率高的
+        val dedup = linkedMapOf<String, SignalNotifyPayload>()
+        for (p in timely.sortedWith(
+            compareByDescending<SignalNotifyPayload> { it.interval == s.interval }
+                .thenByDescending { it.intervalWinRatePct },
+        )) {
+            val k = "${p.mark.openTime}|${p.mark.side}"
+            if (k !in dedup) dedup[k] = p
+        }
+        val out = filterCrossInterval(dedup.values.toList())
         for (p in out) {
             if (s.hibt.autoTrade && p.interval == s.interval) {
                 maybeAutoOrder(s, p.mark, p.ai)

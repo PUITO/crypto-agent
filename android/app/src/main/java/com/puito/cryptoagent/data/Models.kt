@@ -1,7 +1,7 @@
 package com.puito.cryptoagent.data
 
 enum class Interval(val code: String, val timeUnit: Int) {
-    M5("5m", 5), M10("10m", 10), M30("30m", 30), H1("1h", 60);
+    M1("1m", 1), M5("5m", 5), M10("10m", 10), M30("30m", 30), H1("1h", 60);
     companion object {
         fun from(code: String) = entries.find { it.code == code } ?: M10
     }
