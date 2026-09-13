@@ -58,6 +58,11 @@ fun OrderScreen(repo: Repository) {
                     status = r.message
                     balance = r.balance ?: "-"
                     positions = r.positions ?: "-"
+                    if (!r.ok && !r.raw.isNullOrBlank()) {
+                        status = r.message + "
+---
+" + r.raw!!.take(500)
+                    }
                     busy = false
                 }
             },
