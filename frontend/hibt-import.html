@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HiBT 导入 · Crypto Agent</title>
+  <style>
+    body { font-family:system-ui,sans-serif; background:#0b0e11; color:#e8ecf1; margin:0 auto; max-width:640px; padding:16px; }
+    .card { background:#12161c; border:1px solid #1e2530; border-radius:12px; padding:14px; margin:12px 0; }
+    label { display:block; color:#8b9aab; font-size:.8rem; margin-top:10px; }
+    textarea, input { width:100%; background:#0a0c10; border:1px solid #1e2530; color:#e2e8f0; border-radius:8px; padding:8px; font-size:13px; }
+    textarea { min-height:72px; word-break:break-all; }
+    button { margin:6px 6px 0 0; padding:10px 14px; border-radius:8px; border:1px solid #334155; background:#1e293b; color:#fff; cursor:pointer; }
+    button.primary { background:#2563eb; border-color:#2563eb; }
+    .ok { color:#22c55e; }
+    .err { color:#f87171; }
+  </style>
+</head>
+<body>
+  <h1>HiBT 认证导入</h1>
+  <p style="color:#8b9aab">从书签跳转或粘贴 JSON。将下列字段填入手机 App「下单」页。</p>
+  <div id="status" class="card">等待数据…</div>
+  <div class="card" id="fields" style="display:none">
+    <label>API Base</label>
+    <input id="apiBase" readonly />
+    <label>x-auth-token / Authorization (token)</label>
+    <textarea id="token" readonly></textarea>
+    <label>bgetKey</label>
+    <input id="bgetKey" readonly />
+    <label>bgetId</label>
+    <input id="bgetId" readonly />
+    <label>langCode</label>
+    <input id="langCode" readonly />
+    <label>clientType</label>
+    <input id="clientType" readonly />
+    <label>App 粘贴文本</label>
+    <textarea id="appText" readonly></textarea>
+    <button type="button" class="primary" id="copyAll">复制 App 文本</button>
+    <button type="button" id="copyJson">复制 JSON</button>
+  </div>
+  <div class="card">
+    <label>手动粘贴书签 JSON</label>
+    <textarea id="manual" placeholder='{"token":"...","apiBaseUrl":"..."}'></textarea>
+    <button type="button" id="parseManual">解析</button>
+  </div>
+  <script>
+(function () {
+  function decodeB64(s) {
+    try {
+      return decodeURIComponent(escape(atob(s)));
+    } catch (e) {
+      try { return atob(s); } catch (e2) { return ""; }
+    }
+  }
+  function show(pl) {
+    if (!pl || !pl.token) {
+      document.getElementById("status").innerHTML = '<span class="err">无效数据：缺少 token</span>';
+      return;
+    }
+    var ct = pl.clientType === 2 || pl.clientType === "2" ? "h5" : "web";
+    var api = pl.apiBaseUrl || pl.apiBase || "https://api-ws.taichuwuji.com";
+    document.getElementById("apiBase").value = api;
+    document.getElementById("token").value = pl.token || "";
+    document.getElementById("bgetKey").value = pl.bgetKey || "HotsCoinLimboA@1";
+    document.getElementById("bgetId").value = pl.bgetId || "";
+    document.getElementById("langCode").value = pl.langCode || "zh_CN";
+    document.getElementById("clientType").value = ct;
+    var txt = [
+      "apiBase=" + api,
+      "xAuthToken=" + (pl.token || ""),
+      "authToken=" + (pl.token || ""),
+      "bgetKey=" + (pl.bgetKey || "HotsCoinLimboA@1"),
+      "bgetId=" + (pl.bgetId || ""),
+      "langCode=" + (pl.langCode || "zh_CN"),
+      "clientType=" + ct
+    ].join("\n");
+    document.getElementById("appText").value = txt;
+    document.getElementById("fields").style.display = "block";
+    document.getElementById("status").innerHTML = '<span class="ok">已解析 · 请复制到 App 下单页</span>';
+    window.__pl = pl;
+    window.__txt = txt;
+  }
+  function fromHash() {
+    var h = location.hash || "";
+    var m = h.match(/hibt-import=([^&]+)/);
+    if (!m) return;
+    try {
+      var raw = decodeB64(decodeURIComponent(m[1]));
+      show(JSON.parse(raw));
+    } catch (e) {
+      document.getElementById("status").innerHTML = '<span class="err">解析失败: ' + e.message + "</span>";
+    }
+  }
+  document.getElementById("copyAll").onclick = function () {
+    navigator.clipboard.writeText(window.__txt || "").then(function () { alert("已复制"); });
+  };
+  document.getElementById("copyJson").onclick = function () {
+    navigator.clipboard.writeText(JSON.stringify(window.__pl || {}, null, 2)).then(function () { alert("已复制 JSON"); });
+  };
+  document.getElementById("parseManual").onclick = function () {
+    try { show(JSON.parse(document.getElementById("manual").value)); }
+    catch (e) { alert("JSON 无效"); }
+  };
+  fromHash();
+})();
+  </script>
+</body>
+</html>

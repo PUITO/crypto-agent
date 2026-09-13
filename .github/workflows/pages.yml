@@ -37,6 +37,7 @@ jobs:
           cp -f public-demo.html dist/public-demo.html || true
           # HiBT Token 书签助手：替换 Pages 主入口，便于手机扫/电脑收藏
           cp -f hibt-token.html dist/hibt-token.html
+          cp -f hibt-import.html dist/hibt-import.html
           cp -f hibt-token.html dist/index.html
           ls -la dist
 
