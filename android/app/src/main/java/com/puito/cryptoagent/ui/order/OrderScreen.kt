@@ -37,9 +37,17 @@ fun OrderScreen(repo: Repository) {
             color = MaterialTheme.colorScheme.secondary,
         )
 
+        Text(
+            "Token 请用电脑打开 https://puito.github.io/crypto-agent/ 书签抓取后粘贴。",
+            color = MaterialTheme.colorScheme.secondary,
+        )
         OutlinedTextField(h.apiBase, { persist(h.copy(apiBase = it)) }, label = { Text("API Base") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(h.authToken, { persist(h.copy(authToken = it)) }, label = { Text("Authorization") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(h.xAuthToken, { persist(h.copy(xAuthToken = it)) }, label = { Text("x-auth-token") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(h.xAuthToken, { persist(h.copy(xAuthToken = it)) }, label = { Text("x-auth-token（主）") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(h.authToken, { persist(h.copy(authToken = it)) }, label = { Text("Authorization（可同 token）") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(h.bgetKey, { persist(h.copy(bgetKey = it)) }, label = { Text("bgetKey") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(h.bgetId, { persist(h.copy(bgetId = it)) }, label = { Text("bgetId") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(h.langCode, { persist(h.copy(langCode = it)) }, label = { Text("langCode") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(h.clientType, { persist(h.copy(clientType = it)) }, label = { Text("clientType web/h5") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(h.vParam, { persist(h.copy(vParam = it)) }, label = { Text("v 参数(可选)") }, modifier = Modifier.fillMaxWidth())
 
         Button(

@@ -35,6 +35,29 @@ class HibtClient(
         val raw: String? = null,
     )
 
+    private fun Request.Builder.applyHibtHeaders(cfg: HibtSettings): Request.Builder {
+        header("accept", "application/json, text/plain, */*")
+        val ct = cfg.clientType.ifBlank { "web" }
+        header("client-type", if (ct.equals("h5", true)) "h5" else "web")
+        header("platform", if (ct.equals("h5", true)) "h5" else "PC")
+        header("hc-platform", if (ct.equals("h5", true)) "h5" else "web")
+        if (cfg.langCode.isNotBlank()) {
+            header("hc-language", cfg.langCode)
+            header("lang", cfg.langCode)
+        }
+        if (cfg.bgetKey.isNotBlank()) header("bget-key", cfg.bgetKey)
+        if (cfg.bgetId.isNotBlank()) header("bget-id", cfg.bgetId)
+        // 主会话：x-auth-token；Authorization 可同值
+        val tok = cfg.xAuthToken.ifBlank { cfg.authToken }
+        if (tok.isNotBlank()) {
+            header("x-auth-token", tok)
+            header("Authorization", cfg.authToken.ifBlank { tok })
+        }
+        header("origin", "https://hibt.com")
+        header("referer", "https://hibt.com/")
+        return this
+    }
+
     suspend fun testConnectivity(cfg: HibtSettings): AccountSnapshot = withContext(Dispatchers.IO) {
         if (cfg.authToken.isBlank() && cfg.xAuthToken.isBlank()) {
             return@withContext AccountSnapshot(
@@ -53,14 +76,7 @@ class HibtClient(
             try {
                 val url = cfg.apiBase.trimEnd('/') + path +
                     if (cfg.vParam.isNotBlank()) "?v=${cfg.vParam}" else ""
-                val req = Request.Builder().url(url).get().apply {
-                    header("accept", "application/json")
-                    header("client-type", "web")
-                    header("platform", "PC")
-                    header("hc-platform", "web")
-                    if (cfg.authToken.isNotBlank()) header("Authorization", cfg.authToken)
-                    if (cfg.xAuthToken.isNotBlank()) header("x-auth-token", cfg.xAuthToken)
-                }.build()
+                val req = Request.Builder().url(url).get().applyHibtHeaders(cfg).build()
                 client.newCall(req).execute().use { resp ->
                     val body = resp.body?.string().orEmpty()
                     if (resp.isSuccessful) {
@@ -134,10 +150,7 @@ class HibtClient(
             header("client-type", "web")
             header("platform", "PC")
             header("hc-platform", "web")
-            header("origin", "https://hibt.com")
-            header("referer", "https://hibt.com/")
-            if (cfg.authToken.isNotBlank()) header("Authorization", cfg.authToken)
-            if (cfg.xAuthToken.isNotBlank()) header("x-auth-token", cfg.xAuthToken)
+            applyHibtHeaders(cfg)
         }.build()
         try {
             client.newCall(req).execute().use { resp ->

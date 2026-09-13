@@ -99,10 +99,14 @@ data class ChartOverlay(
 )
 
 data class HibtSettings(
-    val apiBase: String = "https://api.hibt0.com",
+    val apiBase: String = "https://api-ws.taichuwuji.com",
     val authToken: String = "",
     val xAuthToken: String = "",
     val vParam: String = "",
+    val bgetKey: String = "HotsCoinLimboA@1",
+    val bgetId: String = "",
+    val langCode: String = "zh_CN",
+    val clientType: String = "web", // web | h5
     val autoTrade: Boolean = false,
     val aiEvaluate: Boolean = false,
     val aiMinWinRate: Double = 55.0, // 百分比
