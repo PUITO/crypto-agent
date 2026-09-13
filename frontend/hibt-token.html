@@ -6,320 +6,420 @@
   <title>HiBT Token 助手 · Crypto Agent</title>
   <style>
     :root {
-      --bg: #0b0e11; --panel: #12161c; --border: #1e2530; --text: #e8ecf1;
-      --muted: #8b9aab; --accent: #3b82f6; --green: #22c55e; --warn: #f59e0b; --red: #ef4444;
+      --bg:#0b0e11; --panel:#12161c; --border:#1e2530; --text:#e8ecf1;
+      --muted:#8b9aab; --accent:#3b82f6; --green:#22c55e; --warn:#f59e0b;
     }
     * { box-sizing: border-box; }
     body {
-      margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      margin: 0 auto; max-width: 740px; padding: 20px 16px 48px;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       background: var(--bg); color: var(--text); line-height: 1.55;
-      max-width: 720px; margin-inline: auto; padding: 20px 16px 48px;
     }
-    h1 { font-size: 1.35rem; margin: 0 0 8px; }
-    h2 { font-size: 1.05rem; margin: 28px 0 10px; color: #cbd5e1; }
+    h1 { font-size: 1.35rem; margin: 0 0 6px; }
+    h2 { font-size: 1.05rem; margin: 26px 0 10px; color: #cbd5e1; }
     p, li { color: var(--muted); font-size: 0.95rem; }
     a { color: var(--accent); }
     .card {
       background: var(--panel); border: 1px solid var(--border);
-      border-radius: 12px; padding: 16px; margin: 14px 0;
+      border-radius: 12px; padding: 16px; margin: 12px 0;
     }
-    .warn {
-      border-color: #78350f; background: #1c1408; color: #fde68a;
-      font-size: 0.88rem;
-    }
+    .warn { border-color: #78350f; background: #1c1408; color: #fde68a; font-size: 0.88rem; }
     .bookmark {
-      display: inline-block; margin: 10px 0;
-      padding: 12px 18px; border-radius: 999px;
-      background: linear-gradient(135deg, #2563eb, #1d4ed8);
-      color: #fff !important; text-decoration: none; font-weight: 600;
-      cursor: grab; user-select: none;
+      display: inline-block; margin: 10px 0; padding: 12px 18px; border-radius: 999px;
+      background: linear-gradient(135deg,#2563eb,#1d4ed8);
+      color: #fff !important; text-decoration: none; font-weight: 600; cursor: grab;
     }
-    .bookmark:active { cursor: grabbing; }
     code, pre {
-      background: #0a0c10; border: 1px solid var(--border);
-      border-radius: 8px; font-size: 0.8rem;
+      background: #0a0c10; border: 1px solid var(--border); border-radius: 8px; font-size: 0.78rem;
     }
     code { padding: 2px 6px; }
-    pre {
-      padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-all;
-      color: #e2e8f0;
-    }
-    ol { padding-left: 1.25rem; }
-    .ok { color: var(--green); }
-    .badge {
-      display: inline-block; font-size: 0.75rem; padding: 2px 8px;
-      border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
-    }
+    pre { padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-all; color: #e2e8f0; }
     button.copy {
       background: #1e293b; border: 1px solid var(--border); color: var(--text);
       border-radius: 8px; padding: 8px 12px; cursor: pointer; margin: 4px 4px 4px 0;
     }
-    button.copy:hover { border-color: var(--accent); }
+    .ok { color: var(--green); }
   </style>
 </head>
 <body>
-  <h1>HiBT Token 助手</h1>
-  <p class="badge">Crypto Agent · 手机真实下单配置</p>
-  <p>登录 <a href="https://hibt.com" target="_blank" rel="noopener">hibt.com</a> 后，点击书签即可自动抓取会话 Token，填到 App「下单」页。</p>
+  <h1>HiBT Token 助手（V2）</h1>
+  <p>对齐主流抓包书签逻辑：监听期权/事件合约 API，提取 <code>x-auth-token</code>、浏览器指纹头、bgetKey/bgetId、API Base。</p>
 
   <div class="card warn">
-    <strong>风险提示</strong>：Token 等同已登录会话，勿发到公开群/仓库。本工具仅在你本机浏览器运行，不上传服务器。
-    HiBT 无官方第三方量化 API，自动化有封号与资金风险，后果自负。
+    <strong>风险</strong>：Token = 登录会话。勿公开分享。本页仅生成本地书签，不上传服务器。
+    HiBT 无官方量化 API，真实下单风险自负。
   </div>
 
-  <h2>① 安装书签（电脑 Chrome / Edge）</h2>
+  <h2>① 安装书签</h2>
   <div class="card">
-    <p>把下面按钮<strong>拖到浏览器书签栏</strong>（或右键 → 将链接添加为书签）：</p>
-    <!-- BOOKMARKLET: injected below via script for maintainability -->
-    <p style="text-align:center">
-      <a id="bm" class="bookmark" href="#">HiBT取Token</a>
-    </p>
-    <p style="font-size:0.85rem">若拖拽无效：书签管理 → 添加书签 → 网址粘贴下方「书签源码」全文（以 <code>javascript:</code> 开头）。</p>
+    <p>将按钮<strong>拖到书签栏</strong>：</p>
+    <p style="text-align:center"><a id="bm" class="bookmark" href="#">HiBT取Token·CA</a></p>
+    <p style="font-size:0.85rem">无效时：添加书签 → 网址粘贴下方「书签源码」全文。</p>
   </div>
 
-  <h2>② 使用步骤</h2>
+  <h2>② 使用</h2>
   <div class="card">
     <ol>
-      <li>电脑打开并<strong>登录</strong> <a href="https://hibt.com" target="_blank" rel="noopener">https://hibt.com</a></li>
-      <li>进入<strong>事件合约</strong>页面，确认能看到行情</li>
-      <li>点击书签栏 <strong>HiBT取Token</strong></li>
-      <li>页面会出现浮层：自动扫描 localStorage / Cookie，并<strong>拦截接下来约 20 秒</strong>的 API 请求头</li>
-      <li>在官网随意点一下刷新/持仓，让接口发出请求（便于抓到 Authorization）</li>
-      <li>在浮层点「复制」→ 打开手机 App → <strong>下单</strong>页粘贴 → 测试连通性</li>
+      <li>登录 HiBT 相关站点（如 <code>hibt.com</code>、<code>web.dutbgwv.online</code> 等已登录页）</li>
+      <li>打开<strong>期权 / 事件合约 / 订单 / 首页</strong></li>
+      <li>点击书签 <strong>HiBT取Token·CA</strong> → 提示「监听已开启」</li>
+      <li>再点一下下单区、订单列表或刷新，触发 API</li>
+      <li>抓到后自动弹出可复制内容 → 填入 App「下单」页</li>
     </ol>
-    <p class="ok">手机运行监控时<strong>不需要</strong>一直开着电脑浏览器；Token 过期后再取一次即可。</p>
+    <p class="ok">第二次点书签：若已有缓存包会直接再导出；否则提示继续操作页面。</p>
   </div>
 
-  <h2>③ 填到 App 的字段</h2>
+  <h2>③ 对应 App 字段</h2>
   <div class="card">
     <ul>
-      <li><strong>API Base</strong>：一般 <code>https://api.hibt0.com</code></li>
-      <li><strong>Authorization</strong></li>
-      <li><strong>x-auth-token</strong></li>
-      <li><strong>v</strong>（若 URL 带 <code>?v=</code>）</li>
+      <li><strong>API Base</strong> → 如 <code>https://api-ws.taichuwuji.com</code></li>
+      <li><strong>x-auth-token</strong> → 主会话（优先）</li>
+      <li><strong>Authorization</strong> → 可与 token 相同或留空</li>
+      <li><strong>bgetKey / bgetId</strong>（若 App 已支持）</li>
     </ul>
   </div>
 
-  <h2>书签源码（备份）</h2>
+  <h2>书签源码</h2>
   <div class="card">
     <button type="button" class="copy" id="copySrc">复制书签源码</button>
     <pre id="srcOut"></pre>
   </div>
 
-  <p style="font-size:0.8rem;color:var(--muted)">
-    页面地址（可收藏）：本站 GitHub Pages ·
-    <a href="./hibt-token.html">hibt-token.html</a>
-  </p>
-
   <script>
 (function () {
-  // 书签：在 hibt 域名执行，扫描存储 + 短时拦截 fetch/XHR
-  var bookmarkFn = function () {
-    if (!/hibt/i.test(location.hostname) && !/hibt/i.test(location.href)) {
-      alert("请先打开并登录 hibt.com（或事件合约页），再点击此书签。");
-      return;
+  /** 与参考脚本同逻辑，FIN 改为导出给 Crypto Agent（不跳转第三方） */
+  function bookmarkBody() {
+    var W = window, KEY = "__CRYPTOAGENT_HIBT_BUNDLE__";
+    function T(v) { return v == null ? "" : String(v).trim(); }
+    var TR = /(?:event\/event-order|uc\/member\/my-info|uc\/check\/login|option-order\/(?:history-summary|list|history|place)|event-order\/(?:history-summary|list|history|place)|option\/option-coin\/list|option\/|uc\/)/i;
+    var DEFAULT_BGET_KEY = "HotsCoinLimboA@1";
+    var KN = ["BGET_KEY", "bget_key", "bgetKey", "vKey"];
+    var IN = ["BGET_ID", "bget_id", "bgetId", "memberId", "uid"];
+
+    function RC(n) {
+      try {
+        var m = document.cookie.match(new RegExp("(?:^|;\\s*)" + n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "=([^;]*)"));
+        return m ? decodeURIComponent(m[1]) : "";
+      } catch (_) { return ""; }
     }
-    var out = {
-      apiBase: "https://api.hibt0.com",
-      authorization: "",
-      xAuthToken: "",
-      v: "",
-      extras: {},
-      capturedAt: new Date().toISOString()
-    };
-    function tryParse(v) {
-      try { return JSON.parse(v); } catch (e) { return null; }
-    }
-    function pickAuth(v) {
-      if (!v || typeof v !== "string") return;
-      var s = v.trim();
-      if (/^Bearer\s+/i.test(s)) s = s;
-      if (/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(s) || s.length > 32) {
-        if (!out.authorization) out.authorization = s;
+    function RS(ns) {
+      var i, n, v;
+      for (i = 0; i < ns.length; i++) {
+        n = ns[i];
+        v = T(RC(n)); if (v) return v;
+        try { v = T(localStorage.getItem(n)); if (v) return v; } catch (_) {}
+        try { v = T(sessionStorage.getItem(n)); if (v) return v; } catch (_) {}
       }
+      return "";
     }
-    function scanStore(store, prefix) {
+    function EBK(pl) { if (pl && !T(pl.bgetKey)) pl.bgetKey = DEFAULT_BGET_KEY; }
+    function NH(i) {
+      var o = {}, k;
+      if (!i) return o;
       try {
-        for (var i = 0; i < store.length; i++) {
-          var k = store.key(i);
-          var val = store.getItem(k);
-          if (!val) continue;
-          var kl = (k || "").toLowerCase();
-          if (/auth|token|jwt|access|session|login/.test(kl)) {
-            out.extras[prefix + k] = val.length > 800 ? val.slice(0, 800) + "…" : val;
-            pickAuth(val);
-            var j = tryParse(val);
-            if (j && typeof j === "object") {
-              ["token", "accessToken", "access_token", "authorization", "authToken", "x-auth-token", "xAuthToken"].forEach(function (f) {
-                if (j[f]) {
-                  if (/x-?auth/i.test(f)) out.xAuthToken = out.xAuthToken || String(j[f]);
-                  else pickAuth(String(j[f]));
-                }
-              });
-            }
+        if (typeof Headers != "undefined" && i instanceof Headers) {
+          i.forEach(function (v, k) { o[String(k).toLowerCase()] = v; });
+          return o;
+        }
+      } catch (_) {}
+      if (Array.isArray(i)) {
+        for (var n = 0; n < i.length; n++) {
+          var p = i[n] || [];
+          if (p.length >= 2) o[String(p[0]).toLowerCase()] = p[1];
+        }
+        return o;
+      }
+      if (typeof i.forEach === "function") {
+        try { i.forEach(function (v, k) { o[String(k).toLowerCase()] = v; }); return o; } catch (_) {}
+      }
+      if (typeof i === "object") {
+        for (k in i) if (Object.prototype.hasOwnProperty.call(i, k)) o[String(k).toLowerCase()] = i[k];
+      }
+      return o;
+    }
+    function MH(a, b) {
+      var o = {}, k; a = a || {}; b = b || {};
+      for (k in a) if (Object.prototype.hasOwnProperty.call(a, k)) o[k] = a[k];
+      for (k in b) if (Object.prototype.hasOwnProperty.call(b, k)) o[k] = b[k];
+      return o;
+    }
+    function IP(u) {
+      try { return TR.test(String(new URL(String(u || ""), location.href).pathname || "")); }
+      catch (_) { return false; }
+    }
+    function CL(u) {
+      try {
+        var p = new URL(String(u || ""), location.href).pathname || "";
+        if (/event\/event-order\/place|option-order\/place/i.test(p)) return "placeOrder";
+        if (/event\/event-order\/list|option-order\/list/i.test(p)) return "listOpening";
+        if (/option-coin\/list/i.test(p)) return "optionCoinList";
+        if (/uc\/(check\/login|member\/my-info)/i.test(p)) return "checkLogin";
+        return "";
+      } catch (_) { return ""; }
+    }
+    function AT(v) {
+      var t = T(v).replace(/^Bearer\s+/i, "");
+      try { t = decodeURIComponent(t); } catch (_) {}
+      return (!t || /\s/.test(t) || t.length < 20) ? "" : t;
+    }
+    function RLT(h) {
+      var o = NH(h || {}), t = AT(o["x-auth-token"] || o.authorization);
+      if (t) return t;
+      t = AT(RC("bget_token")); if (t) return t;
+      try { var ss = sessionStorage.getItem("bget_token"); if (ss) return AT(ss); } catch (_) {}
+      return "";
+    }
+    function CBH() {
+      var h = {};
+      try { if (navigator.userAgent) h["user-agent"] = navigator.userAgent; } catch (_) {}
+      try {
+        var u = navigator.userAgentData;
+        if (u && u.brands && u.brands.length) {
+          var p = [], i;
+          for (i = 0; i < u.brands.length; i++) {
+            var b = u.brands[i];
+            if (b && b.brand && b.version) p.push('"' + b.brand + '";v="' + b.version + '"');
           }
-          if (/eyJ[A-Za-z0-9_-]+\./.test(val)) pickAuth(val);
+          if (p.length) h["sec-ch-ua"] = p.join(", ");
         }
-      } catch (e) {}
+        if (u) {
+          h["sec-ch-ua-mobile"] = u.mobile ? "?1" : "?0";
+          if (u.platform) h["sec-ch-ua-platform"] = '"' + u.platform + '"';
+        }
+      } catch (_) {}
+      return h;
     }
-    scanStore(localStorage, "local.");
-    scanStore(sessionStorage, "session.");
-    try {
-      document.cookie.split(";").forEach(function (c) {
-        var i = c.indexOf("=");
-        if (i < 0) return;
-        var k = c.slice(0, i).trim();
-        var v = decodeURIComponent(c.slice(i + 1).trim());
-        if (/auth|token|jwt/i.test(k) && v) {
-          out.extras["cookie." + k] = v.length > 200 ? v.slice(0, 200) + "…" : v;
-          if (/x-?auth/i.test(k)) out.xAuthToken = out.xAuthToken || v;
-          else pickAuth(v);
-        }
-      });
-    } catch (e) {}
-
-    function readHeaders(h) {
-      if (!h) return;
+    function WBH(h) { return MH(CBH(), h || {}); }
+    function EID(jwt) {
       try {
-        if (typeof h.forEach === "function") {
-          h.forEach(function (val, key) {
-            var k = String(key).toLowerCase();
-            if (k === "authorization") out.authorization = val;
-            if (k === "x-auth-token") out.xAuthToken = val;
-          });
-        } else if (typeof h === "object") {
-          Object.keys(h).forEach(function (key) {
-            var k = key.toLowerCase();
-            var val = h[key];
-            if (k === "authorization") out.authorization = val;
-            if (k === "x-auth-token") out.xAuthToken = val;
-          });
-        }
-      } catch (e) {}
+        var p = jwt.split(".")[1], pad = p.length % 4;
+        if (pad) p += "====".slice(pad);
+        var b = JSON.parse(decodeURIComponent(escape(atob(p.replace(/-/g, "+").replace(/_/g, "/"))))).body;
+        return b && (b.fUId != null ? String(b.fUId) : b.id != null ? String(b.id) : "");
+      } catch (_) { return ""; }
     }
-    function readUrl(u) {
+    function IH(h) {
+      h = String(h || "").toLowerCase();
+      return h.indexOf("hibt") >= 0 || h.indexOf("bget") >= 0 || h.indexOf("taichuwuji") >= 0 ||
+        h.indexOf("s0e9tu") >= 0 || h.indexOf("dutbgwv") >= 0;
+    }
+    function RAB(u) {
       try {
-        var url = typeof u === "string" ? u : (u && u.url) || "";
-        if (/api\.hibt/i.test(url)) {
-          var m = url.match(/[?&]v=([^&]+)/);
-          if (m) out.v = decodeURIComponent(m[1]);
-          var base = url.match(/https?:\/\/[^/]+/);
-          if (base) out.apiBase = base[0];
-        }
-      } catch (e) {}
+        var x = new URL(String(u || ""), location.href);
+        if (IH(x.hostname)) return x.protocol + "//" + x.host;
+      } catch (_) {}
+      return "https://api-ws.taichuwuji.com";
     }
-
-    var oldFetch = window.fetch;
-    window.fetch = function () {
-      try {
-        var input = arguments[0];
-        var init = arguments[1] || {};
-        readUrl(input);
-        readHeaders(init.headers);
-      } catch (e) {}
-      return oldFetch.apply(this, arguments);
-    };
-    var XO = window.XMLHttpRequest;
-    if (XO && XO.prototype) {
-      var open = XO.prototype.open;
-      var setRequestHeader = XO.prototype.setRequestHeader;
-      XO.prototype.open = function () {
-        try { readUrl(arguments[1]); } catch (e) {}
-        return open.apply(this, arguments);
-      };
-      XO.prototype.setRequestHeader = function (k, v) {
-        try {
-          var key = String(k).toLowerCase();
-          if (key === "authorization") out.authorization = v;
-          if (key === "x-auth-token") out.xAuthToken = v;
-        } catch (e) {}
-        return setRequestHeader.apply(this, arguments);
-      };
+    function RDY(pl) {
+      if (!pl || !pl.token) return false;
+      if (!pl.bgetId) pl.bgetId = EID(pl.token);
+      EBK(pl);
+      return !!pl.bgetId;
     }
-
-    function panel(msg) {
+    function CT(h) {
+      h = h || {};
+      if (/^h5$/i.test(T(h.platform))) return 2;
+      if (/^pc$/i.test(T(h.platform))) return 1;
+      if (/^h5$/i.test(T(h["client-type"]))) return 2;
+      if (/^web$/i.test(T(h["client-type"]))) return 1;
+      if (/iPhone|Android/i.test(T(h["user-agent"]))) return 2;
+      return 1;
+    }
+    function appText(pl) {
+      return [
+        "API Base: " + (pl.apiBaseUrl || ""),
+        "x-auth-token: " + (pl.token || ""),
+        "Authorization: " + (pl.token || ""),
+        "bgetKey: " + (pl.bgetKey || ""),
+        "bgetId: " + (pl.bgetId || ""),
+        "langCode: " + (pl.langCode || "zh_CN"),
+        "clientType: " + (pl.clientType == 2 ? "h5" : "web"),
+        "capturedAt: " + new Date(pl.capturedAt || Date.now()).toISOString()
+      ].join("\n");
+    }
+    function showPanel(pl, status) {
       var old = document.getElementById("__ca_hibt_panel");
       if (old) old.remove();
       var el = document.createElement("div");
       el.id = "__ca_hibt_panel";
-      el.style.cssText = "position:fixed;z-index:2147483647;right:12px;bottom:12px;max-width:min(420px,94vw);max-height:80vh;overflow:auto;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:12px;padding:14px;font:13px/1.45 system-ui,sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.45)";
-      el.innerHTML = msg;
-      document.documentElement.appendChild(el);
-      return el;
-    }
-    function esc(s) {
-      return String(s || "").replace(/[&<>"']/g, function (c) {
-        return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
-      });
-    }
-    function render(status) {
-      var text =
-        "API Base:\n" + out.apiBase +
-        "\n\nAuthorization:\n" + (out.authorization || "(未抓到，请在官网点一下刷新)") +
-        "\n\nx-auth-token:\n" + (out.xAuthToken || "(未抓到)") +
-        "\n\nv:\n" + (out.v || "(无)");
-      var html =
-        "<div style='font-weight:700;margin-bottom:8px'>HiBT Token · Crypto Agent</div>" +
-        "<div style='color:#94a3b8;margin-bottom:8px'>" + esc(status) + "</div>" +
-        "<textarea id='__ca_hibt_ta' style='width:100%;height:160px;background:#020617;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:8px;font-size:11px'>" +
-        esc(text) +
-        "</textarea>" +
+      el.style.cssText = "position:fixed;z-index:2147483647;right:12px;bottom:12px;max-width:min(440px,94vw);max-height:82vh;overflow:auto;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:12px;padding:14px;font:13px/1.45 system-ui,sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.5)";
+      var text = appText(pl);
+      var json = JSON.stringify(pl);
+      el.innerHTML =
+        "<div style='font-weight:700;margin-bottom:6px'>HiBT Token · Crypto Agent</div>" +
+        "<div style='color:#94a3b8;margin-bottom:8px;font-size:12px'></div>" +
+        "<textarea id='__ca_ta' style='width:100%;height:170px;background:#020617;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:8px;font-size:11px'></textarea>" +
         "<div style='margin-top:8px'>" +
-        "<button type='button' id='__ca_hibt_copy' style='background:#2563eb;color:#fff;border:0;border-radius:8px;padding:8px 12px;margin-right:6px;cursor:pointer'>复制全部</button>" +
-        "<button type='button' id='__ca_hibt_close' style='background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:8px;padding:8px 12px;cursor:pointer'>关闭</button>" +
-        "</div>" +
-        "<div style='margin-top:8px;color:#64748b;font-size:11px'>填到 App「下单」页。勿分享 Token。</div>";
-      var el = panel(html);
-      el.querySelector("#__ca_hibt_copy").onclick = function () {
-        var ta = el.querySelector("#__ca_hibt_ta");
-        ta.select();
-        navigator.clipboard.writeText(ta.value).then(function () {
-          alert("已复制，请到手机 App 下单页粘贴");
-        }).catch(function () {
-          document.execCommand("copy");
-          alert("已复制");
+        "<button type='button' id='__ca_copy' style='background:#2563eb;color:#fff;border:0;border-radius:8px;padding:8px 12px;margin-right:6px;cursor:pointer'>复制 App 字段</button>" +
+        "<button type='button' id='__ca_json' style='background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:8px;padding:8px 12px;margin-right:6px;cursor:pointer'>复制 JSON</button>" +
+        "<button type='button' id='__ca_x' style='background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:8px;padding:8px 12px;cursor:pointer'>关闭</button>" +
+        "</div>";
+      el.querySelector("div[style*='94a3b8']").textContent = status || "已捕获，请复制到手机 App「下单」";
+      el.querySelector("#__ca_ta").value = text;
+      el.querySelector("#__ca_copy").onclick = function () {
+        navigator.clipboard.writeText(text).then(function () { alert("已复制 App 字段"); }).catch(function () {
+          el.querySelector("#__ca_ta").select(); document.execCommand("copy"); alert("已复制");
         });
       };
-      el.querySelector("#__ca_hibt_close").onclick = function () { el.remove(); };
+      el.querySelector("#__ca_json").onclick = function () {
+        navigator.clipboard.writeText(json).then(function () { alert("已复制 JSON"); }).catch(function () { prompt("复制 JSON", json); });
+      };
+      el.querySelector("#__ca_x").onclick = function () { el.remove(); };
+      document.documentElement.appendChild(el);
+    }
+    function FIN(pl) {
+      if (!pl) return false;
+      pl.headers = WBH(pl.headers);
+      pl.clientType = CT(pl.headers);
+      if (!RDY(pl)) return false;
+      try { localStorage.setItem(KEY, JSON.stringify(pl)); } catch (_) {}
+      W.__CRYPTOAGENT_HIBT_BUNDLE__ = pl;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText)
+          navigator.clipboard.writeText(appText(pl)).catch(function () {});
+      } catch (_) {}
+      showPanel(pl, "已抓到认证包（含指纹头）。可复制到 Crypto Agent App。");
+      return true;
+    }
+    function PL(url, m, h) {
+      var nh = WBH(NH(h)), tk = RLT(nh);
+      if (!tk) return null;
+      var fu = String(url || "");
+      try { fu = new URL(fu, location.href).href; } catch (_) {}
+      var ck = CL(fu), urls = {};
+      if (ck) {
+        urls[ck] = fu;
+        if (ck === "listOpening") urls.listClosed = fu;
+      }
+      return {
+        token: tk,
+        bgetKey: RS(KN),
+        bgetId: RS(IN) || EID(tk),
+        apiBaseUrl: RAB(fu),
+        langCode: T(nh["hc-language"] || nh.lang || "zh_CN"),
+        headers: nh,
+        urls: urls,
+        clientType: CT(nh),
+        capturedAt: Date.now(),
+        source: "hook",
+        sampleUrl: fu,
+        sampleMethod: T(m || "GET").toUpperCase()
+      };
+    }
+    function MG(a, b) {
+      if (!a) return b;
+      if (!b) return a;
+      return {
+        token: b.token || a.token,
+        bgetKey: b.bgetKey || a.bgetKey,
+        bgetId: b.bgetId || a.bgetId,
+        apiBaseUrl: b.apiBaseUrl || a.apiBaseUrl,
+        langCode: b.langCode || a.langCode,
+        headers: MH(a.headers, b.headers),
+        urls: MH(a.urls, b.urls),
+        clientType: b.clientType || a.clientType,
+        capturedAt: b.capturedAt || a.capturedAt,
+        source: b.source || a.source,
+        sampleUrl: b.sampleUrl || a.sampleUrl,
+        sampleMethod: b.sampleMethod || a.sampleMethod
+      };
+    }
+    function SS() {
+      var tk = RLT({});
+      if (!tk) return null;
+      return {
+        token: tk,
+        bgetKey: RS(KN),
+        bgetId: RS(IN) || EID(tk),
+        apiBaseUrl: "https://api-ws.taichuwuji.com",
+        langCode: T(RC("bget_lang_code") || "zh_CN"),
+        headers: WBH({}),
+        urls: {},
+        clientType: CT(WBH({})),
+        capturedAt: Date.now(),
+        source: "storage",
+        sampleUrl: "",
+        sampleMethod: "GET"
+      };
+    }
+    function MK(url, m, h) {
+      try {
+        if (!IP(url)) return false;
+        var st = W[KEY + "_STATE"] = W[KEY + "_STATE"] || { bundle: null };
+        var pl = PL(url, m, h);
+        if (!pl) return false;
+        st.bundle = MG(st.bundle, pl);
+        if (RDY(st.bundle)) return FIN(st.bundle);
+        return false;
+      } catch (_) { return false; }
     }
 
-    render("已扫描本地存储。正在监听 API 请求约 20 秒，请在本页点一下刷新/持仓…");
-    var n = 0;
-    var timer = setInterval(function () {
-      n += 1;
-      if (out.authorization || out.xAuthToken) {
-        render("已捕获请求头（可复制）。监听仍持续至 20 秒结束。");
+    if (!IH(location.hostname)) {
+      alert("请在已登录的 HiBT 页面使用此书签（含 web.dutbgwv.online / hibt 相关域名）");
+      return;
+    }
+    var st = W[KEY + "_STATE"] = W[KEY + "_STATE"] || { installed: 0, bundle: null };
+    if (st.installed) {
+      var old = W.__CRYPTOAGENT_HIBT_BUNDLE__ || null;
+      try { old = old || JSON.parse(localStorage.getItem(KEY) || "null"); } catch (_) {}
+      if (old && RDY(old)) {
+        showPanel(old, "使用已缓存认证包");
+        return;
       }
-      if (n >= 20) {
-        clearInterval(timer);
-        render(
-          out.authorization || out.xAuthToken
-            ? "完成。请复制到手机 App。"
-            : "未抓到请求头。请确认已登录并在事件合约页操作后重试书签。"
-        );
-      }
-    }, 1000);
-  };
+      alert("HiBT 认证监听已安装。请打开期权/订单/首页触发 API。");
+      return;
+    }
+    st.installed = 1;
+    var snap = SS();
+    if (snap) {
+      st.bundle = MG(st.bundle, snap);
+      if (RDY(st.bundle)) FIN(st.bundle);
+    }
+    var OF = W.fetch;
+    if (typeof OF === "function") {
+      W.fetch = function () {
+        var req = arguments[0], init = arguments[1] || {}, url = "", method = "GET", hdr = {};
+        try {
+          url = typeof req === "string" ? req : (req && req.url) || "";
+          method = T(init.method || (req && req.method) || "GET");
+          hdr = MH(hdr, NH(req && req.headers));
+          hdr = MH(hdr, NH(init.headers));
+          MK(url, method, hdr);
+        } catch (_) {}
+        return OF.apply(this, arguments);
+      };
+    }
+    if (typeof XMLHttpRequest !== "undefined" && XMLHttpRequest.prototype) {
+      var OO = XMLHttpRequest.prototype.open;
+      var OS = XMLHttpRequest.prototype.setRequestHeader;
+      var OE = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (m, u) {
+        this.__caMethod = m; this.__caUrl = u; this.__caHdr = {};
+        return OO.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.setRequestHeader = function (n, v) {
+        try { if (!this.__caHdr) this.__caHdr = {}; this.__caHdr[n] = v; } catch (_) {}
+        return OS.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function () {
+        try { MK(this.__caUrl || "", this.__caMethod || "GET", this.__caHdr || {}); } catch (_) {}
+        return OE.apply(this, arguments);
+      };
+    }
+    alert("Crypto Agent · HiBT 认证监听已开启。请点击期权下单/订单列表/首页等，抓到后会弹出复制面板。");
+  }
 
-  // 序列化为 javascript: 书签
-  var raw = "(" + bookmarkFn.toString() + ")();";
-  var href = "javascript:" + encodeURIComponent(raw);
-  // 部分浏览器书签对 encodeURIComponent 整段更兼容；展示用可读版
+  var raw = "(" + bookmarkBody.toString() + ")();";
   var hrefAlt = "javascript:" + raw.replace(/\s+/g, " ");
   var a = document.getElementById("bm");
   a.href = hrefAlt;
   a.onclick = function (e) {
-    // 在本说明页点击时提示
-    if (!/hibt/i.test(location.hostname)) {
-      e.preventDefault();
-      alert("请将此按钮拖到书签栏，然后在已登录的 hibt.com 页面上点击该书签。");
-    }
+    e.preventDefault();
+    alert("请把此按钮拖到书签栏，然后在已登录的 HiBT 页面上点击该书签。");
   };
   document.getElementById("srcOut").textContent = hrefAlt;
   document.getElementById("copySrc").onclick = function () {
-    navigator.clipboard.writeText(hrefAlt).then(function () {
-      alert("书签源码已复制");
-    });
+    navigator.clipboard.writeText(hrefAlt).then(function () { alert("已复制书签源码"); });
   };
 })();
   </script>
