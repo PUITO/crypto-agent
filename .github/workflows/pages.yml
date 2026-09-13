@@ -35,6 +35,9 @@ jobs:
           npm install
           npm run build
           cp -f public-demo.html dist/public-demo.html || true
+          # HiBT Token 书签助手：替换 Pages 主入口，便于手机扫/电脑收藏
+          cp -f hibt-token.html dist/hibt-token.html
+          cp -f hibt-token.html dist/index.html
           ls -la dist
 
       - name: Upload artifact
@@ -57,4 +60,5 @@ jobs:
         run: |
           echo "### Frontend entry" >> $GITHUB_STEP_SUMMARY
           echo "https://puito.github.io/crypto-agent/" >> $GITHUB_STEP_SUMMARY
+          echo "HiBT Token: https://puito.github.io/crypto-agent/hibt-token.html" >> $GITHUB_STEP_SUMMARY
           echo "Demo: https://puito.github.io/crypto-agent/public-demo.html" >> $GITHUB_STEP_SUMMARY
