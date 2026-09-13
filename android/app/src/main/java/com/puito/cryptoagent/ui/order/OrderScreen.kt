@@ -1,5 +1,7 @@
 package com.puito.cryptoagent.ui.order
 
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -7,12 +9,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.puito.cryptoagent.data.Repository
+import com.puito.cryptoagent.util.HibtBundleParser
 import kotlinx.coroutines.launch
 
 @Composable
 fun OrderScreen(repo: Repository) {
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var s by remember { mutableStateOf(repo.settings()) }
     var h by remember { mutableStateOf(s.hibt) }
@@ -20,11 +25,30 @@ fun OrderScreen(repo: Repository) {
     var balance by remember { mutableStateOf("-") }
     var positions by remember { mutableStateOf("-") }
     var busy by remember { mutableStateOf(false) }
+    var parseMsg by remember { mutableStateOf<String?>(null) }
+    var showPasteDialog by remember { mutableStateOf(false) }
+    var pasteDraft by remember { mutableStateOf("") }
 
     fun persist(nh: com.puito.cryptoagent.data.HibtSettings) {
         h = nh
         s = s.copy(hibt = nh)
         repo.saveSettings(s)
+    }
+
+    fun applyParsed(raw: String) {
+        val r = HibtBundleParser.parse(raw, h)
+        parseMsg = r.summary
+        if (r.ok || r.settings.xAuthToken.isNotBlank() || r.settings.apiBase != h.apiBase) {
+            persist(r.settings)
+            status = r.summary
+        }
+    }
+
+    fun readClipboard(): String {
+        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = cm.primaryClip ?: return ""
+        if (clip.itemCount <= 0) return ""
+        return clip.getItemAt(0).coerceToText(ctx)?.toString().orEmpty()
     }
 
     Column(
@@ -38,9 +62,35 @@ fun OrderScreen(repo: Repository) {
         )
 
         Text(
-            "Token 请用电脑打开 https://puito.github.io/crypto-agent/ 书签抓取后粘贴。",
+            "电脑打开 https://puito.github.io/crypto-agent/ 用书签抓取 → 复制 → 下方一键解析。",
             color = MaterialTheme.colorScheme.secondary,
         )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = {
+                    val text = readClipboard()
+                    if (text.isBlank()) {
+                        parseMsg = "剪贴板为空，可改用「粘贴解析」"
+                        showPasteDialog = true
+                    } else {
+                        applyParsed(text)
+                    }
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("剪贴板解析") }
+            OutlinedButton(
+                onClick = {
+                    pasteDraft = readClipboard()
+                    showPasteDialog = true
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("粘贴解析") }
+        }
+        parseMsg?.let {
+            Text(it, color = MaterialTheme.colorScheme.primary)
+        }
+
         OutlinedTextField(h.apiBase, { persist(h.copy(apiBase = it)) }, label = { Text("API Base") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(h.xAuthToken, { persist(h.copy(xAuthToken = it)) }, label = { Text("x-auth-token（主）") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(h.authToken, { persist(h.copy(authToken = it)) }, label = { Text("Authorization（可同 token）") }, modifier = Modifier.fillMaxWidth())
@@ -59,9 +109,7 @@ fun OrderScreen(repo: Repository) {
                     balance = r.balance ?: "-"
                     positions = r.positions ?: "-"
                     if (!r.ok && !r.raw.isNullOrBlank()) {
-                        status = r.message + "
----
-" + r.raw!!.take(500)
+                        status = r.message + "\n---\n" + r.raw!!.take(500)
                     }
                     busy = false
                 }
@@ -120,5 +168,29 @@ fun OrderScreen(repo: Repository) {
                 }
             }, Modifier.weight(1f), enabled = !busy) { Text("测试买跌") }
         }
+    }
+
+    if (showPasteDialog) {
+        AlertDialog(
+            onDismissRequest = { showPasteDialog = false },
+            title = { Text("粘贴 HiBT 认证文本") },
+            text = {
+                OutlinedTextField(
+                    value = pasteDraft,
+                    onValueChange = { pasteDraft = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp),
+                    placeholder = { Text("粘贴 key=value 或 JSON…") },
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    applyParsed(pasteDraft)
+                    showPasteDialog = false
+                }) { Text("解析并填入") }
+            },
+            dismissButton = {
+                TextButton({ showPasteDialog = false }) { Text("取消") }
+            },
+        )
     }
 }
