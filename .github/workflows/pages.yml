@@ -63,5 +63,6 @@ jobs:
         run: |
           echo "### Frontend entry" >> $GITHUB_STEP_SUMMARY
           echo "https://puito.github.io/crypto-agent/" >> $GITHUB_STEP_SUMMARY
+          echo "HiBT Mobile: https://puito.github.io/crypto-agent/hibt-m.html" >> $GITHUB_STEP_SUMMARY
           echo "HiBT Token: https://puito.github.io/crypto-agent/hibt-token.html" >> $GITHUB_STEP_SUMMARY
           echo "Demo: https://puito.github.io/crypto-agent/public-demo.html" >> $GITHUB_STEP_SUMMARY

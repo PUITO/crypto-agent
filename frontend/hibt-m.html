@@ -4,140 +4,144 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b0e11" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <title>HiBT 手机助手 · Crypto Agent</title>
+  <title>HiBT 手机助手 v3 · Crypto Agent</title>
   <style>
     :root {
       --bg:#0b0e11; --panel:#12161c; --border:#1e2530; --text:#e8ecf1;
-      --muted:#8b9aab; --accent:#3b82f6; --green:#22c55e; --warn:#f59e0b; --red:#ef4444;
+      --muted:#8b9aab; --accent:#3b82f6; --green:#22c55e; --warn:#fbbf24; --red:#f87171;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0 auto; max-width: 480px; min-height: 100dvh;
-      padding: 12px 14px calc(24px + env(safe-area-inset-bottom));
-      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      padding: 12px 14px calc(28px + env(safe-area-inset-bottom));
+      font-family: system-ui, -apple-system, sans-serif;
       background: var(--bg); color: var(--text); line-height: 1.5;
     }
-    h1 { font-size: 1.2rem; margin: 4px 0 6px; }
-    h2 { font-size: .95rem; margin: 18px 0 8px; color: #cbd5e1; }
-    p, li { color: var(--muted); font-size: .9rem; margin: 6px 0; }
+    h1 { font-size: 1.2rem; margin: 0 0 4px; }
+    h2 { font-size: .92rem; margin: 18px 0 8px; color: #cbd5e1; }
+    p, li { color: var(--muted); font-size: .88rem; margin: 6px 0; }
     a { color: var(--accent); }
+    .ver { font-size: .7rem; color: var(--muted); }
     .card {
       background: var(--panel); border: 1px solid var(--border);
       border-radius: 14px; padding: 14px; margin: 10px 0;
     }
     .warn { border-color: #78350f; background: #1c1408; color: #fde68a; font-size: .82rem; }
-    .ok { color: var(--green); }
     .row { display: flex; gap: 8px; flex-wrap: wrap; }
     button, .btn {
-      flex: 1; min-width: 120px; padding: 12px 14px; border-radius: 12px;
+      flex: 1; min-width: 110px; padding: 12px 12px; border-radius: 12px;
       border: 1px solid var(--border); background: #1e293b; color: #fff;
-      font-size: .95rem; font-weight: 600; cursor: pointer; text-align: center;
+      font-size: .9rem; font-weight: 600; cursor: pointer; text-align: center;
       text-decoration: none; display: inline-block;
     }
     button.primary, .btn.primary { background: #2563eb; border-color: #2563eb; }
     button.ghost { background: transparent; }
-    label { display: block; color: var(--muted); font-size: .75rem; margin: 10px 0 4px; }
+    label { display: block; color: var(--muted); font-size: .72rem; margin: 10px 0 4px; }
     input, textarea {
       width: 100%; background: #0a0c10; border: 1px solid var(--border);
       color: var(--text); border-radius: 10px; padding: 10px; font-size: 14px;
     }
-    textarea { min-height: 88px; word-break: break-all; }
+    textarea { min-height: 72px; word-break: break-all; }
     .stat { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .stat .box {
       background: #0a0c10; border: 1px solid var(--border); border-radius: 12px; padding: 12px;
     }
-    .stat .v { font-size: 1.15rem; font-weight: 700; color: #fff; margin-top: 4px; word-break: break-all; }
-    .badge { display: inline-block; font-size: .7rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
-    ol { padding-left: 1.2rem; }
-    .steps li { margin: 8px 0; }
+    .stat .v { font-size: 1.1rem; font-weight: 700; color: #fff; margin-top: 4px; word-break: break-all; }
+    .log {
+      max-height: 160px; overflow: auto; font-size: 11px; color: #94a3b8;
+      background: #0a0c10; border-radius: 8px; padding: 8px; white-space: pre-wrap; word-break: break-all;
+    }
     #toast {
       display: none; position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
       background: #14532d; color: #bbf7d0; padding: 10px 16px; border-radius: 999px;
       font-size: .85rem; z-index: 99; max-width: 90%;
     }
+    ol { padding-left: 1.15rem; }
   </style>
 </head>
 <body>
   <h1>HiBT 手机助手</h1>
-  <p class="badge">Chrome 手机 · 无需电脑</p>
-  <p>在手机 Chrome 登录 HiBT 后用书签抓 Token，本页保存并显示余额/持仓摘要，方便随时核对后填入 App。</p>
+  <p class="ver">v3 · 2026-09-13 · 余额/持仓在官网域名内 POST 查询后带回</p>
 
   <div class="card warn">
-    Token 等同登录态，勿发到聊天群。余额以交易所页面为准；本页仅展示抓包/接口摘要，入金出金请在官网操作。
+    Token 勿外传。本页<strong>不上传</strong>服务器。入金/划转请在官网操作。
+    余额与持仓必须在<strong>已登录的 HiBT 页面</strong>点书签抓取（跨域无法从 github.io 直连 API）。
   </div>
 
-  <h2>账户摘要</h2>
+  <h2>账户摘要（书签抓取结果）</h2>
   <div class="card">
     <div class="stat">
-      <div class="box"><div class="muted" style="color:var(--muted);font-size:.75rem">余额</div><div class="v" id="bal">—</div></div>
-      <div class="box"><div class="muted" style="color:var(--muted);font-size:.75rem">持仓</div><div class="v" id="pos">—</div></div>
+      <div class="box"><div style="color:var(--muted);font-size:.72rem">余额</div><div class="v" id="bal">—</div></div>
+      <div class="box"><div style="color:var(--muted);font-size:.72rem">未平仓</div><div class="v" id="pos">—</div></div>
     </div>
-    <p id="meta" style="font-size:.78rem;margin-top:10px">尚未导入凭证</p>
-    <div class="row" style="margin-top:10px">
+    <p id="meta" style="font-size:.78rem;margin-top:10px">尚未抓取</p>
+    <p style="font-size:.75rem">API Base：<span id="apiShow">—</span></p>
+    <div class="row" style="margin-top:8px">
       <button type="button" class="primary" id="btnCopyApp">复制给 App</button>
-      <button type="button" id="btnRefreshHint">如何刷新</button>
+      <button type="button" id="btnCopyLog">复制日志</button>
     </div>
+    <label>抓取日志</label>
+    <div class="log" id="log">（点书签后显示）</div>
   </div>
 
-  <h2>① 手机 Chrome 安装书签</h2>
+  <h2>① 手机 Chrome 安装书签（必做）</h2>
   <div class="card">
-    <ol class="steps">
-      <li>复制下方<strong>书签地址</strong>（整段 <code>javascript:...</code>）</li>
-      <li>Chrome → 星标收藏任意页 → <strong>编辑书签</strong></li>
-      <li>名称填 <code>HiBT取Token</code>，网址<strong>整段替换</strong>为刚复制的 javascript</li>
-      <li>打开并登录 HiBT（事件合约页）→ 地址栏旁或书签里点 <code>HiBT取Token</code></li>
-      <li>再点一下订单/首页触发接口，抓到后会跳回本站导入页并写入本地</li>
+    <ol>
+      <li>点下方 <strong>复制书签地址</strong></li>
+      <li>Chrome → 书签 → 编辑，名称 <code>HiBT取Token</code>，网址整段换成 javascript:…</li>
+      <li>打开并登录 HiBT 事件合约页</li>
+      <li>点书签 → 再点订单/首页触发接口</li>
+      <li>自动跳回本页，写入余额/持仓摘要</li>
     </ol>
     <div class="row">
       <button type="button" class="primary" id="copyBm">复制书签地址</button>
       <a class="btn" href="https://hibt.com" target="_blank" rel="noopener">打开 HiBT</a>
     </div>
-    <p style="font-size:.78rem;margin-top:8px">部分机型需在书签管理器里改网址；若点书签无反应，确认网址以 <code>javascript:</code> 开头且未被 Chrome 改成搜索词。</p>
   </div>
 
-  <h2>② 手动粘贴 / 导入</h2>
+  <h2>② 手动粘贴（仅 token，不测余额）</h2>
   <div class="card">
     <label>粘贴 App 文本或 JSON</label>
-    <textarea id="manual" placeholder="apiBase=...&#10;xAuthToken=... 或 {&quot;token&quot;:...}"></textarea>
+    <textarea id="manual" placeholder="apiBase=...&#10;xAuthToken=..."></textarea>
     <div class="row" style="margin-top:8px">
-      <button type="button" class="primary" id="btnParse">解析并保存</button>
-      <button type="button" id="btnClear">清除本地</button>
+      <button type="button" class="primary" id="btnParse">解析到本页</button>
+      <button type="button" id="btnClear">清除本机缓存</button>
     </div>
+    <p style="font-size:.75rem">手动粘贴<strong>不会</strong>向交易所发请求；要余额请用书签在官网页抓取。</p>
   </div>
 
-  <h2>③ 已保存字段</h2>
+  <h2>③ 字段（可改后复制到 App）</h2>
   <div class="card">
     <label>API Base</label>
     <input id="apiBase" />
     <label>Token</label>
-    <textarea id="token" style="min-height:64px"></textarea>
-    <label>bgetKey</label>
-    <input id="bgetKey" />
-    <label>bgetId</label>
-    <input id="bgetId" />
+    <textarea id="token" style="min-height:56px"></textarea>
+    <label>v 参数</label>
+    <input id="vParam" />
+    <label>bgetKey / bgetId</label>
+    <div class="row">
+      <input id="bgetKey" style="flex:1" placeholder="bgetKey" />
+      <input id="bgetId" style="flex:1" placeholder="bgetId" />
+    </div>
     <label>langCode / clientType</label>
     <div class="row">
       <input id="langCode" style="flex:1" />
       <input id="clientType" style="flex:1" />
     </div>
     <div class="row" style="margin-top:10px">
-      <button type="button" class="primary" id="btnSave">保存修改</button>
-      <a class="btn" id="linkOfficial" href="https://hibt.com" target="_blank" rel="noopener">去官网调余额</a>
+      <button type="button" class="primary" id="btnSave">保存到本机</button>
+      <a class="btn" href="https://hibt.com" target="_blank" rel="noopener">去官网调余额</a>
     </div>
-    <p style="font-size:.78rem">「调余额」指在官网入金/划转；本助手不能直接改交易所余额，只能刷新查看。</p>
   </div>
 
-  <p style="font-size:.75rem;color:var(--muted)">
-    完整说明：<a href="./hibt-token.html">桌面版说明</a> ·
-    <a href="./hibt-import.html">导入页</a>
-  </p>
+  <p class="ver">桌面说明 <a href="./hibt-token.html">hibt-token.html</a></p>
   <div id="toast"></div>
 
   <script>
 (function () {
-  var STORE = "ca_hibt_mobile_v1";
+  var STORE = "ca_hibt_mobile_v3";
   var DEFAULT_KEY = "HotsCoinLimboA@1";
+  var IMPORT_PAGE = "https://puito.github.io/crypto-agent/hibt-m.html";
 
   function toast(m) {
     var el = document.getElementById("toast");
@@ -145,87 +149,85 @@
     el.style.display = "block";
     setTimeout(function () { el.style.display = "none"; }, 2200);
   }
-
   function load() {
     try { return JSON.parse(localStorage.getItem(STORE) || "null") || {}; } catch (e) { return {}; }
   }
-
   function save(pl) {
-    localStorage.setItem(STORE, JSON.stringify(pl));
+    try { localStorage.setItem(STORE, JSON.stringify(pl)); } catch (e) {}
   }
-
   function appText(pl) {
     return [
       "apiBase=" + (pl.apiBase || pl.apiBaseUrl || ""),
       "xAuthToken=" + (pl.token || pl.xAuthToken || ""),
       "authToken=" + (pl.token || pl.authToken || ""),
+      "v=" + (pl.v || pl.vParam || ""),
       "bgetKey=" + (pl.bgetKey || DEFAULT_KEY),
       "bgetId=" + (pl.bgetId || ""),
       "langCode=" + (pl.langCode || "zh_CN"),
-      "clientType=" + (pl.clientType === 2 || pl.clientType === "2" ? "h5" : (pl.clientType || "web"))
+      "clientType=" + (pl.clientType === 2 || pl.clientType === "2" ? "h5" : (pl.clientType || "h5")),
+      "balance=" + (pl.balance || ""),
+      "positions=" + (pl.positions || "")
     ].join("\n");
   }
-
   function fill(pl) {
     pl = pl || {};
     var ct = pl.clientType;
     if (ct === 2 || ct === "2") ct = "h5";
     if (ct === 1 || ct === "1") ct = "web";
-    document.getElementById("apiBase").value = pl.apiBase || pl.apiBaseUrl || "https://api-ws.taichuwuji.com";
+    document.getElementById("apiBase").value = pl.apiBase || pl.apiBaseUrl || "";
     document.getElementById("token").value = pl.token || pl.xAuthToken || "";
+    document.getElementById("vParam").value = pl.v || pl.vParam || "";
     document.getElementById("bgetKey").value = pl.bgetKey || DEFAULT_KEY;
     document.getElementById("bgetId").value = pl.bgetId || "";
     document.getElementById("langCode").value = pl.langCode || "zh_CN";
     document.getElementById("clientType").value = ct || "h5";
-    document.getElementById("bal").textContent = pl.balance || pl.bal || "—";
-    document.getElementById("pos").textContent = pl.positions || pl.pos || "—";
+    document.getElementById("bal").textContent = pl.balance || "—";
+    document.getElementById("pos").textContent = pl.positions || "—";
+    document.getElementById("apiShow").textContent = pl.apiBase || pl.apiBaseUrl || "—";
+    document.getElementById("log").textContent = pl.log || "（无）";
     var t = pl.capturedAt ? new Date(pl.capturedAt).toLocaleString() : "";
     document.getElementById("meta").textContent = pl.token
-      ? ("已保存" + (t ? " · " + t : "") + (pl.source ? " · " + pl.source : ""))
-      : "尚未导入凭证";
-    if (pl.apiBase || pl.apiBaseUrl) {
-      try {
-        var host = new URL(pl.apiBase || pl.apiBaseUrl).hostname;
-        // 官网入口仍用常见前台
-        document.getElementById("linkOfficial").href = "https://hibt.com";
-      } catch (e) {}
-    }
+      ? ("已抓取" + (t ? " · " + t : "") + (pl.source ? " · " + pl.source : ""))
+      : "尚未抓取";
   }
-
   function fromUi() {
     return {
       apiBase: document.getElementById("apiBase").value.trim(),
       apiBaseUrl: document.getElementById("apiBase").value.trim(),
       token: document.getElementById("token").value.trim(),
       xAuthToken: document.getElementById("token").value.trim(),
+      v: document.getElementById("vParam").value.trim(),
+      vParam: document.getElementById("vParam").value.trim(),
       bgetKey: document.getElementById("bgetKey").value.trim(),
       bgetId: document.getElementById("bgetId").value.trim(),
       langCode: document.getElementById("langCode").value.trim() || "zh_CN",
       clientType: document.getElementById("clientType").value.trim() || "h5",
       balance: document.getElementById("bal").textContent,
       positions: document.getElementById("pos").textContent,
+      log: document.getElementById("log").textContent,
       capturedAt: Date.now(),
       source: "manual"
     };
   }
-
   function parseText(text) {
     text = (text || "").trim();
     if (!text) throw new Error("内容为空");
     if (text.startsWith("{")) {
       var o = JSON.parse(text);
       return {
-        token: o.token || o.xAuthToken || o.authorization || "",
+        token: o.token || o.xAuthToken || "",
         apiBase: o.apiBaseUrl || o.apiBase || "",
         apiBaseUrl: o.apiBaseUrl || o.apiBase || "",
+        v: o.v || o.vParam || "",
         bgetKey: o.bgetKey || DEFAULT_KEY,
         bgetId: o.bgetId || "",
         langCode: o.langCode || "zh_CN",
         clientType: o.clientType,
-        balance: o.balance || o.bal,
-        positions: o.positions || o.pos,
+        balance: o.balance,
+        positions: o.positions,
+        log: o.log,
         capturedAt: o.capturedAt || Date.now(),
-        source: o.source || "json"
+        source: "json"
       };
     }
     var map = {};
@@ -245,35 +247,32 @@
       token: g("xauthtoken", "authtoken", "token", "authorization"),
       apiBase: g("apibase", "apibaseurl"),
       apiBaseUrl: g("apibase", "apibaseurl"),
+      v: g("v", "vparam"),
       bgetKey: g("bgetkey") || DEFAULT_KEY,
       bgetId: g("bgetid"),
-      langCode: g("langcode", "lang") || "zh_CN",
+      langCode: g("langcode") || "zh_CN",
       clientType: g("clienttype") || "h5",
-      balance: g("balance", "bal"),
-      positions: g("positions", "pos"),
+      balance: g("balance"),
+      positions: g("positions"),
       capturedAt: Date.now(),
       source: "kv"
     };
   }
-
   function decodeB64(s) {
     try { return decodeURIComponent(escape(atob(s))); } catch (e) {
       try { return atob(s); } catch (e2) { return ""; }
     }
   }
-
-  // 从 hash 导入（书签跳转）
   function fromHash() {
     var h = location.hash || "";
     var m = h.match(/hibt-import=([^&]+)/);
     if (!m) return false;
     try {
-      var raw = decodeB64(decodeURIComponent(m[1]));
-      var pl = JSON.parse(raw);
+      var pl = JSON.parse(decodeB64(decodeURIComponent(m[1])));
       pl.apiBase = pl.apiBaseUrl || pl.apiBase;
       save(pl);
       fill(pl);
-      toast("已从书签导入");
+      toast("已从书签导入 v3");
       history.replaceState(null, "", location.pathname + location.search);
       return true;
     } catch (e) {
@@ -282,17 +281,18 @@
     }
   }
 
-  // —— 书签（与桌面逻辑一致 + 同域拉余额）——
+  /* ========== 书签：在 HiBT 域内抓 token + POST 查余额/持仓 ========== */
   function bookmarkMain() {
     var W = window;
-    var KEY = "__CRYPTOAGENT_HIBT_BUNDLE__";
-    var IMPORT_PAGE = "https://puito.github.io/crypto-agent/hibt-m.html";
+    var KEY = "__CA_HIBT_V3__";
     var DEFAULT_BGET_KEY = "HotsCoinLimboA@1";
-    var TR = /(?:event\/event-order|uc\/member\/my-info|uc\/check\/login|option-order\/(?:history-summary|list|history|place)|event-order\/(?:history-summary|list|history|place)|option\/option-coin\/list|option\/option-account|option\/|uc\/)/i;
+    var TR = /(?:event\/event-order|uc\/member\/my-info|uc\/check\/login|option-order\/(?:history-summary|list|history|place)|event-order\/(?:history-summary|list|history|place)|option\/option-account|option\/option-coin|option\/|uc\/)/i;
     var KN = ["BGET_KEY", "bget_key", "bgetKey", "vKey"];
     var IN = ["BGET_ID", "bget_id", "bgetId", "memberId", "uid"];
+    var logLines = [];
 
     function T(v) { return v == null ? "" : String(v).trim(); }
+    function log(s) { logLines.push(s); }
     function RC(n) {
       try {
         var m = document.cookie.match(new RegExp("(?:^|;\\s*)" + n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "=([^;]*)"));
@@ -300,10 +300,9 @@
       } catch (_) { return ""; }
     }
     function RS(ns) {
-      var i, n, v;
-      for (i = 0; i < ns.length; i++) {
-        n = ns[i];
-        v = T(RC(n)); if (v) return v;
+      for (var i = 0; i < ns.length; i++) {
+        var n = ns[i], v = T(RC(n));
+        if (v) return v;
         try { v = T(localStorage.getItem(n)); if (v) return v; } catch (_) {}
         try { v = T(sessionStorage.getItem(n)); if (v) return v; } catch (_) {}
       }
@@ -318,13 +317,6 @@
           return o;
         }
       } catch (_) {}
-      if (Array.isArray(i)) {
-        for (var n = 0; n < i.length; n++) {
-          var p = i[n] || [];
-          if (p.length >= 2) o[String(p[0]).toLowerCase()] = p[1];
-        }
-        return o;
-      }
       if (typeof i === "object") {
         for (k in i) if (Object.prototype.hasOwnProperty.call(i, k)) o[String(k).toLowerCase()] = i[k];
       }
@@ -335,10 +327,6 @@
       for (k in a) if (Object.prototype.hasOwnProperty.call(a, k)) o[k] = a[k];
       for (k in b) if (Object.prototype.hasOwnProperty.call(b, k)) o[k] = b[k];
       return o;
-    }
-    function IP(u) {
-      try { return TR.test(String(new URL(String(u || ""), location.href).pathname || "")); }
-      catch (_) { return false; }
     }
     function AT(v) {
       var t = T(v).replace(/^Bearer\s+/i, "");
@@ -368,107 +356,177 @@
     function RAB(u) {
       try {
         var x = new URL(String(u || ""), location.href);
-        if (IH(x.hostname)) return x.protocol + "//" + x.host;
+        if (IH(x.hostname) || /api/i.test(x.hostname)) return x.protocol + "//" + x.host;
       } catch (_) {}
-      return "https://api-ws.taichuwuji.com";
+      return "https://api.hibt0.com";
     }
-    function CBH() {
-      var h = {};
-      try { if (navigator.userAgent) h["user-agent"] = navigator.userAgent; } catch (_) {}
-      return h;
+    function pickV(u) {
+      try {
+        var x = new URL(String(u || ""), location.href);
+        return x.searchParams.get("v") || "";
+      } catch (_) { return ""; }
     }
-    function CT(h) {
-      h = h || {};
-      if (/^h5$/i.test(T(h.platform)) || /^h5$/i.test(T(h["client-type"]))) return 2;
-      if (/iPhone|Android/i.test(T(h["user-agent"]))) return 2;
-      return 1;
+    function IP(u) {
+      try { return TR.test(String(new URL(String(u || ""), location.href).pathname || "")); }
+      catch (_) { return false; }
+    }
+    function CT() {
+      return /iPhone|Android/i.test(navigator.userAgent || "") ? 2 : 1;
     }
     function EP(p) {
       try { return btoa(unescape(encodeURIComponent(JSON.stringify(p)))); } catch (_) { return ""; }
     }
+    function balKeys() {
+      return ["availableBalance","usableBalance","canUseAmount","optionBalance","eventBalance",
+        "walletBalance","available","balance","usdtBalance","canUse","money","equity","availBalance","totalBalance"];
+    }
     function pickBal(obj, depth) {
-      if (!obj || depth > 5) return "";
-      var keys = ["availableBalance","usableBalance","canUseAmount","walletBalance","available","balance","equity","amount","usdtBalance","optionBalance"];
-      if (typeof obj === "object" && !Array.isArray(obj)) {
-        for (var i = 0; i < keys.length; i++) {
-          if (obj[keys[i]] != null && String(obj[keys[i]]).length) return String(obj[keys[i]]);
+      if (!obj || depth > 6) return "";
+      if (typeof obj !== "object") return "";
+      if (Array.isArray(obj)) {
+        for (var i = 0; i < obj.length; i++) {
+          var r = pickBal(obj[i], depth + 1); if (r) return r;
         }
-        for (var k in obj) {
-          var r = pickBal(obj[k], depth + 1);
-          if (r) return r;
-        }
+        return "";
+      }
+      var keys = balKeys();
+      for (var j = 0; j < keys.length; j++) {
+        if (obj[keys[j]] != null && String(obj[keys[j]]).length && String(obj[keys[j]]) !== "null")
+          return String(obj[keys[j]]);
+      }
+      for (var k in obj) {
+        if (k === "list" || k === "records") continue;
+        var r2 = pickBal(obj[k], depth + 1); if (r2) return r2;
       }
       return "";
     }
     function pickPos(obj) {
-      try {
-        function cnt(el, d) {
-          if (!el || d > 5) return null;
-          if (Array.isArray(el)) return el.length;
-          if (typeof el === "object") {
-            for (var k of ["list","records","rows","openList","positions","data","result"]) {
-              if (el[k] != null) {
-                var c = cnt(el[k], d + 1);
-                if (c != null) return c;
-              }
+      function cnt(el, d) {
+        if (!el || d > 6) return null;
+        if (Array.isArray(el)) {
+          var n = 0;
+          for (var i = 0; i < el.length; i++) {
+            var it = el[i];
+            if (!it || typeof it !== "object") continue;
+            if (it.closeTime && String(it.closeTime) !== "0") continue;
+            if (it.status != null && Number(it.status) > 0) continue;
+            n++;
+          }
+          return n;
+        }
+        if (typeof el === "object") {
+          for (var k of ["list","records","rows","openList","positions","data","result"]) {
+            if (el[k] != null) {
+              var c = cnt(el[k], d + 1);
+              if (c != null) return c;
             }
           }
-          return null;
         }
-        var n = cnt(obj, 0);
-        return n != null ? ("持仓 " + n + " 笔") : "";
-      } catch (_) { return ""; }
+        return null;
+      }
+      var n = cnt(obj, 0);
+      return n != null ? ("未平仓 " + n + " 笔") : "";
     }
+
+    function hdr(pl) {
+      var isH5 = pl.clientType === 2;
+      return {
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/x-www-form-urlencoded",
+        "client-type": isH5 ? "h5" : "web",
+        "platform": isH5 ? "h5" : "PC",
+        "hc-platform": isH5 ? "h5" : "web",
+        "future_source": "1",
+        "hc-language": pl.langCode || "zh_CN",
+        "lang": pl.langCode || "zh_CN",
+        "origin": location.origin,
+        "referer": location.href,
+        "x-auth-token": pl.token,
+        "Authorization": pl.token
+      };
+    }
+
     function enrich(pl, done) {
-      var base = pl.apiBaseUrl || RAB("");
-      var paths = ["/option/option-account/info", "/uc/member/my-info", "/event/event-order/list", "/option/option-order/list"];
-      var left = paths.length;
-      paths.forEach(function (path) {
-        try {
-          fetch(base + path, {
-            credentials: "include",
-            headers: MH(CBH(), {
-              "x-auth-token": pl.token,
-              "client-type": pl.clientType === 2 ? "h5" : "web",
-              "hc-language": pl.langCode || "zh_CN",
-              "accept": "application/json"
-            })
-          }).then(function (r) { return r.text(); }).then(function (txt) {
+      var base = pl.apiBaseUrl || "https://api.hibt0.com";
+      var vq = pl.v ? ("?v=" + encodeURIComponent(pl.v)) : "";
+      var left = 0;
+      function one() {
+        left--;
+        if (left <= 0) done(pl);
+      }
+      function get(path) {
+        left++;
+        fetch(base + path + vq, { method: "GET", headers: hdr(pl), credentials: "include" })
+          .then(function (r) { return r.text().then(function (t) { return { code: r.status, t: t }; }); })
+          .then(function (x) {
+            log("GET " + x.code + " " + path + " " + x.t.slice(0, 60).replace(/\n/g, " "));
             try {
-              var j = JSON.parse(txt);
+              var j = JSON.parse(x.t);
               if (!pl.balance) pl.balance = pickBal(j, 0);
-              if (!pl.positions) pl.positions = pickPos(j);
             } catch (_) {}
-          }).catch(function () {}).finally(function () {
-            left--;
-            if (left <= 0) done(pl);
-          });
-        } catch (_) {
-          left--;
-          if (left <= 0) done(pl);
-        }
-      });
-      setTimeout(function () { if (left > 0) { left = 0; done(pl); } }, 4000);
+          }).catch(function (e) { log("GET ERR " + path + " " + (e && e.message)); }).finally(one);
+      }
+      function post(path, body) {
+        left++;
+        fetch(base + path + vq, {
+          method: "POST",
+          headers: hdr(pl),
+          credentials: "include",
+          body: body || ""
+        }).then(function (r) { return r.text().then(function (t) { return { code: r.status, t: t }; }); })
+          .then(function (x) {
+            log("POST " + x.code + " " + path + " " + x.t.slice(0, 60).replace(/\n/g, " "));
+            try {
+              var j = JSON.parse(x.t);
+              if (!pl.balance) pl.balance = pickBal(j, 0);
+              if (path.indexOf("/list") >= 0 && !pl.positions) pl.positions = pickPos(j);
+              if (path.indexOf("summary") >= 0 && !pl.balance) pl.balance = pickBal(j, 0);
+            } catch (_) {}
+          }).catch(function (e) { log("POST ERR " + path + " " + (e && e.message)); }).finally(one);
+      }
+      // 账户
+      get("/uc/member/my-info");
+      post("/option/option-account/info", "");
+      post("/option/option-account/get", "");
+      post("/event/event-account/info", "");
+      // 持仓列表必须 POST（App 日志已验证）
+      var page = "pageNo=1&pageNum=1&page=1&pageSize=50&size=50&limit=50&status=0";
+      post("/event/event-order/list", page);
+      post("/option/option-order/list", page);
+      post("/event/event-order/history-summary", page);
+      post("/option/option-order/history-summary", page);
+      setTimeout(function () { if (left > 0) { left = 0; done(pl); } }, 8000);
     }
+
     function FIN(pl) {
       if (!pl || !pl.token) return false;
-      if (!pl.bgetId) pl.bgetId = EID(pl.token);
-      if (!pl.bgetKey) pl.bgetKey = DEFAULT_BGET_KEY;
-      pl.clientType = CT(pl.headers || {});
-      try { localStorage.setItem(KEY, JSON.stringify(pl)); } catch (_) {}
+      if (!pl.bgetId) pl.bgetId = EID(pl.token) || RS(IN);
+      if (!pl.bgetKey) pl.bgetKey = RS(KN) || DEFAULT_BGET_KEY;
+      pl.clientType = CT();
+      pl.langCode = pl.langCode || "zh_CN";
       enrich(pl, function (full) {
+        full.log = logLines.join("\n");
+        full.capturedAt = Date.now();
+        full.source = "bookmark-v3";
+        if (full.balance) full.balance = String(full.balance);
+        if (!full.positions) full.positions = "未解析到持仓列表";
         var enc = EP(full);
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText)
+            navigator.clipboard.writeText(JSON.stringify(full)).catch(function () {});
+        } catch (_) {}
         if (enc) {
-          alert("已抓到认证" + (full.balance ? "与余额" : "") + "，正在打开手机导入页");
-          location.href = IMPORT_PAGE + "#venue=hibt&hibt-import=" + encodeURIComponent(enc);
+          alert("抓取完成\n余额: " + (full.balance || "未识别") + "\n持仓: " + (full.positions || "—") + "\nAPI: " + full.apiBaseUrl);
+          location.href = IMPORT_PAGE + "#venue=hibt&hibt-import=" + encodeURIComponent(enc) + "&t=" + Date.now();
         } else {
-          prompt("请复制：", JSON.stringify(full));
+          prompt("请复制 JSON：", JSON.stringify(full));
         }
       });
       return true;
     }
+
     function PL(url, m, h) {
-      var nh = MH(CBH(), NH(h)), tk = RLT(nh);
+      var nh = NH(h), tk = RLT(nh);
       if (!tk) return null;
       var fu = String(url || "");
       try { fu = new URL(fu, location.href).href; } catch (_) {}
@@ -477,11 +535,11 @@
         bgetKey: RS(KN),
         bgetId: RS(IN) || EID(tk),
         apiBaseUrl: RAB(fu),
+        apiBase: RAB(fu),
+        v: pickV(fu),
         langCode: T(nh["hc-language"] || nh.lang || "zh_CN"),
-        headers: nh,
-        clientType: CT(nh),
-        capturedAt: Date.now(),
-        source: "hook-mobile"
+        clientType: CT(),
+        source: "hook"
       };
     }
     function MG(a, b) {
@@ -491,36 +549,40 @@
         bgetKey: b.bgetKey || a.bgetKey,
         bgetId: b.bgetId || a.bgetId,
         apiBaseUrl: b.apiBaseUrl || a.apiBaseUrl,
+        apiBase: b.apiBase || a.apiBase || b.apiBaseUrl || a.apiBaseUrl,
+        v: b.v || a.v,
         langCode: b.langCode || a.langCode,
-        headers: MH(a.headers, b.headers),
         clientType: b.clientType || a.clientType,
-        capturedAt: b.capturedAt || a.capturedAt,
-        source: b.source || a.source,
         balance: b.balance || a.balance,
         positions: b.positions || a.positions
       };
     }
-    function RDY(pl) { return !!(pl && pl.token && (pl.bgetId || EID(pl.token))); }
+    function RDY(pl) { return !!(pl && pl.token); }
 
     if (!IH(location.hostname)) {
-      alert("请在已登录的 HiBT 页面使用（hibt/bget/taichuwuji/dutbgwv 等）");
+      alert("请在已登录的 HiBT 页面点此书签（域名含 hibt/bget/taichuwuji/dutbgwv 等）");
       return;
     }
-    var st = W[KEY + "_STATE"] = W[KEY + "_STATE"] || { installed: 0, bundle: null };
+    var st = W[KEY + "_ST"] = W[KEY + "_ST"] || { installed: 0, bundle: null, done: 0 };
+    if (st.done) {
+      alert("本页已抓过，请刷新 HiBT 后再点书签，或直接查看导入页。");
+      return;
+    }
     if (st.installed) {
-      alert("监听已开，请点订单/首页触发 API");
+      alert("监听中：请点订单/首页触发 API");
       return;
     }
     st.installed = 1;
-    var tk0 = RLT({});
-    if (tk0) {
+
+    var snapTk = RLT({});
+    if (snapTk) {
       st.bundle = {
-        token: tk0, bgetKey: RS(KN), bgetId: RS(IN) || EID(tk0),
-        apiBaseUrl: "https://api-ws.taichuwuji.com", langCode: "zh_CN",
-        headers: CBH(), clientType: 2, capturedAt: Date.now(), source: "storage-mobile"
+        token: snapTk, bgetKey: RS(KN), bgetId: RS(IN) || EID(snapTk),
+        apiBaseUrl: "https://api.hibt0.com", apiBase: "https://api.hibt0.com",
+        langCode: "zh_CN", clientType: CT(), source: "storage"
       };
-      if (RDY(st.bundle)) FIN(st.bundle);
     }
+
     var OF = W.fetch;
     if (typeof OF === "function") {
       W.fetch = function () {
@@ -532,7 +594,10 @@
             var pl = PL(url, init.method || "GET", hdr);
             if (pl) {
               st.bundle = MG(st.bundle, pl);
-              if (RDY(st.bundle)) FIN(st.bundle);
+              if (RDY(st.bundle) && !st.done) {
+                st.done = 1;
+                FIN(st.bundle);
+              }
             }
           }
         } catch (_) {}
@@ -555,43 +620,50 @@
             var pl = PL(this.__caU, this.__caM, this.__caH);
             if (pl) {
               st.bundle = MG(st.bundle, pl);
-              if (RDY(st.bundle)) FIN(st.bundle);
+              if (RDY(st.bundle) && !st.done) {
+                st.done = 1;
+                FIN(st.bundle);
+              }
             }
           }
         } catch (_) {}
         return OE.apply(this, arguments);
       };
     }
-    alert("手机监听已开。请点期权/订单/首页，抓到后跳转导入页。");
+
+    // 若 storage 已有 token，直接 enrich（无需再等 hook）
+    if (RDY(st.bundle) && !st.done) {
+      st.done = 1;
+      FIN(st.bundle);
+      return;
+    }
+    alert("HiBT 监听 v3 已开。请点期权/订单/首页；将用 POST 查持仓并跳转导入页。");
   }
 
   var bmHref = "javascript:" + ("(" + bookmarkMain.toString() + ")();").replace(/\s+/g, " ");
   document.getElementById("copyBm").onclick = function () {
-    navigator.clipboard.writeText(bmHref).then(function () { toast("书签地址已复制"); }).catch(function () {
-      prompt("长按复制：", bmHref);
-    });
+    navigator.clipboard.writeText(bmHref).then(function () { toast("书签已复制，请到 Chrome 书签里粘贴"); })
+      .catch(function () { prompt("长按复制：", bmHref); });
   };
   document.getElementById("btnCopyApp").onclick = function () {
-    var pl = fromUi();
-    navigator.clipboard.writeText(appText(pl)).then(function () { toast("已复制，打开 App 下单页解析"); });
+    navigator.clipboard.writeText(appText(fromUi())).then(function () { toast("已复制给 App"); });
+  };
+  document.getElementById("btnCopyLog").onclick = function () {
+    navigator.clipboard.writeText(document.getElementById("log").textContent || "").then(function () { toast("日志已复制"); });
   };
   document.getElementById("btnParse").onclick = function () {
     try {
       var pl = parseText(document.getElementById("manual").value);
-      save(pl); fill(pl); toast("已解析保存");
-    } catch (e) { toast(e.message || "解析失败"); }
+      save(pl); fill(pl); toast("已解析（无在线查余额）");
+    } catch (e) { toast(e.message || "失败"); }
   };
   document.getElementById("btnSave").onclick = function () {
-    var pl = fromUi();
-    save(pl); fill(pl); toast("已保存到本机");
+    var pl = fromUi(); save(pl); fill(pl); toast("已保存本机");
   };
   document.getElementById("btnClear").onclick = function () {
     localStorage.removeItem(STORE);
     fill({});
     toast("已清除");
-  };
-  document.getElementById("btnRefreshHint").onclick = function () {
-    alert("刷新余额：\n1. 手机 Chrome 打开已登录的 HiBT\n2. 点书签「HiBT取Token」\n3. 点一下订单/首页\n4. 自动回到本页并更新余额摘要\n\n入金/划转请点「去官网调余额」。");
   };
 
   if (!fromHash()) fill(load());
