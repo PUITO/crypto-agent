@@ -95,16 +95,16 @@ class HibtClient(
         ).map { it.trimEnd('/') }.filter { it.startsWith("http") }.distinct()
     }
 
-    /** 书签 TR 对齐的常见已登录接口 */
+    /** 账户/余额优先，再持仓列表，最后登录探测 */
     private val probePaths = listOf(
-        "/uc/check/login",
-        "/uc/member/my-info",
-        "/option/option-order/list",
-        "/event/event-order/list",
-        "/option/option-coin/list",
         "/option/option-account/info",
+        "/uc/member/my-info",
+        "/event/event-order/list",
+        "/option/option-order/list",
         "/option/option-order/history-summary",
         "/event/event-order/history-summary",
+        "/option/option-coin/list",
+        "/uc/check/login",
     )
 
     private fun looksAuthOk(code: Int, body: String): Boolean {
@@ -126,10 +126,11 @@ class HibtClient(
             )
         }
         val attempts = mutableListOf<String>()
+        var anyOk = false
         var bestRaw: String? = null
         var bestBal: String? = null
         var bestPos: String? = null
-        var hitUrl: String? = null
+        var hitHint: String? = null
 
         for (base in candidateBases(cfg)) {
             for (path in probePaths) {
@@ -141,47 +142,48 @@ class HibtClient(
                             .build()
                         client.newCall(req).execute().use { resp ->
                             val body = resp.body?.string().orEmpty()
-                            val tag = "${resp.code} ${if (bearer) "Bearer" else "raw"} $url"
-                            attempts.add(tag + if (body.isNotEmpty()) " body=${body.take(60).replace("\n", " ")}" else "")
-                            if (looksAuthOk(resp.code, body)) {
-                                hitUrl = url
-                                bestRaw = body.take(800)
-                                bestBal = extractField(
-                                    body,
-                                    listOf(
-                                        "balance", "available", "equity", "amount", "availableBalance",
-                                        "walletBalance", "canUseAmount", "usableBalance", "money",
-                                    ),
-                                )
-                                bestPos = extractField(
-                                    body,
-                                    listOf("position", "positions", "list", "records", "openList"),
-                                )
-                                return@withContext AccountSnapshot(
-                                    ok = true,
-                                    message = "连通成功 · $path @ $base" +
-                                        if (bearer) " (Bearer)" else "",
-                                    balance = bestBal,
-                                    positions = bestPos,
-                                    raw = bestRaw,
-                                )
+                            val tag = "${resp.code} ${if (bearer) "B" else "R"} $path"
+                            attempts.add(tag)
+                            if (!looksAuthOk(resp.code, body)) return@use
+                            anyOk = true
+                            if (hitHint == null) hitHint = "$path @ $base"
+                            if (bestRaw == null) bestRaw = body.take(600)
+
+                            // 余额：多接口聚合，取第一个有效数字/字符串
+                            if (bestBal.isNullOrBlank()) {
+                                extractBalance(body)?.let { bestBal = it }
+                            }
+                            // 持仓：列表条数优先
+                            if (bestPos.isNullOrBlank()) {
+                                extractPositionSummary(body)?.let { bestPos = it }
                             }
                         }
                     } catch (e: Exception) {
-                        attempts.add("ERR $url · ${e.message?.take(40)}")
+                        attempts.add("ERR $path · ${e.message?.take(32)}")
                     }
                 }
             }
+            // 同一 base 已拿到余额+持仓可提前结束，减少请求
+            if (anyOk && !bestBal.isNullOrBlank() && !bestPos.isNullOrBlank()) break
+        }
+
+        if (!anyOk) {
+            return@withContext AccountSnapshot(
+                ok = false,
+                message = "Token 已填，但账户接口未命中。末次: " +
+                    attempts.takeLast(5).joinToString(" | ").ifBlank { "无" },
+                raw = attempts.takeLast(10).joinToString("\n"),
+            )
         }
 
         AccountSnapshot(
-            ok = false,
-            message = "Token 已填，但账户接口未命中。请确认书签在已登录页触发过 API，" +
-                "且 API Base 与抓包 host 一致。末次尝试: " +
-                attempts.takeLast(4).joinToString(" | ").ifBlank { "无" },
-            balance = null,
-            positions = null,
-            raw = attempts.takeLast(8).joinToString("\n"),
+            ok = true,
+            message = "连通成功 · ${hitHint ?: "ok"}" +
+                (if (bestBal.isNullOrBlank()) " · 余额字段未解析到" else "") +
+                (if (bestPos.isNullOrBlank()) " · 持仓字段未解析到" else ""),
+            balance = bestBal ?: "—",
+            positions = bestPos ?: "—",
+            raw = bestRaw,
         )
     }
 
@@ -256,28 +258,87 @@ class HibtClient(
         OrderResult(false, lastMsg, false, lastRaw)
     }
 
-    private fun extractField(json: String, keys: List<String>): String? {
+    private val balanceKeys = listOf(
+        "availableBalance", "usableBalance", "canUseAmount", "walletBalance",
+        "available", "balance", "equity", "amount", "money", "usdtBalance",
+        "optionBalance", "eventBalance", "accountBalance", "canUse",
+    )
+
+    private fun extractBalance(json: String): String? {
         return try {
             fun walk(el: com.google.gson.JsonElement?, depth: Int): String? {
-                if (el == null || depth > 4) return null
+                if (el == null || depth > 6) return null
                 if (el.isJsonObject) {
                     val o = el.asJsonObject
-                    for (k in keys) {
-                        if (o.has(k) && !o.get(k).isJsonNull) {
-                            val v = o.get(k)
-                            if (v.isJsonPrimitive) return v.asString.take(80)
-                            return v.toString().take(80)
+                    for (k in balanceKeys) {
+                        if (!o.has(k) || o.get(k).isJsonNull) continue
+                        val v = o.get(k)
+                        if (v.isJsonPrimitive) {
+                            val s = v.asString.trim()
+                            if (s.isNotEmpty() && s != "null") return s.take(32)
                         }
+                    }
+                    // data / result 包一层
+                    for (wrap in listOf("data", "result", "info", "account")) {
+                        if (o.has(wrap)) walk(o.get(wrap), depth + 1)?.let { return it }
                     }
                     for ((_, v) in o.entrySet()) {
                         walk(v, depth + 1)?.let { return it }
                     }
-                } else if (el.isJsonArray && el.asJsonArray.size() > 0) {
-                    return walk(el.asJsonArray[0], depth + 1)
+                } else if (el.isJsonArray) {
+                    for (item in el.asJsonArray) {
+                        walk(item, depth + 1)?.let { return it }
+                    }
                 }
                 return null
             }
             walk(JsonParser.parseString(json), 0)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** 事件/期权持仓：优先数组长度，否则摘要字符串 */
+    private fun extractPositionSummary(json: String): String? {
+        return try {
+            val root = JsonParser.parseString(json)
+            fun arrayCount(el: com.google.gson.JsonElement?, depth: Int): Int? {
+                if (el == null || depth > 6) return null
+                if (el.isJsonArray) return el.asJsonArray.size()
+                if (el.isJsonObject) {
+                    val o = el.asJsonObject
+                    for (k in listOf("list", "records", "rows", "openList", "positions", "data", "result")) {
+                        if (!o.has(k) || o.get(k).isJsonNull) continue
+                        val v = o.get(k)
+                        if (v.isJsonArray) return v.asJsonArray.size()
+                        if (v.isJsonObject) {
+                            // data: { list: [] }
+                            arrayCount(v, depth + 1)?.let { return it }
+                        }
+                    }
+                    for ((_, v) in o.entrySet()) {
+                        arrayCount(v, depth + 1)?.let { return it }
+                    }
+                }
+                return null
+            }
+            val n = arrayCount(root, 0)
+            if (n != null) return "持仓 ${n} 笔"
+            // total / count 字段
+            fun walkNum(el: com.google.gson.JsonElement?, depth: Int): String? {
+                if (el == null || depth > 5) return null
+                if (el.isJsonObject) {
+                    val o = el.asJsonObject
+                    for (k in listOf("total", "count", "openCount", "positionCount", "size")) {
+                        if (o.has(k) && o.get(k).isJsonPrimitive) {
+                            return "持仓 ${o.get(k).asString} 笔"
+                        }
+                    }
+                    for ((_, v) in o.entrySet()) walkNum(v, depth + 1)?.let { return it }
+                }
+                return null
+            }
+            walkNum(root, 0)
         } catch (_: Exception) {
             null
         }
