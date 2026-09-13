@@ -372,6 +372,84 @@ class HibtClient(
         )
     }
 
+    /**
+     * 事件合约下单参数规范（对齐公开 Web 抓包 / 学习向逆向说明）：
+     *
+     * POST {apiBase}/option/option-order/place?v={v}
+     * Content-Type: application/x-www-form-urlencoded
+     * Headers: Authorization, x-auth-token, client-type, platform, hc-platform,
+     *          future_source=1, hc-language, origin, referer
+     * Body:
+     *   amount   — 下单金额（USDT 字符串，官网说明最小约 2）
+     *   direction— 1 涨 / 0 跌
+     *   symbol   — btc_usdt | eth_usdt
+     *   timeUnit — 合约时长（分钟）：5 | 10 | 15 | 30 | 60
+     *   langCode — 如 zh_CN
+     *
+     * timeUnit 必须与行情页选中周期一致，禁止用错误周期下单。
+     */
+    data class PlaceSpec(
+        val apiBase: String,
+        val path: String,
+        val symbol: String,
+        val direction: Int,
+        val amount: String,
+        val timeUnit: Int,
+        val langCode: String,
+        val hasV: Boolean,
+        val preview: String,
+    )
+
+    fun buildPlaceSpec(
+        cfg: HibtSettings,
+        symbol: String,
+        directionUp: Boolean,
+        amount: Double,
+        timeUnit: Int,
+    ): PlaceSpec {
+        val sym = when {
+            symbol.equals("BTCUSDT", true) || symbol.equals("btc_usdt", true) -> "btc_usdt"
+            symbol.equals("ETHUSDT", true) || symbol.equals("eth_usdt", true) -> "eth_usdt"
+            symbol.contains("_") -> symbol.lowercase()
+            else -> symbol.lowercase().replace("usdt", "_usdt")
+        }
+        require(sym in setOf("btc_usdt", "eth_usdt")) {
+            "symbol 仅支持 btc_usdt / eth_usdt，当前=$sym"
+        }
+        val dir = if (directionUp) 1 else 0
+        // 仅允许官网/抓包常见档位；1m 等非法值拒绝映射到错误合约
+        val allowed = setOf(5, 10, 15, 30, 60)
+        val unit = when {
+            timeUnit in allowed -> timeUnit
+            timeUnit == 1 -> 5 // 仅信号源 1m → 默认 5m，调用方应尽量直接传 5/10/30/60
+            else -> error("非法 timeUnit=$timeUnit，仅允许 $allowed")
+        }
+        require(amount >= 2.0) {
+            "amount 过小($amount)，官网说明最小约 2 USDT，请调高默认下单金额"
+        }
+        require(amount <= 100_000.0) { "amount 异常过大: $amount" }
+        val amountStr =
+            if (kotlin.math.abs(amount - amount.toLong()) < 1e-9) amount.toLong().toString()
+            else amount.toString()
+        val base = cfg.apiBase.trim().trimEnd('/').ifBlank { "https://api.hibt0.com" }
+        val lang = cfg.langCode.ifBlank { "zh_CN" }
+        val preview =
+            "POST $base/option/option-order/place" +
+                (if (cfg.vParam.isNotBlank()) "?v=***" else "（无 v，部分环境会拒单）") +
+                "\nform: amount=$amountStr&direction=$dir&symbol=$sym&timeUnit=$unit&langCode=$lang"
+        return PlaceSpec(
+            apiBase = base,
+            path = "/option/option-order/place",
+            symbol = sym,
+            direction = dir,
+            amount = amountStr,
+            timeUnit = unit,
+            langCode = lang,
+            hasV = cfg.vParam.isNotBlank(),
+            preview = preview,
+        )
+    }
+
     suspend fun placeEventOrder(
         cfg: HibtSettings,
         symbol: String,
@@ -379,90 +457,76 @@ class HibtClient(
         amount: Double,
         timeUnit: Int,
     ): OrderResult = withContext(Dispatchers.IO) {
-        val sym = when {
-            symbol.equals("BTCUSDT", true) -> "btc_usdt"
-            symbol.equals("ETHUSDT", true) -> "eth_usdt"
-            symbol.contains("_") -> symbol.lowercase()
-            else -> symbol.lowercase().replace("usdt", "_usdt")
+        val spec = try {
+            buildPlaceSpec(cfg, symbol, directionUp, amount, timeUnit)
+        } catch (e: Exception) {
+            return@withContext OrderResult(false, "参数校验失败: ${e.message}", dryRun = true)
         }
-        val dir = if (directionUp) 1 else 0
-        // 事件合约分钟：5/10/30/60（与行情页选中周期一致）
-        val unit = when (timeUnit) {
-            1 -> 5
-            in listOf(5, 10, 15, 30, 60) -> timeUnit
-            else -> timeUnit.coerceIn(5, 60)
-        }
-        val amountStr =
-            if (amount == amount.toLong().toDouble()) amount.toLong().toString() else amount.toString()
 
         if (cfg.dryRun || !cfg.autoTrade) {
             return@withContext OrderResult(
                 true,
-                "DRY-RUN: symbol=$sym direction=$dir amount=$amountStr timeUnit=${unit}m" +
-                    "（行情周期映射，未真实提交；关 Dry-Run 且开自动化才实盘）",
+                "DRY-RUN 未提交\n${spec.preview}\n" +
+                    "（需：关闭 Dry-Run + 开启自动化 才真实下单）",
                 dryRun = true,
+                raw = spec.preview,
             )
         }
         if (tokenOf(cfg).isBlank()) {
-            return@withContext OrderResult(false, "缺少 token", dryRun = false)
+            return@withContext OrderResult(false, "缺少 token，拒绝下单", dryRun = false)
         }
 
         val form = FormBody.Builder()
-            .add("amount", amountStr)
-            .add("direction", dir.toString())
-            .add("symbol", sym)
-            .add("timeUnit", unit.toString())
-            .add("langCode", cfg.langCode.ifBlank { "zh_CN" })
+            .add("amount", spec.amount)
+            .add("direction", spec.direction.toString())
+            .add("symbol", spec.symbol)
+            .add("timeUnit", spec.timeUnit.toString())
+            .add("langCode", spec.langCode)
             .build()
 
-        val placePaths = listOf(
+        // 实盘只打「主 apiBase + 规范 path」，避免打到错误镜像造成异常成交
+        val paths = listOf(
             "/option/option-order/place",
             "/event/event-order/place",
         )
+        val bases = listOf(spec.apiBase) + candidateBases(cfg).filter { it != spec.apiBase }
         val tries = StringBuilder()
         var lastRaw: String? = null
-        // 下单同样：优先配置 apiBase
-        for (base in candidateBases(cfg)) {
-            for (path in placePaths) {
-                val urls = buildList {
-                    add(withV(base + path, cfg))
-                    if (cfg.vParam.isNotBlank()) add(base + path)
-                }.distinct()
-                for (url in urls) {
-                    try {
-                        val req = Request.Builder().url(url).post(form)
-                            .applyHibtHeaders(cfg)
-                            .header("content-type", "application/x-www-form-urlencoded")
-                            .build()
-                        client.newCall(req).execute().use { resp ->
-                            val body = resp.body?.string().orEmpty()
-                            lastRaw = body.take(400)
-                            tries.appendLine("${resp.code} $path @ $base timeUnit=$unit ${body.take(100).replace("\n", " ")}")
-                            if (resp.isSuccessful && bizOk(resp.code, body) &&
-                                !body.contains("参数") && !body.contains("param", true)
-                            ) {
-                                return@withContext OrderResult(
-                                    true,
-                                    "下单成功 timeUnit=${unit}m · ${body.take(120)}",
-                                    false,
-                                    lastRaw,
-                                )
-                            }
-                            if (body.contains("参数") || body.contains("param", true)) {
-                                // 继续试其他 base/path
-                            }
+
+        for (base in bases) {
+            for (path in paths) {
+                val url = withV(base + path, cfg)
+                try {
+                    val req = Request.Builder().url(url).post(form)
+                        .applyHibtHeaders(cfg)
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .build()
+                    client.newCall(req).execute().use { resp ->
+                        val body = resp.body?.string().orEmpty()
+                        lastRaw = body.take(500)
+                        tries.appendLine("${resp.code} $path @ $base tu=${spec.timeUnit} ${body.take(100).replace("\n", " ")}")
+                        val paramErr = body.contains("参数") || body.contains("param", ignoreCase = true)
+                        val okBiz = resp.isSuccessful && bizOk(resp.code, body) && !paramErr
+                        if (okBiz) {
+                            return@withContext OrderResult(
+                                true,
+                                "已提交 timeUnit=${spec.timeUnit}m amount=${spec.amount} ${spec.symbol} dir=${spec.direction}\n${body.take(160)}",
+                                dryRun = false,
+                                raw = lastRaw,
+                            )
                         }
-                    } catch (e: Exception) {
-                        tries.appendLine("ERR ${e.message?.take(40)}")
                     }
+                } catch (e: Exception) {
+                    tries.appendLine("ERR $path @ $base ${e.message?.take(48)}")
                 }
             }
+            // 主域名试完路径后再试回退域名
         }
         OrderResult(
             false,
-            "下单失败 timeUnit=${unit}m symbol=$sym。\n" + tries.toString().take(500),
-            false,
-            lastRaw,
+            "下单失败（已按规范提交 amount/direction/symbol/timeUnit）\n${spec.preview}\n${tries.toString().take(600)}",
+            dryRun = false,
+            raw = lastRaw,
         )
     }
 }

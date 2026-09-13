@@ -536,12 +536,21 @@ class Repository(ctx: Context) {
         return candidates.firstOrNull()
     }
 
-    /** 行情页选中周期 → 事件合约 timeUnit（分钟） */
+    /**
+     * 行情页选中周期 → 事件合约 timeUnit（分钟）。
+     * 只认 5m/10m/30m/1h；与官网档位 5/10/30/60 对齐（另有 15 可选）。
+     */
     private fun eventTimeUnitMinutes(intervalCode: String): Int {
-        return when (val u = Interval.from(intervalCode).timeUnit) {
-            1 -> 5   // 1m 信号源不对应合约，落到 5m
-            5, 10, 15, 30, 60 -> u
-            else -> u.coerceIn(5, 60)
+        return when (intervalCode.trim().lowercase()) {
+            "5m" -> 5
+            "10m" -> 10
+            "15m" -> 15
+            "30m" -> 30
+            "1h", "60m" -> 60
+            "1m" -> 5 // 信号用 1m K 线时，合约仍按下单页/默认 5m，避免误开 1 分钟不存在的档
+            else -> Interval.from(intervalCode).timeUnit.let { u ->
+                if (u in setOf(5, 10, 15, 30, 60)) u else 5
+            }
         }
     }
 
