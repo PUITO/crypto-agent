@@ -124,7 +124,7 @@ fun OrderScreen(repo: Repository) {
         ) { Text(if (busy) "测试中…" else "测试连通性") }
 
         // 账户摘要：固定两行，不挤布局
-        Card(Modifier = Modifier.fillMaxWidth()) {
+        Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("账户状态", style = MaterialTheme.typography.titleSmall)
                 Text("余额：$balance", maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -133,7 +133,7 @@ fun OrderScreen(repo: Repository) {
         }
 
         // 测试日志：默认折叠一行，展开限高滚动
-        Card(Modifier = Modifier.fillMaxWidth()) {
+        Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("测试信息", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
