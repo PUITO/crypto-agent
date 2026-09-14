@@ -50,10 +50,16 @@ class HibtClient(
      * - 否则用手动 vParam；仍为空时也回退时间戳，避免「无 v 参数错误」
      * 注意：持仓 list 的加密 v 不能用时间戳替代，本客户端已不查持仓。
      */
+    /**
+     * 下单/余额用的 v：
+     * - 开启「自动时间戳 v」→ 当前毫秒
+     * - 关闭且手动 v 非空 → 用手动值（可从浏览器 place 请求复制）
+     * - 手动也为空 → 仍回退时间戳（避免 Gson 反序列化把 vAutoTimestamp 变成 false 后无 v）
+     * 说明：公开抓包里 place 的 v 常为登录会话串，不一定是时间戳；无会话 v 时先试时间戳。
+     */
     private fun effectiveV(cfg: HibtSettings): String {
-        if (cfg.vAutoTimestamp) return System.currentTimeMillis().toString()
         val manual = cfg.vParam.trim()
-        if (manual.isNotEmpty()) return manual
+        if (!cfg.vAutoTimestamp && manual.isNotEmpty()) return manual
         return System.currentTimeMillis().toString()
     }
 
@@ -406,9 +412,10 @@ class HibtClient(
             else amount.toString()
         val base = cfg.apiBase.trim().trimEnd('/').ifBlank { "https://api.hibt0.com" }
         val lang = cfg.langCode.ifBlank { "zh_CN" }
+        val vShow = effectiveV(cfg)
         val preview =
-            "POST $base/option/option-order/place" +
-                (if (cfg.vParam.isNotBlank()) "?v=***" else "（无 v，部分环境会拒单）") +
+            "POST $base/option/option-order/place?v=" + (if (vShow.length > 16) vShow.take(8) + "…" + vShow.takeLast(4) else vShow) +
+                (if (cfg.vAutoTimestamp || cfg.vParam.isBlank()) "（自动时间戳）" else "（手动 v）") +
                 "\nform: amount=$amountStr&direction=$dir&symbol=$sym&timeUnit=$unit&langCode=$lang"
         return PlaceSpec(
             apiBase = base,
@@ -418,7 +425,8 @@ class HibtClient(
             amount = amountStr,
             timeUnit = unit,
             langCode = lang,
-            hasV = cfg.vParam.isNotBlank(),
+            hasV = vShow.isNotBlank(),
+
             preview = preview,
         )
     }
@@ -480,7 +488,7 @@ class HibtClient(
                     client.newCall(req).execute().use { resp ->
                         val body = resp.body?.string().orEmpty()
                         lastRaw = body.take(500)
-                        tries.appendLine("${resp.code} $path @ $base tu=${spec.timeUnit} ${body.take(100).replace("\n", " ")}")
+                        tries.appendLine("${resp.code} $path @ $base v=${vForPlace.take(12)}… tu=${spec.timeUnit} ${body.take(100).replace("\n", " ")}")
                         val paramErr = body.contains("参数") || body.contains("param", ignoreCase = true)
                         val okBiz = resp.isSuccessful && bizOk(resp.code, body) && !paramErr
                         if (okBiz) {
@@ -500,7 +508,8 @@ class HibtClient(
         }
         OrderResult(
             false,
-            "下单失败（已按规范提交 amount/direction/symbol/timeUnit）\n${spec.preview}\n${tries.toString().take(600)}",
+            "下单失败\n${spec.preview}\n${tries.toString().take(500)}\n" +
+                "提示：1) 确认已带 v（自动时间戳或手动）2) token 是否过期 3) 官网档位常见 5/15/30/60，若 timeUnit=10 仍参数错误可改行情周期试 5m/30m 4) 可从浏览器 place 请求复制会话 v 并关闭自动时间戳",
             dryRun = false,
             raw = lastRaw,
         )
