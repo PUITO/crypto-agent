@@ -103,6 +103,8 @@ data class HibtSettings(
     val authToken: String = "",
     val xAuthToken: String = "",
     val vParam: String = "",
+    /** 下单/余额：自动用当前毫秒时间戳作为 v（余额控制台常见形态；持仓加密 v 仍无效） */
+    val vAutoTimestamp: Boolean = true,
     val bgetKey: String = "HotsCoinLimboA@1",
     val bgetId: String = "",
     val langCode: String = "zh_CN",

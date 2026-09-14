@@ -117,7 +117,25 @@ fun OrderScreen(repo: Repository) {
             label = { Text("x-auth-token / Authorization") },
             modifier = Modifier.fillMaxWidth(), singleLine = true,
         )
-        OutlinedTextField(h.vParam, { persist(h.copy(vParam = it)) }, label = { Text("v 参数（请用余额接口 URL 的 v；持仓加密 v 无效）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("自动生成 v（当前毫秒时间戳）", Modifier.weight(1f), fontSize = 14.sp)
+            Switch(h.vAutoTimestamp, { persist(h.copy(vAutoTimestamp = it)) })
+        }
+        if (!h.vAutoTimestamp) {
+            OutlinedTextField(
+                h.vParam,
+                { persist(h.copy(vParam = it)) },
+                label = { Text("手动 v（关闭自动时使用；勿填持仓加密 v）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+        } else {
+            Text(
+                "下单/余额请求将带 v=System.currentTimeMillis()。若仍参数错误，再关自动并试控制台余额 URL 的 v。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
         OutlinedTextField(h.bgetKey, { persist(h.copy(bgetKey = it)) }, label = { Text("bgetKey（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(h.bgetId, { persist(h.copy(bgetId = it)) }, label = { Text("bgetId（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(h.clientType, { persist(h.copy(clientType = it)) }, label = { Text("clientType web/h5") }, modifier = Modifier.fillMaxWidth(), singleLine = true)

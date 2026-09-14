@@ -44,6 +44,19 @@ class HibtClient(
         cfg.xAuthToken.ifBlank { cfg.authToken }.trim()
             .removePrefix("Bearer ").removePrefix("bearer ").trim()
 
+    /**
+     * 解析请求用的 v：
+     * - vAutoTimestamp=true（默认）→ 当前毫秒时间戳（对齐余额控制台形态）
+     * - 否则用手动 vParam；仍为空时也回退时间戳，避免「无 v 参数错误」
+     * 注意：持仓 list 的加密 v 不能用时间戳替代，本客户端已不查持仓。
+     */
+    private fun effectiveV(cfg: HibtSettings): String {
+        if (cfg.vAutoTimestamp) return System.currentTimeMillis().toString()
+        val manual = cfg.vParam.trim()
+        if (manual.isNotEmpty()) return manual
+        return System.currentTimeMillis().toString()
+    }
+
     private fun Request.Builder.applyHibtHeaders(cfg: HibtSettings): Request.Builder {
         val ct = cfg.clientType.ifBlank { "web" }
         val isH5 = ct.equals("h5", true)
@@ -92,8 +105,8 @@ class HibtClient(
             .distinct()
     }
 
-    private fun withV(url: String, cfg: HibtSettings): String {
-        val v = cfg.vParam.trim()
+    private fun withV(url: String, cfg: HibtSettings, vOverride: String? = null): String {
+        val v = (vOverride ?: effectiveV(cfg)).trim()
         if (v.isEmpty()) return url
         val enc = java.net.URLEncoder.encode(v, "UTF-8")
         return if (url.contains("?")) "$url&v=$enc" else "$url?v=$enc"
@@ -265,14 +278,8 @@ class HibtClient(
         }
         val log = StringBuilder()
         val lang = cfg.langCode.ifBlank { "zh_CN" }
-        var v = cfg.vParam.trim()
-        // 余额接口常见时间戳型 v：若用户未填，尝试用当前毫秒（控制台示例形态）
-        if (v.isBlank()) {
-            v = System.currentTimeMillis().toString()
-            log.appendLine("v 未配置，余额请求使用时间戳形态 v=$v")
-        } else {
-            log.appendLine("apiBase=${cfg.apiBase} v=已配置(len=${v.length})")
-        }
+        val v = effectiveV(cfg)
+        log.appendLine("apiBase=${cfg.apiBase} v=$v autoTs=${cfg.vAutoTimestamp}")
 
         val bases = buildList {
             add("https://api.hibt0.com")
@@ -450,19 +457,21 @@ class HibtClient(
             .add("langCode", spec.langCode)
             .build()
 
-        // 实盘只打「主 apiBase + 规范 path」，避免打到错误镜像造成异常成交
+        // 本笔下单固定同一个 v（时间戳或手动），成功即停，不扫镜像站
+        val vForPlace = effectiveV(cfg)
         val paths = listOf(
             "/option/option-order/place",
             "/event/event-order/place",
         )
-        // 实盘最多试 2 个 base，减少无效重试触发风控
-        val bases = (listOf(spec.apiBase) + candidateBases(cfg).filter { it != spec.apiBase }).distinct().take(2)
+        val bases = listOf(spec.apiBase.ifBlank { "https://api.hibt0.com" }, "https://api.hibt0.com")
+            .map { it.trimEnd('/') }.distinct()
         val tries = StringBuilder()
+        tries.appendLine("place v=$vForPlace autoTs=${cfg.vAutoTimestamp}")
         var lastRaw: String? = null
 
         for (base in bases) {
             for (path in paths) {
-                val url = withV(base + path, cfg)
+                val url = withV(base + path, cfg, vOverride = vForPlace)
                 try {
                     val req = Request.Builder().url(url).post(form)
                         .applyHibtHeaders(cfg)
