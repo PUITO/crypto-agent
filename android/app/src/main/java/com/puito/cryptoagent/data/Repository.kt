@@ -8,6 +8,7 @@ import com.puito.cryptoagent.domain.StrategyEngine
 import com.puito.cryptoagent.net.BinanceClient
 import com.puito.cryptoagent.net.HibtClient
 import com.puito.cryptoagent.net.HibtWebSession
+import com.puito.cryptoagent.notify.Notify
 import com.puito.cryptoagent.net.LlmClient
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +19,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 class Repository(ctx: Context) {
+    private val appCtx = ctx.applicationContext
     private val sp = ctx.getSharedPreferences("agent_local", Context.MODE_PRIVATE)
     private val gson = Gson()
     private val binance = BinanceClient()
@@ -584,7 +586,9 @@ class Repository(ctx: Context) {
         }
     }
 
-    /** 优先 WebView 注入下单；未创建 WebView 时回退原生接口。 */
+    /**
+     * 统一只走 WebView 下单，禁止原生时间戳 v / 直连接口下单（避免登录失效与错误 v）。
+     */
     private suspend fun placePreferWeb(
         directionUp: Boolean,
         amount: Double,
@@ -592,24 +596,43 @@ class Repository(ctx: Context) {
         timeUnit: Int,
         cfg: HibtSettings,
     ): HibtClient.OrderResult {
-        if (HibtWebSession.peek() != null) {
-            val outcome = HibtWebSession.placeOrder(
-                directionUp = directionUp,
-                amount = amount,
-                symbol = symbol,
-                timeUnit = timeUnit,
-                dryRun = cfg.dryRun,
+        if (HibtWebSession.peek() == null) {
+            val msg = "【必须 WebView】请先打开 WebView 登录并「隐藏保活」。已禁用原生接口下单（不再使用时间戳 v）。"
+            Notify.orderResult(
+                appCtx, ok = false, dryRun = true, message = msg,
+                sideLabel = if (directionUp) "买涨" else "买跌",
+                amount = amount, timeUnit = timeUnit,
             )
-            if (outcome != null) {
-                return HibtClient.OrderResult(
-                    ok = outcome.ok,
-                    message = "[WebView] ${outcome.message}",
-                    dryRun = outcome.dryRun,
-                    raw = outcome.message,
-                )
-            }
+            return HibtClient.OrderResult(false, msg, dryRun = true, raw = msg)
         }
-        return hibt.placeEventOrder(cfg, symbol, directionUp, amount, timeUnit)
+        val outcome = HibtWebSession.placeOrder(
+            directionUp = directionUp,
+            amount = amount,
+            symbol = symbol,
+            timeUnit = timeUnit,
+            dryRun = cfg.dryRun,
+        ) ?: HibtWebSession.PlaceOutcome(
+            false,
+            "WebView 无响应，请重新打开 WebView 并进入合约/订单页",
+            cfg.dryRun,
+        )
+        val result = HibtClient.OrderResult(
+            ok = outcome.ok,
+            message = "[WebView] ${outcome.message}",
+            dryRun = outcome.dryRun,
+            raw = outcome.message,
+        )
+        // 真实下单或失败都通知；Dry-Run 也通知一条便于确认走的是 WebView
+        Notify.orderResult(
+            appCtx,
+            ok = result.ok,
+            dryRun = result.dryRun,
+            message = result.message,
+            sideLabel = if (directionUp) "买涨 B" else "买跌 S",
+            amount = amount,
+            timeUnit = timeUnit,
+        )
+        return result
     }
 
     suspend fun hibtTest() = hibt.testConnectivity(settings().hibt)

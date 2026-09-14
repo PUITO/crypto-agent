@@ -71,7 +71,7 @@ fun OrderScreen(repo: Repository) {
         ) {
             Text("HiBT 下单 · 周期 ${s.interval}", style = MaterialTheme.typography.titleMedium)
             Text(
-                "推荐：打开 WebView 登录后隐藏保活；自动下单走页面环境（不伪造加密 v）。",
+                "测试/自动下单一律走 WebView（已禁用原生时间戳 v）。请先登录 WebView 再隐藏保活；真实下单会发系统通知。",
                 color = MaterialTheme.colorScheme.secondary,
                 fontSize = 12.sp,
             )

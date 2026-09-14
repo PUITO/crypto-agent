@@ -85,6 +85,18 @@ object Notify {
             enableVibration(false)
         }
         nm.createNotificationChannel(bgCh)
+
+        val orderCh = NotificationChannel(
+            "orders_v1",
+            "下单结果",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "真实/测试下单结果反馈"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 200, 100, 200)
+            lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+        }
+        nm.createNotificationChannel(orderCh)
     }
 
     fun vibrateNow(ctx: Context, pattern: LongArray = DEFAULT_VIBRATE_PATTERN) {
@@ -283,5 +295,45 @@ object Notify {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setSilent(true)
             .build()
+    }
+
+    fun orderResult(
+        ctx: Context,
+        ok: Boolean,
+        dryRun: Boolean,
+        message: String,
+        sideLabel: String = "",
+        amount: Double? = null,
+        timeUnit: Int? = null,
+    ) {
+        channels(ctx)
+        val title = when {
+            dryRun -> "下单预览 (Dry-Run)"
+            ok -> "下单成功"
+            else -> "下单失败"
+        }
+        val detail = buildString {
+            if (sideLabel.isNotBlank()) append(sideLabel).append(" · ")
+            if (amount != null) append("金额 ").append(amount).append(" · ")
+            if (timeUnit != null) append(timeUnit).append("m · ")
+            append(message.take(280))
+        }
+        val id = (System.currentTimeMillis() % 100000).toInt() + 40000
+        val builder = NotificationCompat.Builder(ctx, "orders_v1")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(detail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        if (!dryRun) {
+            builder.setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_LIGHTS)
+            if (ok) vibrateNow(ctx, longArrayOf(0, 180, 80, 180))
+        }
+        try {
+            NotificationManagerCompat.from(ctx).notify(id, builder.build())
+        } catch (_: Exception) {
+        }
     }
 }

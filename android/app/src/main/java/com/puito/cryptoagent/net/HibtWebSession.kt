@@ -181,6 +181,8 @@ object HibtWebSession {
             })();
         """.trimIndent()
         main.post {
+            // 下单前再注入一次，避免页面跳转后脚本丢失
+            injectHooks(wv)
             _ui.value = _ui.value.copy(status = if (dryRun) "WebView DRY-RUN…" else "WebView 下单中…")
             wv.evaluateJavascript(js, null)
         }
