@@ -68,7 +68,7 @@ object HibtWebSession {
                 domStorageEnabled = true
                 databaseEnabled = true
                 mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                userAgentString = settings.userAgentString // keep default mobile UA
+                // keep default WebView UA
                 cacheMode = WebSettings.LOAD_DEFAULT
             }
             wv.addJavascriptInterface(Bridge(), "CaHibt")
@@ -209,7 +209,7 @@ object HibtWebSession {
         }, 1500)
     }
 
-    private inner class Bridge {
+    private class Bridge {
         @JavascriptInterface
         fun onSession(json: String) {
             try {

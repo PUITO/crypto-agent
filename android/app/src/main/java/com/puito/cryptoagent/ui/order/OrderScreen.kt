@@ -77,7 +77,7 @@ fun OrderScreen(repo: Repository) {
             )
 
             // —— WebView 管理 ——
-            Card(Modifier = Modifier.fillMaxWidth()) {
+            Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("WebView 会话", style = MaterialTheme.typography.titleSmall)
                     Text(
@@ -132,7 +132,7 @@ fun OrderScreen(repo: Repository) {
             }
 
             // —— 账户（Web 优先 + 原生补充）——
-            Card(Modifier = Modifier.fillMaxWidth()) {
+            Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("账户状态", style = MaterialTheme.typography.titleSmall)
                     Text("余额：$displayBal", maxLines = 2, overflow = TextOverflow.Ellipsis)
