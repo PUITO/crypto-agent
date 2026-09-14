@@ -653,6 +653,7 @@ class Repository(ctx: Context) {
             symbol = symbol,
             timeUnit = timeUnit,
             dryRun = cfg.dryRun,
+            timeoutSec = cfg.placeTimeoutSec,
         ) ?: HibtWebSession.PlaceOutcome(
             false,
             "WebView 无响应，请重新打开 WebView 并进入合约/订单页",

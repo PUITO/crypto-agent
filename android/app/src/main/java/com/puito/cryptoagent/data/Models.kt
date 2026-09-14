@@ -114,6 +114,8 @@ data class HibtSettings(
     val aiMinWinRate: Double = 55.0, // 百分比
     val defaultAmount: Double = 3.0,
     val dryRun: Boolean = true, // 默认模拟，避免误真实下单
+    /** WebView 注入下单等待脚本回调超时（秒），默认 45，建议 20–120 */
+    val placeTimeoutSec: Int = 45,
     /**
      * 自动下单多选周期（与行情页全局 interval 解耦）。
      * 合法：5m / 10m / 30m / 1h

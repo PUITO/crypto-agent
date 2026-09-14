@@ -230,6 +230,16 @@ fun OrderScreen(repo: Repository) {
                 label = { Text("默认下单金额") },
                 modifier = Modifier.fillMaxWidth(), singleLine = true,
             )
+            OutlinedTextField(
+                h.placeTimeoutSec.toString(),
+                {
+                    it.toIntOrNull()?.let { v ->
+                        persist(h.copy(placeTimeoutSec = v.coerceIn(10, 180)))
+                    }
+                },
+                label = { Text("WebView 下单超时(秒) 10–180，默认45") },
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+            )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button({

@@ -132,6 +132,7 @@ object HibtWebSession {
         symbol: String,
         timeUnit: Int,
         dryRun: Boolean,
+        timeoutSec: Int = 45,
     ): PlaceOutcome? {
         val wv = webView
         if (wv == null) return null
@@ -184,10 +185,18 @@ object HibtWebSession {
             // 下单前再注入一次，避免页面跳转后脚本丢失
             injectHooks(wv)
             _ui.value = _ui.value.copy(status = if (dryRun) "WebView DRY-RUN…" else "WebView 下单中…")
-            wv.evaluateJavascript(js, null)
+            // 短延迟再执行下单，确保注入完成
+            main.postDelayed({
+                webView?.evaluateJavascript(js, null)
+            }, 350)
         }
-        val result = withTimeoutOrNull(25_000L) { deferred.await() }
-        return result ?: PlaceOutcome(false, "WebView 下单超时（脚本未回调）", dryRun)
+        val waitMs = timeoutSec.coerceIn(10, 180) * 1000L
+        val result = withTimeoutOrNull(waitMs) { deferred.await() }
+        return result ?: PlaceOutcome(
+            false,
+            "WebView 下单超时（脚本未回调，已等 ${waitMs / 1000}s；可在下单页调大「下单超时」）",
+            dryRun,
+        )
     }
 
     fun applyNativeSettingsSnapshot(): HibtSettings? {
