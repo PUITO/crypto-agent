@@ -398,9 +398,21 @@ class Repository(ctx: Context) {
             if (k !in dedup) dedup[k] = p
         }
         val out = filterCrossInterval(dedup.values.toList())
-        for (p in out) {
-            if (s.hibt.autoTrade && p.interval == s.interval) {
-                maybeAutoOrder(s, p.mark, p.ai)
+
+        // 自动下单：按配置多选周期（与行情全局 interval 解耦）；用未去重的 timely 以便多周期同时下
+        if (s.hibt.autoTrade) {
+            val selected = s.hibt.autoIntervals
+                .map { it.trim().lowercase() }
+                .filter { it in setOf("5m", "10m", "30m", "1h") }
+                .ifEmpty { listOf(s.interval) }
+            // 1m 主源 bars 供防追单
+            val barsForChase = bars1m
+            val orderList = timely.filter { it.interval.lowercase() in selected }
+            for (p in orderList) {
+                if (s.hibt.antiChaseEnabled && isOneSidedChase(barsForChase, p.mark.side, s.hibt.antiChaseBars)) {
+                    continue
+                }
+                maybeAutoOrder(s, p.mark, p.ai, p.interval)
             }
         }
         out
@@ -561,13 +573,43 @@ class Repository(ctx: Context) {
         }
     }
 
-    private suspend fun maybeAutoOrder(s: AppSettings, m: SignalMark, ai: AiEvalResult?) {
+    /**
+     * 大单边行情防追单：近 N 根 1m K 几乎同向且涨跌占窗口波幅主导时，
+     * 禁止继续同向自动下单（避免死硬追涨杀跌）。
+     */
+    private fun isOneSidedChase(bars: List<Candle>, side: String, barCount: Int): Boolean {
+        val n = barCount.coerceIn(4, 20)
+        if (bars.size < n) return false
+        val win = bars.takeLast(n)
+        val ups = win.count { it.close > it.open }
+        val downs = win.count { it.close < it.open }
+        val first = win.first().open
+        val last = win.last().close
+        val move = last - first
+        val range = (win.maxOf { it.high } - win.minOf { it.low }).coerceAtLeast(1e-12)
+        val dominance = kotlin.math.abs(move) / range
+        // 至少约 80% K 线同向，且净位移占窗口高低波幅 >= 55%
+        val strongUp = ups >= (n * 4 / 5) && move > 0 && dominance >= 0.55
+        val strongDown = downs >= (n * 4 / 5) && move < 0 && dominance >= 0.55
+        return when (side) {
+            "B" -> strongUp   // 已大涨还买涨 = 追多
+            "S" -> strongDown // 已大跌还买跌 = 追空
+            else -> false
+        }
+    }
+
+    private suspend fun maybeAutoOrder(
+        s: AppSettings,
+        m: SignalMark,
+        ai: AiEvalResult?,
+        intervalCode: String,
+    ) {
         val h = s.hibt
         if (!h.autoTrade) return
         if (h.aiEvaluate) {
             if (ai?.winRatePct == null || ai.passThreshold != true) return
         }
-        val unit = eventTimeUnitMinutes(s.interval)
+        val unit = eventTimeUnitMinutes(intervalCode)
         val key = "${s.symbol}|${m.side}|${m.openTime}|${unit}"
         synchronized(placeLock) {
             if (!placedOrderKeys.add(key)) {
@@ -637,9 +679,12 @@ class Repository(ctx: Context) {
 
     suspend fun hibtTest() = hibt.testConnectivity(settings().hibt)
 
-    suspend fun hibtPlace(up: Boolean, amount: Double? = null): HibtClient.OrderResult {
+    suspend fun hibtPlace(up: Boolean, amount: Double? = null, intervalCode: String? = null): HibtClient.OrderResult {
         val s = settings()
-        val unit = eventTimeUnitMinutes(s.interval)
+        val iv = intervalCode
+            ?: s.hibt.autoIntervals.firstOrNull()
+            ?: s.interval
+        val unit = eventTimeUnitMinutes(iv)
         val amt = amount ?: s.hibt.defaultAmount
         return placePreferWeb(up, amt, s.symbol, unit, s.hibt)
     }

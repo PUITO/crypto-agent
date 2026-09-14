@@ -69,7 +69,7 @@ fun OrderScreen(repo: Repository) {
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("HiBT 下单 · 周期 ${s.interval}", style = MaterialTheme.typography.titleMedium)
+            Text("HiBT 下单 · 行情 ${s.interval} · 自动 ${h.autoIntervals.joinToString(",")}", style = MaterialTheme.typography.titleMedium)
             Text(
                 "测试/自动下单一律走 WebView（已禁用原生时间戳 v）。请先登录 WebView 再隐藏保活；真实下单会发系统通知。",
                 color = MaterialTheme.colorScheme.secondary,
@@ -176,6 +176,38 @@ fun OrderScreen(repo: Repository) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Dry-Run（关=真实请求）", Modifier.weight(1f))
                 Switch(h.dryRun, { persist(h.copy(dryRun = it)) })
+            }
+            Text("自动下单周期（可多选，与行情页全局周期无关）", fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                val options = listOf("5m", "10m", "30m", "1h")
+                val selected = h.autoIntervals.map { it.lowercase() }.toSet()
+                options.forEach { code ->
+                    val on = code in selected
+                    FilterChip(
+                        selected = on,
+                        onClick = {
+                            val next = selected.toMutableSet()
+                            if (on) {
+                                if (next.size > 1) next.remove(code) // 至少保留一个
+                            } else {
+                                next.add(code)
+                            }
+                            persist(h.copy(autoIntervals = options.filter { it in next }))
+                        },
+                        label = { Text(code) },
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("防追单（大单边同向跳过）", Modifier.weight(1f), fontSize = 14.sp)
+                Switch(h.antiChaseEnabled, { persist(h.copy(antiChaseEnabled = it)) })
+            }
+            if (h.antiChaseEnabled) {
+                Text(
+                    "近 ${h.antiChaseBars} 根 1m 若强势单边，同向信号不自动下单，避免死硬追涨杀跌。",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("优先 WebView 下单", Modifier.weight(1f))
