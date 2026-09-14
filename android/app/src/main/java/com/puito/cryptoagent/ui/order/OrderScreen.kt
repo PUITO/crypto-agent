@@ -79,7 +79,7 @@ fun OrderScreen(repo: Repository) {
     ) {
         Text("HiBT 在线测试 · 周期 ${s.interval}", style = MaterialTheme.typography.titleMedium)
         Text(
-            "余额：用控制台 balance URL 的 v（可时间戳）。持仓 list 的 v 为动态加密且会变，无法静态保存，故不查询持仓。凭证仅本机。",
+            "自动 v：余额=明文时间戳，下单/持仓=Base64(时间戳)。凭证仅本机。",
             color = MaterialTheme.colorScheme.secondary,
             fontSize = 12.sp,
         )
@@ -118,7 +118,7 @@ fun OrderScreen(repo: Repository) {
             modifier = Modifier.fillMaxWidth(), singleLine = true,
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("自动生成 v（当前毫秒时间戳）", Modifier.weight(1f), fontSize = 14.sp)
+            Text("自动生成 v（下单/持仓=Base64时间戳）", Modifier.weight(1f), fontSize = 14.sp)
             Switch(h.vAutoTimestamp, { persist(h.copy(vAutoTimestamp = it)) })
         }
         if (!h.vAutoTimestamp) {
@@ -131,7 +131,7 @@ fun OrderScreen(repo: Repository) {
             )
         } else {
             Text(
-                "下单/余额请求将带 v=System.currentTimeMillis()。若仍参数错误，再关自动并试控制台余额 URL 的 v。",
+                "开启后：下单与持仓用 Base64(毫秒时间戳)；余额仍用明文毫秒。若参数错误可关自动并粘贴浏览器 place 的 v。",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.secondary,
             )

@@ -45,23 +45,35 @@ class HibtClient(
             .removePrefix("Bearer ").removePrefix("bearer ").trim()
 
     /**
-     * 解析请求用的 v：
-     * - vAutoTimestamp=true（默认）→ 当前毫秒时间戳（对齐余额控制台形态）
-     * - 否则用手动 vParam；仍为空时也回退时间戳，避免「无 v 参数错误」
-     * 注意：持仓 list 的加密 v 不能用时间戳替代，本客户端已不查持仓。
+     * 自动 v：
+     * - 下单 / 持仓：Base64(UTF-8 毫秒时间戳字符串) —— 用户确认与控制台一致
+     * - 余额：仍用明文毫秒时间戳（控制台 balance 常见形态）
+     * 关闭自动且手动 v 非空 → 用手动值。
      */
-    /**
-     * 下单/余额用的 v：
-     * - 开启「自动时间戳 v」→ 当前毫秒
-     * - 关闭且手动 v 非空 → 用手动值（可从浏览器 place 请求复制）
-     * - 手动也为空 → 仍回退时间戳（避免 Gson 反序列化把 vAutoTimestamp 变成 false 后无 v）
-     * 说明：公开抓包里 place 的 v 常为登录会话串，不一定是时间戳；无会话 v 时先试时间戳。
-     */
+    private fun timestampMs(): String = System.currentTimeMillis().toString()
+
+    private fun base64Timestamp(): String {
+        val raw = timestampMs().toByteArray(Charsets.UTF_8)
+        return android.util.Base64.encodeToString(raw, android.util.Base64.NO_WRAP)
+    }
+
+    /** place / event-order/list 用 */
     private fun effectiveV(cfg: HibtSettings): String {
         val manual = cfg.vParam.trim()
         if (!cfg.vAutoTimestamp && manual.isNotEmpty()) return manual
-        return System.currentTimeMillis().toString()
+        return base64Timestamp()
     }
+
+    /** balance 用明文时间戳 */
+    private fun effectiveVBalance(cfg: HibtSettings): String {
+        val manual = cfg.vParam.trim()
+        if (!cfg.vAutoTimestamp && manual.isNotEmpty()) {
+            // 手动若已是长 base64，余额仍可试；优先原样
+            return manual
+        }
+        return timestampMs()
+    }
+
 
     private fun Request.Builder.applyHibtHeaders(cfg: HibtSettings): Request.Builder {
         val ct = cfg.clientType.ifBlank { "web" }
@@ -270,13 +282,10 @@ class HibtClient(
      * 持仓：最多 1 次 POST /option/option-order/list（失败则跳过，不扫其它）
      */
     /**
-     * 账户查询（控制请求次数防风控）：
-     *
-     * 余额 GET /rest/c/future/u/user/balance?langCode=&v= → 字段 amount
-     *   - v 可用控制台余额 URL 中的 v（常为时间戳形态，相对稳定可配置）
-     *
-     * 持仓 /event/event-order/list 的 v 为**动态加密且会变化**，与余额 v 不是同一套。
-     * 静态解析无法可靠复用 → **默认不查持仓**，避免错 v / 多次请求触发风控。
+     * 账户查询（少请求防风控）：
+     * 余额 GET /rest/c/future/u/user/balance?langCode=&v=明文时间戳 → amount
+     * 持仓 POST /event/event-order/list?v=Base64时间戳  body status=0&pageNo&pageSize&langCode
+     * 自动 v 时：余额用明文 ms，持仓/下单用 Base64(ms)。
      */
     suspend fun testConnectivity(cfg: HibtSettings): AccountSnapshot = withContext(Dispatchers.IO) {
         if (tokenOf(cfg).isBlank()) {
@@ -284,8 +293,9 @@ class HibtClient(
         }
         val log = StringBuilder()
         val lang = cfg.langCode.ifBlank { "zh_CN" }
-        val v = effectiveV(cfg)
-        log.appendLine("apiBase=${cfg.apiBase} v=$v autoTs=${cfg.vAutoTimestamp}")
+        val vBal = effectiveVBalance(cfg)
+        val vPos = effectiveV(cfg)
+        log.appendLine("apiBase=${cfg.apiBase} vBal=$vBal vPos=${vPos.take(20)}… autoTs=${cfg.vAutoTimestamp}")
 
         val bases = buildList {
             add("https://api.hibt0.com")
@@ -294,6 +304,7 @@ class HibtClient(
         }.distinct()
 
         var balance: String? = null
+        var posCount: Int? = null
         var usedBase: String? = null
         var anyAuth = false
 
@@ -329,40 +340,80 @@ class HibtClient(
             }
         }
 
-        // 仅查余额：每 base 最多 1 次
+        // 余额：明文 v，每 base 最多 1 次
         for (base in bases) {
             val qs = "langCode=${java.net.URLEncoder.encode(lang, "UTF-8")}" +
-                "&v=${java.net.URLEncoder.encode(v, "UTF-8")}"
+                "&v=${java.net.URLEncoder.encode(vBal, "UTF-8")}"
             val url = "$base/rest/c/future/u/user/balance?$qs"
             try {
                 val (code, body) = request("GET", url, cfg)
-                log.appendLine("GET $code balance @ $base ${body.take(100).replace("\n", " ")}")
+                log.appendLine("GET $code balance @ $base ${body.take(90).replace("\n", " ")}")
                 if (code in 200..299 && !body.contains("未登录") && !body.contains("\"code\":401")) {
                     anyAuth = true
                     usedBase = base
                     balance = findAmount(body)
-                    break // 成功即停，不继续扫站
+                    break
                 }
             } catch (e: Exception) {
                 log.appendLine("GET ERR balance @ $base ${e.message?.take(48)}")
             }
         }
 
+        // 持仓：Base64 v，仅 1 次（status=0 开仓中）
+        if (anyAuth) {
+            val base = usedBase ?: bases.first()
+            val listUrl = "$base/event/event-order/list?v=${java.net.URLEncoder.encode(vPos, "UTF-8")}"
+            val form = FormBody.Builder()
+                .add("status", "0")
+                .add("pageNo", "1")
+                .add("pageSize", "100")
+                .add("langCode", lang)
+                .build()
+            try {
+                val (code, body) = request("POST", listUrl, cfg, form)
+                log.appendLine("POST $code event-order/list status=0 @ $base ${body.take(90).replace("\n", " ")}")
+                if (bizOk(code, body)) {
+                    posCount = extractOpenPositionCount(body)
+                    if (posCount == null) {
+                        try {
+                            val o = JsonParser.parseString(body).asJsonObject
+                            val data = when {
+                                o.has("data") && o.get("data").isJsonObject -> o.getAsJsonObject("data")
+                                else -> o
+                            }
+                            for (k in listOf("list", "records", "rows")) {
+                                if (data.has(k) && data.get(k).isJsonArray) {
+                                    posCount = data.getAsJsonArray(k).size()
+                                    break
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+            } catch (e: Exception) {
+                log.appendLine("POST ERR list ${e.message?.take(48)}")
+            }
+        }
+
         if (!anyAuth) {
             return@withContext AccountSnapshot(
                 false,
-                "余额查询失败。请确认 token；v 可从控制台余额 URL 复制（时间戳形态）。持仓因动态加密 v 已跳过。",
+                "余额查询失败。请确认 token。自动 v：余额明文时间戳，持仓/下单 Base64 时间戳。",
                 raw = log.toString().take(1500),
             )
         }
 
+        val posText = when (posCount) {
+            null -> "—"
+            else -> "开仓中 ${posCount} 笔"
+        }
         AccountSnapshot(
             ok = true,
-            message = "余额查询完成 · ${usedBase ?: bases.first()}" +
-                (if (balance == null) " · 未解析到 amount" else "") +
-                " · 持仓不查询（list 的 v 动态加密，无法静态复用）",
+            message = "查询完成 · ${usedBase ?: bases.first()}" +
+                (if (balance == null) " · 余额未解析 amount" else "") +
+                (if (posCount == null) " · 持仓未解析" else ""),
             balance = balance ?: "—",
-            positions = "不显示（动态 v）",
+            positions = posText,
             raw = log.toString().take(1600),
         )
     }
@@ -415,7 +466,7 @@ class HibtClient(
         val vShow = effectiveV(cfg)
         val preview =
             "POST $base/option/option-order/place?v=" + (if (vShow.length > 16) vShow.take(8) + "…" + vShow.takeLast(4) else vShow) +
-                (if (cfg.vAutoTimestamp || cfg.vParam.isBlank()) "（自动时间戳）" else "（手动 v）") +
+                (if (cfg.vAutoTimestamp || cfg.vParam.isBlank()) "（自动Base64时间戳）" else "（手动 v）") +
                 "\nform: amount=$amountStr&direction=$dir&symbol=$sym&timeUnit=$unit&langCode=$lang"
         return PlaceSpec(
             apiBase = base,
