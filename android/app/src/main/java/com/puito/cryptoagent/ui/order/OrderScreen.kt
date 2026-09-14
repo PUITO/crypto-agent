@@ -117,7 +117,7 @@ fun OrderScreen(repo: Repository) {
             label = { Text("x-auth-token / Authorization") },
             modifier = Modifier.fillMaxWidth(), singleLine = true,
         )
-        OutlinedTextField(h.vParam, { persist(h.copy(vParam = it)) }, label = { Text("v 参数（下单常需要）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(h.vParam, { persist(h.copy(vParam = it)) }, label = { Text("v 参数（余额/持仓/下单 URL 里的 v=，可整段粘贴解析）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(h.bgetKey, { persist(h.copy(bgetKey = it)) }, label = { Text("bgetKey（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(h.bgetId, { persist(h.copy(bgetId = it)) }, label = { Text("bgetId（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(h.clientType, { persist(h.copy(clientType = it)) }, label = { Text("clientType web/h5") }, modifier = Modifier.fillMaxWidth(), singleLine = true)

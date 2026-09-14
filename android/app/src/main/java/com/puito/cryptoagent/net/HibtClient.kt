@@ -250,121 +250,152 @@ class HibtClient(
      * 鉴权：GET /uc/member/my-info（1 次）
      * 持仓：最多 1 次 POST /option/option-order/list（失败则跳过，不扫其它）
      */
+    /**
+     * 账户查询（用户控制台确认路径，控制请求次数防风控）：
+     * 余额 GET  /rest/c/future/u/user/balance?langCode=&v=  → 字段 amount
+     * 持仓 POST /event/event-order/list?v=  body: status=0(开仓中)&pageNo&pageSize&langCode
+     * status=0 开仓中，status=1 已平仓。持仓优先级低于余额，余额失败则不查持仓。
+     */
     suspend fun testConnectivity(cfg: HibtSettings): AccountSnapshot = withContext(Dispatchers.IO) {
         if (tokenOf(cfg).isBlank()) {
             return@withContext AccountSnapshot(false, "请填写 x-auth-token")
         }
         val log = StringBuilder()
-        // 余额接口以 api.hibt0.com 为准（控制台抓包）；若用户配置的是同源 api 也优先用配置
-        val balBases = buildList {
-            val primary = cfg.apiBase.trim().trimEnd('/')
-            if (primary.startsWith("http")) add(primary)
+        val lang = cfg.langCode.ifBlank { "zh_CN" }
+        val v = cfg.vParam.trim()
+        log.appendLine("apiBase=${cfg.apiBase} v=${if (v.isBlank()) "(空)" else "已填"}")
+
+        // 只打用户确认的主站，最多再试一次配置里的 apiBase（若不同）
+        val bases = buildList {
             add("https://api.hibt0.com")
+            val p = cfg.apiBase.trim().trimEnd('/')
+            if (p.startsWith("http") && p != "https://api.hibt0.com") add(p)
         }.distinct()
 
         var balance: String? = null
         var posCount: Int? = null
-        var anyAuth = false
         var usedBase: String? = null
-        val lang = cfg.langCode.ifBlank { "zh_CN" }
+        var anyAuth = false
 
-        fun balanceUrl(base: String): String {
-            val q = "langCode=$lang" + if (cfg.vParam.isNotBlank()) {
-                "&v=${java.net.URLEncoder.encode(cfg.vParam.trim(), "UTF-8")}"
-            } else ""
-            return "$base/rest/c/future/u/user/balance?$q"
+        fun findAmount(body: String): String? {
+            return try {
+                val root = JsonParser.parseString(body)
+                fun walk(el: JsonElement?, d: Int): String? {
+                    if (el == null || d > 6) return null
+                    if (el.isJsonObject) {
+                        val o = el.asJsonObject
+                        // 控制台字段 amount 优先
+                        if (o.has("amount") && o.get("amount").isJsonPrimitive && !o.get("amount").isJsonNull) {
+                            val s = o.get("amount").asString.trim()
+                            if (s.isNotEmpty() && s != "null") return s
+                        }
+                        for (k in listOf("availableBalance", "balance", "available", "equity", "canUse")) {
+                            if (o.has(k) && o.get(k).isJsonPrimitive && !o.get(k).isJsonNull) {
+                                val s = o.get(k).asString.trim()
+                                if (s.isNotEmpty() && s != "null") return s
+                            }
+                        }
+                        for (w in listOf("data", "result", "account")) {
+                            if (o.has(w)) walk(o.get(w), d + 1)?.let { return it }
+                        }
+                        for ((_, v) in o.entrySet()) walk(v, d + 1)?.let { return it }
+                    } else if (el.isJsonArray) {
+                        for (x in el.asJsonArray) walk(x, d + 1)?.let { return it }
+                    }
+                    return null
+                }
+                walk(root, 0)
+            } catch (_: Exception) {
+                null
+            }
         }
 
-        // 1) 余额：每 base 只请求 1 次
-        for (base in balBases) {
-            val url = balanceUrl(base)
+        // —— 余额：每个 base 最多 1 次 GET ——
+        for (base in bases) {
+            val qs = buildString {
+                append("langCode=").append(java.net.URLEncoder.encode(lang, "UTF-8"))
+                if (v.isNotBlank()) {
+                    append("&v=").append(java.net.URLEncoder.encode(v, "UTF-8"))
+                }
+            }
+            val url = "$base/rest/c/future/u/user/balance?$qs"
             try {
                 val (code, body) = request("GET", url, cfg)
-                log.appendLine("GET $code /rest/c/future/u/user/balance @ $base ${body.take(90).replace("\n", " ")}")
-                if (bizOk(code, body)) {
+                log.appendLine("GET $code balance @ $base ${body.take(100).replace("\n", " ")}")
+                if (code in 200..299 && !body.contains("未登录") && !body.contains("\"code\":401")) {
                     anyAuth = true
                     usedBase = base
-                    extractBalanceStrict(body)?.let { balance = it }
-                    // 专门再抽 amount（控制台字段）
-                    if (balance.isNullOrBlank()) {
-                        try {
-                            val root = JsonParser.parseString(body)
-                            fun findAmount(el: com.google.gson.JsonElement?, d: Int): String? {
-                                if (el == null || d > 5) return null
-                                if (el.isJsonObject) {
-                                    val o = el.asJsonObject
-                                    if (o.has("amount") && o.get("amount").isJsonPrimitive) {
-                                        return o.get("amount").asString
-                                    }
-                                    for ((_, v) in o.entrySet()) {
-                                        findAmount(v, d + 1)?.let { return it }
-                                    }
-                                } else if (el.isJsonArray) {
-                                    for (x in el.asJsonArray) findAmount(x, d + 1)?.let { return it }
-                                }
-                                return null
-                            }
-                            findAmount(root, 0)?.let { balance = it }
-                        } catch (_: Exception) {}
-                    }
+                    balance = findAmount(body)
                     if (!balance.isNullOrBlank()) break
+                    // HTTP 通了但无 amount，仍算鉴权成功，不再换站狂扫
+                    break
                 }
             } catch (e: Exception) {
                 log.appendLine("GET ERR balance @ $base ${e.message?.take(48)}")
             }
         }
 
-        // 2) 鉴权兜底：仅 1 次 my-info（余额未成功时）
-        if (!anyAuth) {
-            val base = balBases.first()
-            val url = withV("$base/uc/member/my-info", cfg)
-            try {
-                val (code, body) = request("GET", url, cfg)
-                log.appendLine("GET $code /uc/member/my-info @ $base ${body.take(70).replace("\n", " ")}")
-                if (bizOk(code, body)) {
-                    anyAuth = true
-                    usedBase = base
-                }
-            } catch (e: Exception) {
-                log.appendLine("GET ERR my-info ${e.message?.take(40)}")
-            }
-        }
-
-        // 3) 持仓：最多 1 次 POST，不再扫 event/summary 等
+        // —— 持仓：仅余额/鉴权成功后 1 次；status=0 开仓中 ——
         if (anyAuth) {
-            val base = usedBase ?: balBases.first()
-            val url = withV("$base/option/option-order/list", cfg)
+            val base = usedBase ?: bases.first()
+            val listUrl = if (v.isNotBlank()) {
+                "$base/event/event-order/list?v=${java.net.URLEncoder.encode(v, "UTF-8")}"
+            } else {
+                "$base/event/event-order/list"
+            }
+            val form = FormBody.Builder()
+                .add("status", "0") // 0=开仓中 1=已平仓
+                .add("pageNo", "1")
+                .add("pageSize", "100")
+                .add("langCode", lang)
+                .build()
             try {
-                val (code, body) = request("POST", url, cfg, pageForm())
-                log.appendLine("POST $code /option/option-order/list @ $base ${body.take(70).replace("\n", " ")}")
+                val (code, body) = request("POST", listUrl, cfg, form)
+                log.appendLine("POST $code event-order/list status=0 @ $base ${body.take(100).replace("\n", " ")}")
                 if (bizOk(code, body)) {
                     posCount = extractOpenPositionCount(body)
+                    // list 直接计数 data.list 长度（status 已由服务端过滤）
+                    if (posCount == null) {
+                        try {
+                            val o = JsonParser.parseString(body).asJsonObject
+                            val data = when {
+                                o.has("data") && o.get("data").isJsonObject -> o.getAsJsonObject("data")
+                                else -> o
+                            }
+                            for (k in listOf("list", "records", "rows")) {
+                                if (data.has(k) && data.get(k).isJsonArray) {
+                                    posCount = data.getAsJsonArray(k).size()
+                                    break
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
                 }
             } catch (e: Exception) {
-                log.appendLine("POST ERR list ${e.message?.take(40)}")
+                log.appendLine("POST ERR list ${e.message?.take(48)}")
             }
         }
 
         if (!anyAuth) {
             return@withContext AccountSnapshot(
                 false,
-                "鉴权失败。余额接口：GET /rest/c/future/u/user/balance（字段 amount）。请确认 token / v。",
+                "鉴权/余额失败。请确认 token，以及 v（从控制台 URL 的 v= 复制）。接口：GET /rest/c/future/u/user/balance",
                 raw = log.toString().take(1500),
             )
         }
 
         val posText = when (posCount) {
-            null -> "未查询到（已限制仅 1 次 list，降低风控）"
-            else -> "未平仓 ${posCount} 笔"
+            null -> "—"
+            else -> "开仓中 ${posCount} 笔"
         }
         AccountSnapshot(
             ok = true,
-            message = "在线查询完成 · base=${usedBase ?: balBases.first()}" +
-                (if (balance == null) " · 余额未识别" else " · amount=$balance") +
-                (if (posCount == null) " · 持仓未识别" else ""),
+            message = "查询完成 · ${usedBase ?: bases.first()}" +
+                (if (balance == null) " · 余额未解析到 amount" else "") +
+                (if (posCount == null) " · 持仓未解析" else ""),
             balance = balance ?: "—",
             positions = posText,
-            raw = log.toString().take(1800),
+            raw = log.toString().take(1600),
         )
     }
 
