@@ -79,7 +79,7 @@ fun OrderScreen(repo: Repository) {
     ) {
         Text("HiBT 在线测试 · 周期 ${s.interval}", style = MaterialTheme.typography.titleMedium)
         Text(
-            "优先使用下方 API Base（应与书签解析一致）。列表接口用 POST。下单 timeUnit=当前周期分钟。凭证仅本机。",
+            "余额：用控制台 balance URL 的 v（可时间戳）。持仓 list 的 v 为动态加密且会变，无法静态保存，故不查询持仓。凭证仅本机。",
             color = MaterialTheme.colorScheme.secondary,
             fontSize = 12.sp,
         )
@@ -117,7 +117,7 @@ fun OrderScreen(repo: Repository) {
             label = { Text("x-auth-token / Authorization") },
             modifier = Modifier.fillMaxWidth(), singleLine = true,
         )
-        OutlinedTextField(h.vParam, { persist(h.copy(vParam = it)) }, label = { Text("v 参数（余额/持仓/下单 URL 里的 v=，可整段粘贴解析）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(h.vParam, { persist(h.copy(vParam = it)) }, label = { Text("v 参数（请用余额接口 URL 的 v；持仓加密 v 无效）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(h.bgetKey, { persist(h.copy(bgetKey = it)) }, label = { Text("bgetKey（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(h.bgetId, { persist(h.copy(bgetId = it)) }, label = { Text("bgetId（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(h.clientType, { persist(h.copy(clientType = it)) }, label = { Text("clientType web/h5") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -145,7 +145,7 @@ fun OrderScreen(repo: Repository) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("账户状态（在线）", style = MaterialTheme.typography.titleSmall)
                 Text("余额：$balance", maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text("事件合约持仓：$positions", maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text("持仓：$positions", maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
 

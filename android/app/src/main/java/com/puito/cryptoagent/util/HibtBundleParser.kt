@@ -107,7 +107,11 @@ object HibtBundleParser {
             )
             val tip = buildString {
                 append("已从 JSON 解析 token")
-                if (nh.vParam.isNotBlank()) append(" · v")
+                if (nh.vParam.isNotBlank()) {
+                    append(if (nh.vParam.length > 20 && !nh.vParam.all { it.isDigit() })
+                        " · v(长串，多用于持仓/动态，余额可能仍需时间戳 v)"
+                    else " · v(余额可用)")
+                }
                 if (nh.apiBase.isNotBlank()) append(" · apiBase")
             }
             Result(nh, tip, true)
@@ -167,8 +171,13 @@ object HibtBundleParser {
         val ok = nh.xAuthToken.isNotBlank() || nh.authToken.isNotBlank()
         val tip = buildString {
             if (ok) append("已解析") else append("部分解析（仍缺 token）")
-            if (nh.vParam.isNotBlank()) append(" · v已填")
-            else append(" · 建议粘贴控制台 URL 以带上 v")
+            if (nh.vParam.isNotBlank()) {
+                append(
+                    if (nh.vParam.length > 20 && !nh.vParam.all { it.isDigit() })
+                        " · v已填(动态型，持仓用；余额请再贴 balance 的时间戳 v)"
+                    else " · v已填(余额型)"
+                )
+            } else append(" · 建议粘贴余额 URL 带上 v")
             if (nh.apiBase.isNotBlank()) append(" · ${nh.apiBase}")
         }
         return Result(nh, tip, ok)
