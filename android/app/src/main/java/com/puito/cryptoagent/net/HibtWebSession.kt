@@ -182,13 +182,14 @@ object HibtWebSession {
             })();
         """.trimIndent()
         main.post {
-            // 下单前再注入一次，避免页面跳转后脚本丢失
+            // 后台/隐藏时 WebView 可能暂停 JS 与网络，先唤醒
+            wakeWebView(wv)
             injectHooks(wv)
             _ui.value = _ui.value.copy(status = if (dryRun) "WebView DRY-RUN…" else "WebView 下单中…")
-            // 短延迟再执行下单，确保注入完成
             main.postDelayed({
+                wakeWebView(webView ?: return@postDelayed)
                 webView?.evaluateJavascript(js, null)
-            }, 350)
+            }, 400)
         }
         val waitMs = timeoutSec.coerceIn(10, 180) * 1000L
         val result = withTimeoutOrNull(waitMs) { deferred.await() }
@@ -210,7 +211,20 @@ object HibtWebSession {
         )
     }
 
+    private fun wakeWebView(wv: WebView) {
+        try {
+            wv.resumeTimers()
+        } catch (_: Exception) {
+        }
+        try {
+            @Suppress("DEPRECATION")
+            wv.onResume()
+        } catch (_: Exception) {
+        }
+    }
+
     private fun injectHooks(view: WebView) {
+
         val script = INJECT_JS
         view.evaluateJavascript(script, null)
         // 再延迟一次，覆盖晚加载的 bundle
@@ -434,34 +448,71 @@ object HibtWebSession {
         if (dry) {
           CaHibt.onPlaceResult(JSON.stringify({
             id: opt.id, ok: true, dryRun: true,
-            message: 'WEB-DRY-RUN '+JSON.stringify(payload)+' v='+(st.v?st.v.slice(0,12)+'…':'(无)')
+            message: 'WEB-DRY-RUN '+JSON.stringify(payload)+' v='+(st.v?st.v.slice(0,12)+'…':'(无)')+' base='+st.apiBase
           }));
           return;
         }
         if (!st.token) {
-          CaHibt.onPlaceResult(JSON.stringify({ id:opt.id, ok:false, dryRun:false, message:'无 token：请在 WebView 登录并点击订单页' }));
+          CaHibt.onPlaceResult(JSON.stringify({ id:opt.id, ok:false, dryRun:false, message:'无 token：请在 WebView 登录并点击订单/资产页以捕获会话' }));
           return;
         }
         var base = st.apiBase || 'https://api.hibt0.com';
-        var url = base + '/option/option-order/place' + (st.v ? ('?v='+encodeURIComponent(st.v)) : '');
+        var paths = [
+          '/event/event-order/place',
+          '/option/option-order/place'
+        ];
         var body = Object.keys(payload).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(payload[k]); }).join('&');
-        fetch(url, { method:'POST', headers: authHeaders(), credentials:'include', body: body })
-          .then(function(r){ return r.text().then(function(t){ return {code:r.status, t:t}; }); })
-          .then(function(x){
-            var ok = x.code>=200 && x.code<300 && x.t.indexOf('参数错误')<0 && x.t.indexOf('"code":500')<0 && x.t.indexOf('"code":401')<0;
-            try {
-              var j = JSON.parse(x.t);
-              if (j.code===0 || j.code===200 || j.success===true) ok = true;
-              if (j.code && j.code!==0 && j.code!==200) ok = false;
-            } catch(e){}
-            CaHibt.onPlaceResult(JSON.stringify({
-              id: opt.id, ok: ok, dryRun: false,
-              message: (ok?'下单成功 ':'下单失败 ')+x.code+' '+(x.t||'').slice(0,160)
-            }));
-          })
-          .catch(function(e){
-            CaHibt.onPlaceResult(JSON.stringify({ id:opt.id, ok:false, dryRun:false, message:String(e) }));
-          });
+        var hdr = authHeaders();
+        function finish(ok, msg){
+          CaHibt.onPlaceResult(JSON.stringify({ id: opt.id, ok: !!ok, dryRun: false, message: msg }));
+        }
+        function postOne(path, idx){
+          var url = base + path + (st.v ? ('?v='+encodeURIComponent(st.v)) : '');
+          try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', url, true);
+            xhr.withCredentials = true;
+            Object.keys(hdr).forEach(function(k){ try{ xhr.setRequestHeader(k, hdr[k]); }catch(e){} });
+            xhr.timeout = 20000;
+            xhr.onreadystatechange = function(){
+              if (xhr.readyState !== 4) return;
+              var code = xhr.status, t = xhr.responseText || '';
+              if (code === 405) {
+                if (idx + 1 < paths.length) {
+                  CaHibt.onLog('405 '+path+'，尝试下一路径');
+                  postOne(paths[idx+1], idx+1);
+                  return;
+                }
+                finish(false, '405 Method Not Allowed 全部路径失败。请在 WebView 打开事件合约下单页再试（勿停在 API 地址）。path='+path);
+                return;
+              }
+              var ok = code>=200 && code<300 && t.indexOf('参数错误')<0 && t.indexOf('"code":500')<0 && t.indexOf('"code":401')<0 && t.indexOf('未登录')<0;
+              try {
+                var j = JSON.parse(t);
+                if (j.code===0 || j.code===200 || j.success===true) ok = true;
+                if (j.code && j.code!==0 && j.code!==200) ok = false;
+              } catch(e){}
+              if (!ok && idx + 1 < paths.length && (code===404 || code===405 || code===0)) {
+                postOne(paths[idx+1], idx+1);
+                return;
+              }
+              finish(ok, (ok?'下单成功 ':'下单失败 ')+code+' '+path+' '+(t||'').slice(0,140));
+            };
+            xhr.ontimeout = function(){
+              if (idx + 1 < paths.length) postOne(paths[idx+1], idx+1);
+              else finish(false, 'XHR 超时 '+path);
+            };
+            xhr.onerror = function(){
+              if (idx + 1 < paths.length) postOne(paths[idx+1], idx+1);
+              else finish(false, 'XHR 网络错误 '+path);
+            };
+            xhr.send(body);
+          } catch(e) {
+            if (idx + 1 < paths.length) postOne(paths[idx+1], idx+1);
+            else finish(false, String(e));
+          }
+        }
+        postOne(paths[0], 0);
       };
       try { CaHibt.onLog('注入完成，请浏览订单/资产以捕获 token/v'); } catch(e){}
       setTimeout(function(){ try{ window.__caRefreshAccount(); }catch(e){} }, 2000);

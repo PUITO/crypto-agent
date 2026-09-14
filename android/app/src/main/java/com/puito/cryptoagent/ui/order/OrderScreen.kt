@@ -266,6 +266,11 @@ fun OrderScreen(repo: Repository) {
                 Column(Modifier.padding(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("测试信息", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("test_log", status))
+                            toast = "测试信息已复制"
+                        }) { Text("复制") }
                         TextButton(onClick = { expandLog = !expandLog }) {
                             Text(if (expandLog) "收起" else "展开")
                         }
