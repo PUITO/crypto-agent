@@ -1,8 +1,9 @@
 package com.puito.cryptoagent.ui.order
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
+import android.annotation.SuppressLint
+import android.view.ViewGroup
+import android.webkit.WebView
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,25 +15,33 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.puito.cryptoagent.data.Repository
+import com.puito.cryptoagent.net.HibtWebSession
 import com.puito.cryptoagent.util.HibtBundleParser
 import kotlinx.coroutines.launch
 
+@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun OrderScreen(repo: Repository) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var s by remember { mutableStateOf(repo.settings()) }
     var h by remember { mutableStateOf(s.hibt) }
-    var status by remember { mutableStateOf("未查询") }
-    var balance by remember { mutableStateOf("-") }
-    var positions by remember { mutableStateOf("-") }
+    var status by remember { mutableStateOf("未操作") }
     var busy by remember { mutableStateOf(false) }
     var parseMsg by remember { mutableStateOf<String?>(null) }
     var showPasteDialog by remember { mutableStateOf(false) }
     var pasteDraft by remember { mutableStateOf("") }
     var expandLog by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
+    var showWeb by remember { mutableStateOf(false) }
+
+    val webUi by HibtWebSession.ui.collectAsState()
+
+    // 原生查询的余额/持仓（补充）；WebView 会话优先显示
+    var nativeBal by remember { mutableStateOf("-") }
+    var nativePos by remember { mutableStateOf("-") }
 
     fun persist(nh: com.puito.cryptoagent.data.HibtSettings) {
         h = nh
@@ -40,25 +49,7 @@ fun OrderScreen(repo: Repository) {
         repo.saveSettings(s)
     }
 
-    fun applyParsed(raw: String) {
-        val r = HibtBundleParser.parse(raw, h)
-        parseMsg = r.summary
-        if (r.ok || r.settings.xAuthToken.isNotBlank()) {
-            // 仅写入内存+本地配置供在线测试；不上传
-            persist(r.settings)
-            status = r.summary + " · 请点「查询余额/持仓」"
-        }
-    }
-
-    fun readClipboard(): String {
-        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = cm.primaryClip ?: return ""
-        if (clip.itemCount <= 0) return ""
-        return clip.getItemAt(0).coerceToText(ctx)?.toString().orEmpty()
-    }
-
     fun formatOrderStatus(r: com.puito.cryptoagent.net.HibtClient.OrderResult): String {
-        // 避免 message 已含 preview 时再拼 raw 导致「点一次显示两份」
         val raw = r.raw?.trim().orEmpty()
         if (raw.isEmpty()) return r.message
         if (r.message.contains(raw) || (raw.contains("form:") && r.message.contains("form:"))) {
@@ -67,182 +58,253 @@ fun OrderScreen(repo: Repository) {
         return r.message + "\n" + raw
     }
 
-    fun copyText(text: String) {
-        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("hibt-test", text))
-        toast = "已复制"
-    }
+    val displayBal = if (webUi.balance != "—" && webUi.balance.isNotBlank()) webUi.balance else nativeBal
+    val displayPos = if (webUi.positions != "—" && webUi.positions.isNotBlank()) webUi.positions else nativePos
 
-    Column(
-        Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text("HiBT 在线测试 · 周期 ${s.interval}", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "自动 v：余额=明文时间戳，下单/持仓=Base64(时间戳)。凭证仅本机。",
-            color = MaterialTheme.colorScheme.secondary,
-            fontSize = 12.sp,
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(
-                onClick = {
-                    val text = readClipboard()
-                    if (text.isBlank()) {
-                        parseMsg = "剪贴板为空"
-                        showPasteDialog = true
-                    } else applyParsed(text)
-                },
-                modifier = Modifier.weight(1f),
-            ) { Text("剪贴板解析") }
-            OutlinedButton(
-                onClick = {
-                    pasteDraft = readClipboard()
-                    showPasteDialog = true
-                },
-                modifier = Modifier.weight(1f),
-            ) { Text("粘贴解析") }
-        }
-        parseMsg?.let {
-            Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        }
-
-        OutlinedTextField(
-            h.apiBase, { persist(h.copy(apiBase = it)) },
-            label = { Text("API Base（常用 https://api.hibt0.com）") },
-            modifier = Modifier.fillMaxWidth(), singleLine = true,
-        )
-        OutlinedTextField(
-            h.xAuthToken, { persist(h.copy(xAuthToken = it, authToken = it.ifBlank { h.authToken })) },
-            label = { Text("x-auth-token / Authorization") },
-            modifier = Modifier.fillMaxWidth(), singleLine = true,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("自动生成 v（下单/持仓=Base64时间戳）", Modifier.weight(1f), fontSize = 14.sp)
-            Switch(h.vAutoTimestamp, { persist(h.copy(vAutoTimestamp = it)) })
-        }
-        if (!h.vAutoTimestamp) {
-            OutlinedTextField(
-                h.vParam,
-                { persist(h.copy(vParam = it)) },
-                label = { Text("手动 v（关闭自动时使用；勿填持仓加密 v）") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-        } else {
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(12.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("HiBT 下单 · 周期 ${s.interval}", style = MaterialTheme.typography.titleMedium)
             Text(
-                "开启后：下单与持仓用 Base64(毫秒时间戳)；余额仍用明文毫秒。若参数错误可关自动并粘贴浏览器 place 的 v。",
-                fontSize = 11.sp,
+                "推荐：打开 WebView 登录后隐藏保活；自动下单走页面环境（不伪造加密 v）。",
                 color = MaterialTheme.colorScheme.secondary,
+                fontSize = 12.sp,
             )
-        }
-        OutlinedTextField(h.bgetKey, { persist(h.copy(bgetKey = it)) }, label = { Text("bgetKey（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(h.bgetId, { persist(h.copy(bgetId = it)) }, label = { Text("bgetId（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(h.clientType, { persist(h.copy(clientType = it)) }, label = { Text("clientType web/h5") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
 
-        Button(
-            onClick = {
-                scope.launch {
-                    busy = true
-                    val r = repo.hibtTest()
-                    status = buildString {
-                        append(r.message)
-                        if (!r.raw.isNullOrBlank()) append("\n---\n").append(r.raw)
+            // —— WebView 管理 ——
+            Card(Modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("WebView 会话", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "状态：${webUi.status}",
+                        fontSize = 12.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        "就绪：${if (webUi.ready) "是" else "否"} · token：${webUi.tokenPreview.ifBlank { "—" }} · v：${if (webUi.hasV) "有" else "无"}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    if (webUi.pageUrl.isNotBlank()) {
+                        Text("页：${webUi.pageUrl}", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    balance = r.balance ?: "—"
-                    positions = r.positions ?: "—"
-                    expandLog = true
-                    busy = false
+                    if (webUi.lastPlaceMsg.isNotBlank()) {
+                        Text("最近下单：${webUi.lastPlaceMsg}", fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                HibtWebSession.obtain(ctx)
+                                HibtWebSession.openHome(ctx, h.apiBase.takeIf { it.contains("hibt") }?.let { "https://hibt.com" } ?: "https://hibt.com")
+                                showWeb = true
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text(if (webUi.loaded) "打开/显示 WebView" else "打开 WebView 登录") }
+                        OutlinedButton(
+                            onClick = { showWeb = false; HibtWebSession.detachFromParent() },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("隐藏(保活)") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { HibtWebSession.refreshAccount() },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("刷新账户") }
+                        OutlinedButton(
+                            onClick = { HibtWebSession.reload() },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("刷新页面") }
+                        OutlinedButton(
+                            onClick = {
+                                HibtWebSession.clearSession(ctx)
+                                toast = "会话已清"
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("清会话") }
+                    }
                 }
-            },
-            enabled = !busy,
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (busy) "查询中…" else "查询余额 / 持仓") }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("账户状态（在线）", style = MaterialTheme.typography.titleSmall)
-                Text("余额：$balance", maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text("持仓：$positions", maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
-        }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("测试信息", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { copyText(status) }) { Text("复制") }
-                    TextButton(onClick = { expandLog = !expandLog }) {
-                        Text(if (expandLog) "收起" else "展开")
+            // —— 账户（Web 优先 + 原生补充）——
+            Card(Modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("账户状态", style = MaterialTheme.typography.titleSmall)
+                    Text("余额：$displayBal", maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text("持仓：$displayPos", maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        "来源：${if (webUi.balance != "—") "WebView" else "原生查询/未刷新"}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            val r = repo.hibtTest()
+                            status = buildString {
+                                append(r.message)
+                                if (!r.raw.isNullOrBlank()) append("\n---\n").append(r.raw)
+                            }
+                            nativeBal = r.balance ?: "—"
+                            nativePos = r.positions ?: "—"
+                            expandLog = true
+                            busy = false
+                        }
+                    },
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (busy) "查询中…" else "原生查余额") }
+            }
+
+            HorizontalDivider()
+
+            // —— 自动化开关 ——
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("开启自动化下单", Modifier.weight(1f))
+                Switch(h.autoTrade, { persist(h.copy(autoTrade = it)) })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Dry-Run（关=真实请求）", Modifier.weight(1f))
+                Switch(h.dryRun, { persist(h.copy(dryRun = it)) })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("优先 WebView 下单", Modifier.weight(1f))
+                // 固定推荐开启：用 settings 没有该字段时用 ready 状态提示
+                Text(if (webUi.ready || webUi.loaded) "已启用" else "需先登录", fontSize = 12.sp)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("启用 AI 评估", Modifier.weight(1f))
+                Switch(h.aiEvaluate, { persist(h.copy(aiEvaluate = it)) })
+            }
+            OutlinedTextField(
+                h.aiMinWinRate.toString(),
+                { it.toDoubleOrNull()?.let { v -> persist(h.copy(aiMinWinRate = v)) } },
+                label = { Text("AI 胜率阈值(%)") },
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+            )
+            OutlinedTextField(
+                h.defaultAmount.toString(),
+                { it.toDoubleOrNull()?.let { v -> persist(h.copy(defaultAmount = v)) } },
+                label = { Text("默认下单金额") },
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button({
+                    scope.launch {
+                        busy = true
+                        val r = repo.hibtPlace(true)
+                        status = formatOrderStatus(r)
+                        expandLog = true
+                        busy = false
+                    }
+                }, Modifier.weight(1f), enabled = !busy) { Text("测试买涨") }
+                Button({
+                    scope.launch {
+                        busy = true
+                        val r = repo.hibtPlace(false)
+                        status = formatOrderStatus(r)
+                        expandLog = true
+                        busy = false
+                    }
+                }, Modifier.weight(1f), enabled = !busy) { Text("测试买跌") }
+            }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("测试信息", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { expandLog = !expandLog }) {
+                            Text(if (expandLog) "收起" else "展开")
+                        }
+                    }
+                    if (expandLog) {
+                        Text(status, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+                    } else {
+                        Text(status, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                 }
-                if (expandLog) {
-                    Box(
+            }
+
+            HorizontalDivider()
+            Text("兼容：剪贴板 token（可选）", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton({
+                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val text = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(ctx)?.toString().orEmpty()
+                    if (text.isBlank()) {
+                        showPasteDialog = true
+                    } else {
+                        val r = HibtBundleParser.parse(text, h)
+                        parseMsg = r.summary
+                        if (r.ok) persist(r.settings)
+                    }
+                }, Modifier.weight(1f)) { Text("剪贴板解析") }
+            }
+            parseMsg?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
+            OutlinedTextField(
+                h.apiBase, { persist(h.copy(apiBase = it)) },
+                label = { Text("API Base") },
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+            )
+            OutlinedTextField(
+                h.xAuthToken, { persist(h.copy(xAuthToken = it, authToken = it.ifBlank { h.authToken })) },
+                label = { Text("备用 x-auth-token（原生回退）") },
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+            )
+
+            toast?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
+        }
+
+        // 全屏 WebView：关闭=隐藏保活，不 destroy
+        if (showWeb) {
+            BackHandler {
+                showWeb = false
+                HibtWebSession.detachFromParent()
+            }
+            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(
                         Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 160.dp)
-                            .verticalScroll(rememberScrollState()),
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text(status, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+                        Text("HiBT WebView（返回=隐藏保活）", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                        TextButton(onClick = {
+                            showWeb = false
+                            HibtWebSession.detachFromParent()
+                        }) { Text("隐藏") }
                     }
-                } else {
-                    Text(status, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    AndroidView(
+                        factory = { c ->
+                            val wv = HibtWebSession.obtain(c)
+                            (wv.parent as? ViewGroup)?.removeView(wv)
+                            wv.layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            )
+                            if (wv.url.isNullOrBlank()) {
+                                wv.loadUrl("https://hibt.com")
+                            }
+                            wv
+                        },
+                        modifier = Modifier.fillMaxSize().weight(1f),
+                    )
                 }
             }
         }
-
-        HorizontalDivider()
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("开启自动化下单", Modifier.weight(1f))
-            Switch(h.autoTrade, { persist(h.copy(autoTrade = it)) })
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Dry-Run（关=真实请求，慎用）", Modifier.weight(1f))
-            Switch(h.dryRun, { persist(h.copy(dryRun = it)) })
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("启用 AI 评估", Modifier.weight(1f))
-            Switch(h.aiEvaluate, { persist(h.copy(aiEvaluate = it)) })
-        }
-        OutlinedTextField(
-            h.aiMinWinRate.toString(),
-            { it.toDoubleOrNull()?.let { v -> persist(h.copy(aiMinWinRate = v)) } },
-            label = { Text("AI 胜率阈值(%)") },
-            modifier = Modifier.fillMaxWidth(), singleLine = true,
-        )
-        OutlinedTextField(
-            h.defaultAmount.toString(),
-            { it.toDoubleOrNull()?.let { v -> persist(h.copy(defaultAmount = v)) } },
-            label = { Text("默认下单金额（≥交易所最小额）") },
-            modifier = Modifier.fillMaxWidth(), singleLine = true,
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button({
-                scope.launch {
-                    busy = true
-                    val r = repo.hibtPlace(true)
-                    status = r.message + (r.raw?.let { "\n$it" } ?: "")
-                    expandLog = true
-                    busy = false
-                }
-            }, Modifier.weight(1f), enabled = !busy) { Text("测试买涨") }
-            Button({
-                scope.launch {
-                    busy = true
-                    val r = repo.hibtPlace(false)
-                    status = r.message + (r.raw?.let { "\n$it" } ?: "")
-                    expandLog = true
-                    busy = false
-                }
-            }, Modifier.weight(1f), enabled = !busy) { Text("测试买跌") }
-        }
-        Text(
-            "下单参数：symbol=btc_usdt/eth_usdt，timeUnit=行情周期分钟，需有效 v。参数错误时请复制测试信息对照。",
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.secondary,
-        )
-        toast?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
     }
 
     if (showPasteDialog) {
@@ -253,13 +315,14 @@ fun OrderScreen(repo: Repository) {
                 OutlinedTextField(
                     value = pasteDraft,
                     onValueChange = { pasteDraft = it },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp),
-                    placeholder = { Text("token / key=value / JSON") },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp),
                 )
             },
             confirmButton = {
                 TextButton({
-                    applyParsed(pasteDraft)
+                    val r = HibtBundleParser.parse(pasteDraft, h)
+                    parseMsg = r.summary
+                    if (r.ok) persist(r.settings)
                     showPasteDialog = false
                 }) { Text("解析") }
             },

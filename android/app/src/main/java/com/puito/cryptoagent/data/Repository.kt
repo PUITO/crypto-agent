@@ -7,6 +7,7 @@ import com.puito.cryptoagent.domain.EventSim
 import com.puito.cryptoagent.domain.StrategyEngine
 import com.puito.cryptoagent.net.BinanceClient
 import com.puito.cryptoagent.net.HibtClient
+import com.puito.cryptoagent.net.HibtWebSession
 import com.puito.cryptoagent.net.LlmClient
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -565,18 +566,50 @@ class Repository(ctx: Context) {
             if (ai?.winRatePct == null || ai.passThreshold != true) return
         }
         val unit = eventTimeUnitMinutes(s.interval)
-        // 同一根 K + 方向 + 周期只允许实盘一次
         val key = "${s.symbol}|${m.side}|${m.openTime}|${unit}"
         synchronized(placeLock) {
             if (!placedOrderKeys.add(key)) {
-                return // 已下过，直接跳过
+                return
             }
         }
-        val result = hibt.placeEventOrder(h, s.symbol, m.side == "B", h.defaultAmount, unit)
-        // Dry-Run 或失败时允许后续重试（移除 key）
+        val result = placePreferWeb(
+            directionUp = m.side == "B",
+            amount = h.defaultAmount,
+            symbol = s.symbol,
+            timeUnit = unit,
+            cfg = h,
+        )
         if (result.dryRun || !result.ok) {
             placedOrderKeys.remove(key)
         }
+    }
+
+    /** 优先 WebView 注入下单；未创建 WebView 时回退原生接口。 */
+    private suspend fun placePreferWeb(
+        directionUp: Boolean,
+        amount: Double,
+        symbol: String,
+        timeUnit: Int,
+        cfg: HibtSettings,
+    ): HibtClient.OrderResult {
+        if (HibtWebSession.peek() != null) {
+            val outcome = HibtWebSession.placeOrder(
+                directionUp = directionUp,
+                amount = amount,
+                symbol = symbol,
+                timeUnit = timeUnit,
+                dryRun = cfg.dryRun,
+            )
+            if (outcome != null) {
+                return HibtClient.OrderResult(
+                    ok = outcome.ok,
+                    message = "[WebView] ${outcome.message}",
+                    dryRun = outcome.dryRun,
+                    raw = outcome.message,
+                )
+            }
+        }
+        return hibt.placeEventOrder(cfg, symbol, directionUp, amount, timeUnit)
     }
 
     suspend fun hibtTest() = hibt.testConnectivity(settings().hibt)
@@ -584,8 +617,8 @@ class Repository(ctx: Context) {
     suspend fun hibtPlace(up: Boolean, amount: Double? = null): HibtClient.OrderResult {
         val s = settings()
         val unit = eventTimeUnitMinutes(s.interval)
-        // 手动测试不走信号去重，但 dry-run/实盘仍只打一次 HTTP 成功路径
-        return hibt.placeEventOrder(s.hibt, s.symbol, up, amount ?: s.hibt.defaultAmount, unit)
+        val amt = amount ?: s.hibt.defaultAmount
+        return placePreferWeb(up, amt, s.symbol, unit, s.hibt)
     }
 
     /** Chat 指令：策略/指标/斐波那契 */
