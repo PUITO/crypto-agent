@@ -110,6 +110,14 @@ App / 本仓库 **不鼓励、也不默认实现** 用邮箱密码 + TOTP 在第
 - `amount`：默认金额（界面默认 3）  
 - `timeUnit`：与行情周期分钟数一致（5 / 10 / 30 / 60）
 
+### 4.0 余额查询（控制台确认）
+
+```http
+GET {apiBase}/rest/c/future/u/user/balance?langCode=zh_CN&v={v}
+```
+
+响应字段优先取 **`amount`**。App 仅请求该接口（+ 可选 1 次 list），避免多路径扫接口触发风控。
+
 ### 4.1 下单 API 规范（重点：时间档与金额）
 
 对齐公开 Web 抓包（学习向，非官方承诺）：
