@@ -124,7 +124,10 @@ object HibtWebSession {
     }
 
     /**
-     * 在 WebView 内下单。无会话时返回 null，由调用方决定是否回退。
+     * 下单策略：
+     * 1) 优先用 WebView 拦截到的 token + 真实 v，经 **原生 OkHttp POST**（避免页面跨域 405）
+     * 2) 若无 v，再尝试 WebView 内 XHR（可能 405/后台超时）
+     * 3) 下单前 resumeTimers，缓解后台挂起
      */
     suspend fun placeOrder(
         directionUp: Boolean,
@@ -136,12 +139,9 @@ object HibtWebSession {
     ): PlaceOutcome? {
         val wv = webView
         if (wv == null) return null
-        if (lastToken.isBlank() && !_ui.value.ready) {
-            // 仍尝试注入，可能页面已登录但未钩到
-        }
-        val id = placeSeq.incrementAndGet()
-        val deferred = CompletableDeferred<PlaceOutcome>()
-        placeWait = deferred
+
+        main.post { wakeWebView(wv) }
+
         val sym = when {
             symbol.equals("BTCUSDT", true) -> "btc_usdt"
             symbol.equals("ETHUSDT", true) -> "eth_usdt"
@@ -156,6 +156,61 @@ object HibtWebSession {
         val amountStr =
             if (kotlin.math.abs(amount - amount.toLong()) < 1e-9) amount.toLong().toString()
             else amount.toString()
+
+        // —— 路径 A：原生 POST + WebView 会话（推荐，规避 CORS 405）——
+        val token = lastToken.trim()
+        val vCap = lastV.trim()
+        if (token.isNotBlank()) {
+            if (dryRun) {
+                val msg = "WEB-SESS-DRY-RUN amount=$amountStr dir=$dir symbol=$sym tu=$unit v=${if (vCap.isBlank()) "(无,实盘需先触发页面请求)" else vCap.take(12)+"…"} base=$lastApiBase"
+                _ui.value = _ui.value.copy(lastPlaceMsg = msg, status = msg.take(80))
+                return PlaceOutcome(true, msg, dryRun = true)
+            }
+            if (vCap.isBlank()) {
+                // 尝试让页面发一次请求以刷新 v
+                main.post {
+                    wakeWebView(wv)
+                    injectHooks(wv)
+                    wv.evaluateJavascript("window.__caRefreshAccount && window.__caRefreshAccount()", null)
+                }
+                kotlinx.coroutines.delay(800)
+            }
+            val vUse = lastV.trim()
+            if (vUse.isNotBlank()) {
+                val cfg = HibtSettings(
+                    apiBase = lastApiBase.ifBlank { "https://api.hibt0.com" },
+                    authToken = token,
+                    xAuthToken = token,
+                    vParam = vUse,
+                    vAutoTimestamp = false,
+                    dryRun = false,
+                    autoTrade = true,
+                )
+                _ui.value = _ui.value.copy(status = "原生POST下单(Web会话)…")
+                val native = HibtClient()
+                val r = try {
+                    native.placeEventOrder(cfg, symbol, directionUp, amount, unit)
+                } catch (e: Exception) {
+                    HibtClient.OrderResult(false, "原生下单异常: ${e.message}", dryRun = false)
+                }
+                // 若 405，再试 WebView 路径；否则直接返回
+                val is405 = (r.message + (r.raw ?: "")).contains("405")
+                if (!is405) {
+                    val msg = "[会话POST] ${r.message}"
+                    _ui.value = _ui.value.copy(lastPlaceMsg = msg, status = msg.take(100))
+                    return PlaceOutcome(r.ok, msg, dryRun = r.dryRun)
+                }
+                _ui.value = _ui.value.copy(status = "原生405，改试页面内XHR…")
+            } else if (!dryRun) {
+                // 无 v 时仍可试原生（部分环境），但多数会参数错误；继续走 XHR
+                _ui.value = _ui.value.copy(status = "无捕获v，尝试页面XHR…")
+            }
+        }
+
+        // —— 路径 B：WebView 内脚本（可能跨域 405 / 后台超时）——
+        val id = placeSeq.incrementAndGet()
+        val deferred = CompletableDeferred<PlaceOutcome>()
+        placeWait = deferred
         val js = """
             (function(){
               try {
@@ -182,20 +237,19 @@ object HibtWebSession {
             })();
         """.trimIndent()
         main.post {
-            // 后台/隐藏时 WebView 可能暂停 JS 与网络，先唤醒
             wakeWebView(wv)
             injectHooks(wv)
-            _ui.value = _ui.value.copy(status = if (dryRun) "WebView DRY-RUN…" else "WebView 下单中…")
+            _ui.value = _ui.value.copy(status = if (dryRun) "WebView DRY-RUN…" else "WebView XHR下单…")
             main.postDelayed({
                 wakeWebView(webView ?: return@postDelayed)
                 webView?.evaluateJavascript(js, null)
-            }, 400)
+            }, 450)
         }
         val waitMs = timeoutSec.coerceIn(10, 180) * 1000L
         val result = withTimeoutOrNull(waitMs) { deferred.await() }
         return result ?: PlaceOutcome(
             false,
-            "WebView 下单超时（脚本未回调，已等 ${waitMs / 1000}s；可在下单页调大「下单超时」）",
+            "WebView 下单超时（脚本未回调，已等 ${waitMs / 1000}s）。后台时请保持监控通知栏、可调大超时；建议先在合约页点一下资产刷新 v。",
             dryRun,
         )
     }
@@ -210,6 +264,8 @@ object HibtWebSession {
             vAutoTimestamp = false,
         )
     }
+
+    fun wakeIfNeeded(wv: WebView) = wakeWebView(wv)
 
     private fun wakeWebView(wv: WebView) {
         try {
@@ -456,17 +512,21 @@ object HibtWebSession {
           CaHibt.onPlaceResult(JSON.stringify({ id:opt.id, ok:false, dryRun:false, message:'无 token：请在 WebView 登录并点击订单/资产页以捕获会话' }));
           return;
         }
-        var base = st.apiBase || 'https://api.hibt0.com';
+        // 固定 API 主域，避免 apiBase 被钩成官网前端域导致 405
+        var bases = ['https://api.hibt0.com'];
+        if (st.apiBase && st.apiBase.indexOf('api')>=0 && bases.indexOf(st.apiBase)<0) bases.push(st.apiBase);
         var paths = [
-          '/event/event-order/place',
-          '/option/option-order/place'
+          '/option/option-order/place',
+          '/event/event-order/place'
         ];
         var body = Object.keys(payload).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(payload[k]); }).join('&');
         var hdr = authHeaders();
         function finish(ok, msg){
           CaHibt.onPlaceResult(JSON.stringify({ id: opt.id, ok: !!ok, dryRun: false, message: msg }));
         }
+        var baseIdx = 0;
         function postOne(path, idx){
+          var base = bases[Math.min(baseIdx, bases.length-1)] || 'https://api.hibt0.com';
           var url = base + path + (st.v ? ('?v='+encodeURIComponent(st.v)) : '');
           try {
             var xhr = new XMLHttpRequest();
@@ -483,7 +543,13 @@ object HibtWebSession {
                   postOne(paths[idx+1], idx+1);
                   return;
                 }
-                finish(false, '405 Method Not Allowed 全部路径失败。请在 WebView 打开事件合约下单页再试（勿停在 API 地址）。path='+path);
+                if (baseIdx + 1 < bases.length) {
+                  baseIdx++;
+                  CaHibt.onLog('405 换 API 域 '+bases[baseIdx]);
+                  postOne(paths[0], 0);
+                  return;
+                }
+                finish(false, '405 POST 被拒(常为跨域)。请确保已捕获 v；App 会优先用原生会话POST。path='+path+' base='+base);
                 return;
               }
               var ok = code>=200 && code<300 && t.indexOf('参数错误')<0 && t.indexOf('"code":500')<0 && t.indexOf('"code":401')<0 && t.indexOf('未登录')<0;

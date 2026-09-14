@@ -7,6 +7,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import com.puito.cryptoagent.AgentApp
 import com.puito.cryptoagent.notify.Notify
+import com.puito.cryptoagent.net.HibtWebSession
 import kotlinx.coroutines.*
 
 /**
@@ -51,7 +52,7 @@ class MonitorService : Service() {
                     } else if (!st.strategyRunning) {
                         update("${st.symbol} · 策略暂停")
                     } else {
-                        val fresh = repo.poll()
+                        val fresh = runCatching { HibtWebSession.peek()?.let { HibtWebSession.wakeIfNeeded(it) } }; repo.poll()
                         fresh.forEach {
                             Notify.signal(
                                 this@MonitorService,

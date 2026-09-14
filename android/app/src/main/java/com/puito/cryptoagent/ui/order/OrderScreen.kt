@@ -267,9 +267,18 @@ fun OrderScreen(repo: Repository) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("测试信息", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         TextButton(onClick = {
+                            val blob = buildString {
+                                appendLine(status)
+                                if (webUi.lastPlaceMsg.isNotBlank()) {
+                                    appendLine("---")
+                                    appendLine(webUi.lastPlaceMsg)
+                                }
+                                appendLine("webStatus=${webUi.status}")
+                                appendLine("token=${webUi.tokenPreview} hasV=${webUi.hasV}")
+                            }
                             val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("test_log", status))
-                            toast = "测试信息已复制"
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("test_log", blob))
+                            toast = "已复制测试信息（含 WebView 下单结果）"
                         }) { Text("复制") }
                         TextButton(onClick = { expandLog = !expandLog }) {
                             Text(if (expandLog) "收起" else "展开")
@@ -277,6 +286,9 @@ fun OrderScreen(repo: Repository) {
                     }
                     if (expandLog) {
                         Text(status, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+                        if (webUi.lastPlaceMsg.isNotBlank()) {
+                            Text("Web: ${webUi.lastPlaceMsg}", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        }
                     } else {
                         Text(status, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
