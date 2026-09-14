@@ -149,9 +149,11 @@ class HibtClient(
     }
 
     private val balanceKeys = listOf(
+        // 官网控制台：/rest/c/future/u/user/balance → 字段 amount
+        "amount",
         "availableBalance", "usableBalance", "canUseAmount", "optionBalance",
         "eventBalance", "walletBalance", "available", "balance", "usdtBalance",
-        "canUse", "money", "equity", "amount", "balanceStr", "availBalance",
+        "canUse", "money", "equity", "balanceStr", "availBalance",
         "optionAvailable", "eventAvailable", "spotBalance", "totalBalance",
     )
 
@@ -242,133 +244,127 @@ class HibtClient(
         }
     }
 
+    /**
+     * 连通性 / 余额：只用控制台确认过的少量接口，避免多路径扫接口触发风控。
+     * 余额：GET /rest/c/future/u/user/balance?langCode=&v= → 字段 amount
+     * 鉴权：GET /uc/member/my-info（1 次）
+     * 持仓：最多 1 次 POST /option/option-order/list（失败则跳过，不扫其它）
+     */
     suspend fun testConnectivity(cfg: HibtSettings): AccountSnapshot = withContext(Dispatchers.IO) {
         if (tokenOf(cfg).isBlank()) {
             return@withContext AccountSnapshot(false, "请填写 x-auth-token")
         }
         val log = StringBuilder()
-        log.appendLine("使用 API Base 优先: ${cfg.apiBase.trim()}")
+        // 余额接口以 api.hibt0.com 为准（控制台抓包）；若用户配置的是同源 api 也优先用配置
+        val balBases = buildList {
+            val primary = cfg.apiBase.trim().trimEnd('/')
+            if (primary.startsWith("http")) add(primary)
+            add("https://api.hibt0.com")
+        }.distinct()
+
         var balance: String? = null
         var posCount: Int? = null
         var anyAuth = false
         var usedBase: String? = null
+        val lang = cfg.langCode.ifBlank { "zh_CN" }
 
-        // GET 账户类
-        val getAccountPaths = listOf(
-            "/uc/member/my-info",
-            "/option/option-account/info",
-            "/uc/asset/wallet",
-            "/uc/finance/wallet",
-        )
-        // POST 账户类（部分站 GET 404）
-        val postAccountPaths = listOf(
-            "/option/option-account/info",
-            "/option/option-account/get",
-            "/option/wallet/info",
-            "/event/event-account/info",
-        )
-        // 持仓列表：日志明确要求 POST
-        val postListPaths = listOf(
-            "/event/event-order/list",
-            "/option/option-order/list",
-            "/event/event-order/history-summary",
-            "/option/option-order/history-summary",
-        )
-
-        fun tryBase(base: String): Boolean {
-            var hit = false
-            for (path in getAccountPaths) {
-                val url = withV(base + path, cfg)
-                try {
-                    val (code, body) = request("GET", url, cfg)
-                    log.appendLine("GET $code $path @ $base ${body.take(70).replace("\n", " ")}")
-                    if (!bizOk(code, body)) continue
-                    hit = true
-                    if (balance.isNullOrBlank()) extractBalanceStrict(body)?.let { balance = it }
-                } catch (e: Exception) {
-                    log.appendLine("GET ERR $path @ $base ${e.message?.take(48)}")
-                }
-            }
-            for (path in postAccountPaths) {
-                val url = withV(base + path, cfg)
-                try {
-                    val (code, body) = request("POST", url, cfg, emptyForm())
-                    log.appendLine("POST $code $path @ $base ${body.take(70).replace("\n", " ")}")
-                    if (!bizOk(code, body)) continue
-                    hit = true
-                    if (balance.isNullOrBlank()) extractBalanceStrict(body)?.let { balance = it }
-                } catch (e: Exception) {
-                    log.appendLine("POST ERR $path @ $base ${e.message?.take(48)}")
-                }
-            }
-            for (path in postListPaths) {
-                val url = withV(base + path, cfg)
-                for (form in listOf(pageForm(), emptyForm())) {
-                    try {
-                        val (code, body) = request("POST", url, cfg, form)
-                        log.appendLine("POST $code $path @ $base ${body.take(70).replace("\n", " ")}")
-                        if (!bizOk(code, body)) continue
-                        hit = true
-                        // summary 可能带余额
-                        if (balance.isNullOrBlank()) extractBalanceStrict(body)?.let { balance = it }
-                        if (path.endsWith("/list")) {
-                            extractOpenPositionCount(body)?.let { n ->
-                                if (posCount == null || path.contains("event-order")) posCount = n
-                            }
-                        }
-                        break
-                    } catch (e: Exception) {
-                        log.appendLine("POST ERR $path @ $base ${e.message?.take(48)}")
-                    }
-                }
-            }
-            return hit
+        fun balanceUrl(base: String): String {
+            val q = "langCode=$lang" + if (cfg.vParam.isNotBlank()) {
+                "&v=${java.net.URLEncoder.encode(cfg.vParam.trim(), "UTF-8")}"
+            } else ""
+            return "$base/rest/c/future/u/user/balance?$q"
         }
 
-        val bases = candidateBases(cfg)
-        // 1) 只用解析/配置的主域名
-        val primary = bases.first()
-        if (tryBase(primary)) {
-            anyAuth = true
-            usedBase = primary
-        }
-        // 2) 主域名未鉴权成功再回退
-        if (!anyAuth) {
-            for (base in bases.drop(1)) {
-                if (tryBase(base)) {
+        // 1) 余额：每 base 只请求 1 次
+        for (base in balBases) {
+            val url = balanceUrl(base)
+            try {
+                val (code, body) = request("GET", url, cfg)
+                log.appendLine("GET $code /rest/c/future/u/user/balance @ $base ${body.take(90).replace("\n", " ")}")
+                if (bizOk(code, body)) {
                     anyAuth = true
                     usedBase = base
-                    break
+                    extractBalanceStrict(body)?.let { balance = it }
+                    // 专门再抽 amount（控制台字段）
+                    if (balance.isNullOrBlank()) {
+                        try {
+                            val root = JsonParser.parseString(body)
+                            fun findAmount(el: com.google.gson.JsonElement?, d: Int): String? {
+                                if (el == null || d > 5) return null
+                                if (el.isJsonObject) {
+                                    val o = el.asJsonObject
+                                    if (o.has("amount") && o.get("amount").isJsonPrimitive) {
+                                        return o.get("amount").asString
+                                    }
+                                    for ((_, v) in o.entrySet()) {
+                                        findAmount(v, d + 1)?.let { return it }
+                                    }
+                                } else if (el.isJsonArray) {
+                                    for (x in el.asJsonArray) findAmount(x, d + 1)?.let { return it }
+                                }
+                                return null
+                            }
+                            findAmount(root, 0)?.let { balance = it }
+                        } catch (_: Exception) {}
+                    }
+                    if (!balance.isNullOrBlank()) break
                 }
+            } catch (e: Exception) {
+                log.appendLine("GET ERR balance @ $base ${e.message?.take(48)}")
             }
-        } else if (balance == null || posCount == null) {
-            // 主域名鉴权了但缺字段，再用回退补余额/持仓
-            for (base in bases.drop(1)) {
-                tryBase(base)
-                if (balance != null && posCount != null) break
+        }
+
+        // 2) 鉴权兜底：仅 1 次 my-info（余额未成功时）
+        if (!anyAuth) {
+            val base = balBases.first()
+            val url = withV("$base/uc/member/my-info", cfg)
+            try {
+                val (code, body) = request("GET", url, cfg)
+                log.appendLine("GET $code /uc/member/my-info @ $base ${body.take(70).replace("\n", " ")}")
+                if (bizOk(code, body)) {
+                    anyAuth = true
+                    usedBase = base
+                }
+            } catch (e: Exception) {
+                log.appendLine("GET ERR my-info ${e.message?.take(40)}")
+            }
+        }
+
+        // 3) 持仓：最多 1 次 POST，不再扫 event/summary 等
+        if (anyAuth) {
+            val base = usedBase ?: balBases.first()
+            val url = withV("$base/option/option-order/list", cfg)
+            try {
+                val (code, body) = request("POST", url, cfg, pageForm())
+                log.appendLine("POST $code /option/option-order/list @ $base ${body.take(70).replace("\n", " ")}")
+                if (bizOk(code, body)) {
+                    posCount = extractOpenPositionCount(body)
+                }
+            } catch (e: Exception) {
+                log.appendLine("POST ERR list ${e.message?.take(40)}")
             }
         }
 
         if (!anyAuth) {
             return@withContext AccountSnapshot(
                 false,
-                "鉴权失败。请确认 API Base 与书签一致（当前优先 ${cfg.apiBase}），token 有效。",
-                raw = log.toString().take(1800),
+                "鉴权失败。余额接口：GET /rest/c/future/u/user/balance（字段 amount）。请确认 token / v。",
+                raw = log.toString().take(1500),
             )
         }
 
         val posText = when (posCount) {
-            null -> "未解析到（已改 POST 拉列表）"
+            null -> "未查询到（已限制仅 1 次 list，降低风控）"
             else -> "未平仓 ${posCount} 笔"
         }
         AccountSnapshot(
             ok = true,
-            message = "在线查询完成 · base=${usedBase ?: primary}" +
-                (if (balance == null) " · 余额未识别" else "") +
+            message = "在线查询完成 · base=${usedBase ?: balBases.first()}" +
+                (if (balance == null) " · 余额未识别" else " · amount=$balance") +
                 (if (posCount == null) " · 持仓未识别" else ""),
             balance = balance ?: "—",
             positions = posText,
-            raw = log.toString().take(2000),
+            raw = log.toString().take(1800),
         )
     }
 
@@ -489,7 +485,8 @@ class HibtClient(
             "/option/option-order/place",
             "/event/event-order/place",
         )
-        val bases = listOf(spec.apiBase) + candidateBases(cfg).filter { it != spec.apiBase }
+        // 实盘最多试 2 个 base，减少无效重试触发风控
+        val bases = (listOf(spec.apiBase) + candidateBases(cfg).filter { it != spec.apiBase }).distinct().take(2)
         val tries = StringBuilder()
         var lastRaw: String? = null
 
