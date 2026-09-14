@@ -52,7 +52,8 @@ class MonitorService : Service() {
                     } else if (!st.strategyRunning) {
                         update("${st.symbol} · 策略暂停")
                     } else {
-                        val fresh = runCatching { HibtWebSession.peek()?.let { HibtWebSession.wakeIfNeeded(it) } }; repo.poll()
+                        runCatching { HibtWebSession.peek()?.let { HibtWebSession.wakeIfNeeded(it) } }
+                        val fresh = repo.poll()
                         fresh.forEach {
                             Notify.signal(
                                 this@MonitorService,
