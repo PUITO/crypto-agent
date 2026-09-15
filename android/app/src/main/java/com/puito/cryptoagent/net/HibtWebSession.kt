@@ -68,6 +68,7 @@ object HibtWebSession {
     fun dumpLogs(): String = _logs.value.joinToString("\n")
 
     @Volatile private var webView: WebView? = null
+    @Volatile private var appCtx: android.content.Context? = null
     @Volatile private var lastToken: String = ""
     @Volatile private var lastV: String = ""
     @Volatile private var lastApiBase: String = "https://api-ws.taichuwuji.com"
@@ -102,6 +103,7 @@ object HibtWebSession {
         synchronized(this) {
             webView?.let { return it }
             val appCtx = context.applicationContext
+            this.appCtx = appCtx
             if (prefs == null) {
                 prefs = appCtx.getSharedPreferences("hibt_web_session", 0)
                 lastOrderPageUrl = prefs?.getString("order_page_url", "").orEmpty()
@@ -303,6 +305,96 @@ object HibtWebSession {
       return 'no-menu';
     })();
     """.trimIndent()
+
+    /**
+     * 仅清 WebView **页面缓存**（磁盘/HTTP 缓存），默认保留 Cookie 与登录态。
+     * 不删 App 配置。
+     */
+    fun clearWebViewCache(keepLogin: Boolean = true): String {
+        var msg = "WebView 缓存已清理"
+        main.post {
+            try {
+                webView?.clearCache(true)
+                webView?.clearFormData()
+                webView?.clearHistory()
+            } catch (_: Exception) {}
+            // 清理 WebView 默认缓存目录（不碰 agent_local 配置）
+            try {
+                val base = android.webkit.WebView(android.app.Application()).context // may fail
+            } catch (_: Exception) {}
+            if (!keepLogin) {
+                try {
+                    CookieManager.getInstance().removeAllCookies(null)
+                    CookieManager.getInstance().flush()
+                    lastToken = ""
+                    lastV = ""
+                    lastVEnc = ""
+                    lastVPlain = ""
+                    lastSyncedToken = ""
+                    lastSyncedApi = ""
+                    _ui.value = SessionUi(status = "WebView 缓存+登录已清除")
+                } catch (_: Exception) {}
+            } else {
+                _ui.value = _ui.value.copy(status = "WebView 缓存已清（登录保留）")
+            }
+            appendLog(if (keepLogin) "已清 WebView 缓存（保留 Cookie）" else "已清 WebView 缓存+Cookie")
+        }
+        // 同步清应用下 webview 相关目录
+        val freed = clearWebViewDiskCache()
+        msg = "已清 WebView 缓存约 %.2f MB（%s）".format(
+            freed / (1024.0 * 1024.0),
+            if (keepLogin) "登录保留" else "含登录态",
+        )
+        return msg
+    }
+
+    private fun clearWebViewDiskCache(): Long {
+        var total = 0L
+        val candidates = mutableListOf<java.io.File>()
+        try {
+            val app = appCtx ?: return 0L
+            candidates += java.io.File(app.cacheDir, "WebView")
+            candidates += java.io.File(app.cacheDir, "webview")
+            candidates += java.io.File(app.cacheDir, "org.chromium.android_webview")
+            app.cacheDir.listFiles()?.filter {
+                it.name.contains("webview", true) || it.name.contains("WebView")
+            }?.let { candidates.addAll(it) }
+            // app_webview under data dir
+            candidates += java.io.File(app.dataDir, "app_webview")
+            candidates += java.io.File(app.dataDir, "webview")
+            for (d in candidates.distinct()) {
+                if (!d.exists()) continue
+                total += dirSize(d)
+                // 只删 Cache/HTTP Cache 子目录，尽量保留 Cookies 文件
+                if (keepLoginSafe(d)) {
+                    d.listFiles()?.forEach { child ->
+                        val n = child.name.lowercase()
+                        if (n.contains("cache") || n.contains("http") || n.contains("blob") ||
+                            n.contains("gpu") || n.contains("code_cache") || n.endsWith(".cache")
+                        ) {
+                            total += dirSize(child)
+                            runCatching { if (child.isDirectory) child.deleteRecursively() else child.delete() }
+                        }
+                    }
+                } else {
+                    // 整个目录是 cache 命名则整删
+                    runCatching { d.deleteRecursively() }
+                }
+            }
+        } catch (_: Exception) {}
+        return total
+    }
+
+    private fun keepLoginSafe(d: java.io.File): Boolean {
+        val n = d.name.lowercase()
+        return n.contains("webview") || n.contains("app_webview")
+    }
+
+    private fun dirSize(f: java.io.File): Long {
+        if (!f.exists()) return 0L
+        if (f.isFile) return f.length()
+        return f.listFiles()?.sumOf { dirSize(it) } ?: 0L
+    }
 
     fun clearSession(context: Context) {
         main.post {

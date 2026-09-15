@@ -51,6 +51,51 @@ class Repository(ctx: Context) {
         binance.updateBase(s.binanceBaseUrl)
     }
 
+    /**
+     * 清除普通运行数据缓存，**不删配置**：
+     * 保留 settings / strategies / overlays。
+     * 清除：模拟成交与统计、内存行情/信号、通知去重、已下单键、应用 cacheDir。
+     * @return 人类可读结果
+     */
+    fun clearDataCache(): String {
+        val ed = sp.edit()
+        var removedKeys = 0
+        for (k in sp.all.keys) {
+            if (k.startsWith("trades_") || k.startsWith("stats_")) {
+                ed.remove(k)
+                removedKeys++
+            }
+        }
+        ed.apply()
+        candles = emptyList()
+        signals = emptyList()
+        trades = emptyList()
+        stats = Stats()
+        notified.clear()
+        lastNotifyAt.clear()
+        placedOrderKeys.clear()
+        val bytes = deleteDirContents(appCtx.cacheDir) +
+            deleteDirContents(appCtx.codeCacheDir)
+        val mb = bytes / (1024.0 * 1024.0)
+        return "已清普通缓存：临时键 ${removedKeys} 个，文件约 %.2f MB（配置/策略已保留）".format(mb)
+    }
+
+    private fun deleteDirContents(dir: java.io.File?): Long {
+        if (dir == null || !dir.exists()) return 0L
+        var total = 0L
+        dir.listFiles()?.forEach { f ->
+            total += sizeOf(f)
+            runCatching { if (f.isDirectory) f.deleteRecursively() else f.delete() }
+        }
+        return total
+    }
+
+    private fun sizeOf(f: java.io.File): Long {
+        if (!f.exists()) return 0L
+        if (f.isFile) return f.length()
+        return f.listFiles()?.sumOf { sizeOf(it) } ?: 0L
+    }
+
     fun strategies(): List<StrategyConfig> {
         val j = sp.getString("strategies", null)
         if (j == null) {

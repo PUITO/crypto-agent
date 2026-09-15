@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.puito.cryptoagent.data.Repository
+import com.puito.cryptoagent.net.HibtWebSession
 import com.puito.cryptoagent.service.MonitorService
 
 @Composable
@@ -74,6 +75,42 @@ fun ConfigScreen(repo: Repository) {
             "省钱：deepseek-flash + 关thinking + 小max_tokens + 少K线。评估prompt已压缩。",
             color = MaterialTheme.colorScheme.secondary,
         )
+
+        Text("缓存清理（不删配置）", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "普通缓存：模拟成交/统计、内存行情信号、应用临时文件。\n" +
+                "WebView 缓存：页面磁盘缓存；默认保留登录 Cookie。配置与策略不会删除。",
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        Row(Modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    HibtWebSession.clearLogs()
+                    msg = repo.clearDataCache()
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("清除普通缓存") }
+            OutlinedButton(
+                onClick = {
+                    msg = HibtWebSession.clearWebViewCache(keepLogin = true)
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("清除WV缓存") }
+        }
+        OutlinedButton(
+            onClick = {
+                val a = repo.clearDataCache()
+                val b = HibtWebSession.clearWebViewCache(keepLogin = true)
+                msg = a + "\n" + b
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("一键清除全部缓存（保留配置与登录）") }
+        TextButton(
+            onClick = {
+                msg = HibtWebSession.clearWebViewCache(keepLogin = false)
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("清除WV缓存并退出登录") }
 
         Text("后台", style = MaterialTheme.typography.titleSmall)
         Row {
