@@ -37,6 +37,8 @@ object HibtWebSession {
         val status: String = "未启动",
         val lastPlaceMsg: String = "",
         val loaded: Boolean = false,
+        /** 已写回原生输入框的 token 预览时间戳 */
+        val nativeTokenSyncedAt: Long = 0L,
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -61,6 +63,12 @@ object HibtWebSession {
     private val placeSeq = AtomicLong(0)
 
     data class PlaceOutcome(val ok: Boolean, val message: String, val dryRun: Boolean)
+
+    /**
+     * 由 Application/Repository 注入：WebView 捕获 token/api 后写回原生设置。
+     * (token, apiBase, origin)
+     */
+    @Volatile var settingsSync: ((String, String, String) -> Unit)? = null
 
     fun peek(): WebView? = webView
 
@@ -541,11 +549,24 @@ object HibtWebSession {
                     } catch (_: Exception) {}
                 }
                 val preview = if (lastToken.length > 12) lastToken.take(8) + "…" + lastToken.takeLast(4) else lastToken
+                // 覆盖写回原生 token / api，避免 WebView 登录后还要手填
+                if (token.isNotBlank()) {
+                    try {
+                        settingsSync?.invoke(
+                            lastToken,
+                            lastApiBase.ifBlank { "https://api.hibt0.com" },
+                            lastOrigin.ifBlank { "https://hibt.com" },
+                        )
+                    } catch (_: Exception) {
+                    }
+                }
                 _ui.value = _ui.value.copy(
                     ready = lastToken.isNotBlank(),
                     tokenPreview = preview,
-                    status = if (lastToken.isNotBlank()) "会话已捕获" + (if (lastV.isNotBlank()) " · 有 v" else " · 等待页面请求以捕获 v")
-                    else "未捕获 token，请在合约页点订单/资产",
+                    nativeTokenSyncedAt = if (token.isNotBlank()) System.currentTimeMillis() else _ui.value.nativeTokenSyncedAt,
+                    status = if (lastToken.isNotBlank()) {
+                        "会话已捕获并已写回原生 token" + (if (lastV.isNotBlank()) " · 有 v" else " · 等待页面请求以捕获 v")
+                    } else "未捕获 token，请在合约页点订单/资产",
                 )
             } catch (e: Exception) {
                 _ui.value = _ui.value.copy(status = "会话解析失败: ${e.message}")
@@ -907,11 +928,45 @@ object HibtWebSession {
           steps.push('已点「'+textOf(sub)+'」');
           CaHibt.onLog('已触发平台下单UI: '+steps.join('; '));
           // 等待官网 place 响应（由 fetch/XHR 钩子识别）
+          // 短延迟：检测二次确认弹窗（可提示用户，不强行代点）
+          setTimeout(function(){
+            try {
+              var cands = allClickable();
+              var confWords = ['确认下单','二次确认','确定下单','确认提交','我知道了','确认','确定'];
+              var conf = null, confText = '';
+              for (var i=0;i<cands.length;i++){
+                var t = textOf(cands[i]);
+                if (!t || t.length>24) continue;
+                // 弹层内按钮通常较短
+                for (var j=0;j<confWords.length;j++){
+                  if (t === confWords[j] || (t.indexOf(confWords[j])>=0 && t.length<=12)) {
+                    // 排除主下单按钮自身已点过的「买涨」
+                    if (/买涨|买跌|看涨|看跌/.test(t)) continue;
+                    conf = cands[i]; confText = t; break;
+                  }
+                }
+                if (conf) break;
+              }
+              // 也检查常见 mask/dialog
+              var dialogs = document.querySelectorAll('[class*="dialog"],[class*="modal"],[class*="confirm"],[class*="popup"],[class*="Dialog"],[class*="Modal"]');
+              var hasDialog = dialogs && dialogs.length>0;
+              if (conf || hasDialog) {
+                var p0 = window.__caPendingPlace;
+                if (p0 && !p0.done) {
+                  p0.confirmHint = true;
+                  CaHibt.onLog('检测到二次确认: '+(confText||'弹层'));
+                }
+              }
+            } catch(e){}
+          }, 800);
+
           setTimeout(function(){
             var p = window.__caPendingPlace;
             if (p && !p.done && p.id===pendingId) {
-              // 未捕获到响应：可能 UI 成功但接口路径未匹配，或按钮无效
-              finish(false, '已点击平台下单，但未捕获 place 响应。请确认在事件合约页。步骤:'+steps.join('; '));
+              var hint = p.confirmHint
+                ? '【二次确认】页面可能弹出确认框，脚本未自动点确认（第二层保障）。请打开 WebView 手动点「确认」完成下单，或在官网关闭二次确认后重试。'
+                : '已点击平台下单，但未捕获 place 响应。请确认在事件合约页。';
+              finish(false, hint+' 步骤:'+steps.join('; '));
               p.done = true;
             }
           }, 12000);

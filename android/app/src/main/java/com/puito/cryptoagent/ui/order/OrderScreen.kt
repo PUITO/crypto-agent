@@ -39,6 +39,15 @@ fun OrderScreen(repo: Repository) {
 
     val webUi by HibtWebSession.ui.collectAsState()
 
+    // WebView 捕获 token 后刷新界面输入框（与原生设置同源）
+    LaunchedEffect(webUi.nativeTokenSyncedAt, webUi.ready) {
+        if (webUi.nativeTokenSyncedAt > 0 && webUi.ready) {
+            s = repo.settings()
+            h = s.hibt
+            toast = "已用 WebView 会话更新原生 token/API"
+        }
+    }
+
     // 原生查询的余额/持仓（补充）；WebView 会话优先显示
     var nativeBal by remember { mutableStateOf("-") }
     var nativePos by remember { mutableStateOf("-") }
