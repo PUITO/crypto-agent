@@ -28,6 +28,7 @@ object HibtWebSession {
     data class SessionUi(
         val ready: Boolean = false,
         val pageUrl: String = "",
+        val orderPageLocked: String = "",
         val tokenPreview: String = "",
         val hasV: Boolean = false,
         val lastVAt: Long = 0L,
@@ -48,6 +49,10 @@ object HibtWebSession {
     @Volatile private var lastApiBase: String = "https://api.hibt0.com"
     @Volatile private var lastOrigin: String = "https://hibt.com"
     @Volatile private var lastReferer: String = "https://hibt.com/"
+    /** 用户停留过的事件合约下单页（隐藏后再打开不丢） */
+    @Volatile var lastOrderPageUrl: String = ""
+        private set
+    private var prefs: android.content.SharedPreferences? = null
     /** 拦截到的加密 v（长 base64 等） */
     @Volatile private var lastVEnc: String = ""
     /** 拦截/生成的明文时间戳 v */
@@ -65,6 +70,13 @@ object HibtWebSession {
         synchronized(this) {
             webView?.let { return it }
             val appCtx = context.applicationContext
+            if (prefs == null) {
+                prefs = appCtx.getSharedPreferences("hibt_web_session", 0)
+                lastOrderPageUrl = prefs?.getString("order_page_url", "").orEmpty()
+                if (lastOrderPageUrl.isNotBlank()) {
+                    _ui.value = _ui.value.copy(orderPageLocked = lastOrderPageUrl)
+                }
+            }
             val wv = WebView(appCtx)
             val cm = CookieManager.getInstance()
             cm.setAcceptCookie(true)
@@ -80,7 +92,11 @@ object HibtWebSession {
             wv.addJavascriptInterface(Bridge(), "CaHibt")
             wv.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String) {
-                    _ui.value = _ui.value.copy(pageUrl = url, loaded = true, status = "页面已加载，注入中…")
+                    if (looksLikeOrderPage(url)) {
+                        rememberOrderPage(url)
+                    }
+                    val tip = if (looksLikeOrderPage(url)) "合约下单页已锁定" else "页面已加载（请进入事件合约下单页）"
+                    _ui.value = _ui.value.copy(pageUrl = url, loaded = true, status = tip)
                     injectHooks(view)
                 }
             }
@@ -97,17 +113,156 @@ object HibtWebSession {
         }
     }
 
-    fun openHome(context: Context, url: String = "https://hibt.com") {
+    fun looksLikeOrderPage(url: String?): Boolean {
+        val u = (url ?: "").lowercase()
+        if (u.isBlank() || u == "about:blank") return false
+        // 路径/哈希含事件/期权/交易特征；纯官网根路径不算
+        val hit = listOf(
+            "event", "option", "contract", "trade", "binary", "second",
+            "事件", "期权", "合约",
+        ).any { it in u }
+        if (hit) return true
+        // 已锁定页与当前一致
+        if (lastOrderPageUrl.isNotBlank() && url == lastOrderPageUrl) return true
+        return false
+    }
+
+    fun rememberOrderPage(url: String) {
+        if (url.isBlank() || url.startsWith("about:")) return
+        lastOrderPageUrl = url
+        prefs?.edit()?.putString("order_page_url", url)?.apply()
+        _ui.value = _ui.value.copy(
+            status = "已记住下单页",
+            pageUrl = url,
+            orderPageLocked = url,
+        )
+    }
+
+    /**
+     * 打开/显示：不强制回首页。
+     * - 已有页面 URL → 不重新 load（避免 SPA 被重置）
+     * - 否则优先恢复「已记住的事件合约页」
+     * - 都没有才打开官网根路径让用户登录后自己点进合约
+     */
+    fun openSession(context: Context, forceReload: Boolean = false) {
         val wv = obtain(context)
         main.post {
-            _ui.value = _ui.value.copy(status = "加载 $url")
-            wv.loadUrl(url)
+            val cur = wv.url
+            when {
+                !forceReload && !cur.isNullOrBlank() && cur != "about:blank" -> {
+                    _ui.value = _ui.value.copy(
+                        status = if (looksLikeOrderPage(cur)) "显示中·合约页保活" else "显示中·请进入事件合约下单页",
+                        pageUrl = cur,
+                    )
+                    injectHooks(wv)
+                }
+                lastOrderPageUrl.isNotBlank() -> {
+                    _ui.value = _ui.value.copy(status = "恢复下单页…")
+                    wv.loadUrl(lastOrderPageUrl)
+                }
+                else -> {
+                    _ui.value = _ui.value.copy(status = "首次打开官网，登录后请进入事件合约并点「锁定当前为下单页」")
+                    wv.loadUrl("https://hibt.com")
+                }
+            }
         }
+    }
+
+    @Deprecated("Use openSession")
+    fun openHome(context: Context, url: String = "https://hibt.com") {
+        openSession(context, forceReload = false)
+    }
+
+    /** 显式进入/恢复事件合约页（下单前也会自动调用） */
+    fun goOrderPage(context: Context? = null) {
+        val wv = webView ?: context?.let { obtain(it) } ?: return
+        main.post {
+            wakeWebView(wv)
+            val target = lastOrderPageUrl.ifBlank { null }
+            if (target != null) {
+                if (wv.url != target) {
+                    _ui.value = _ui.value.copy(status = "导航到已锁定下单页…")
+                    wv.loadUrl(target)
+                } else {
+                    injectHooks(wv)
+                    // 尝试页内点「事件合约」菜单（SPA 被踢回首页时）
+                    wv.evaluateJavascript(GO_EVENT_MENU_JS, null)
+                }
+            } else {
+                wv.evaluateJavascript(GO_EVENT_MENU_JS, null)
+                _ui.value = _ui.value.copy(status = "未锁定下单页：尝试点击「事件合约」菜单，成功后请点锁定")
+            }
+        }
+    }
+
+    /**
+     * 下单前确保在合约页：若当前不是，则恢复 lastOrderPageUrl 并等待加载。
+     */
+    suspend fun ensureOrderPage(timeoutMs: Long = 10_000L): Boolean {
+        val wv = webView ?: return false
+        main.post { wakeWebView(wv) }
+        val cur = wv.url
+        if (looksLikeOrderPage(cur)) {
+            main.post { injectHooks(wv) }
+            return true
+        }
+        val target = lastOrderPageUrl
+        if (target.isBlank()) {
+            main.post {
+                wakeWebView(wv)
+                wv.evaluateJavascript(GO_EVENT_MENU_JS, null)
+            }
+            kotlinx.coroutines.delay(2_500)
+            return looksLikeOrderPage(webView?.url) || lastOrderPageUrl.isNotBlank()
+        }
+        main.post {
+            _ui.value = _ui.value.copy(status = "下单前恢复合约页…")
+            wv.loadUrl(target)
+        }
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(400)
+            val u = webView?.url
+            if (looksLikeOrderPage(u) || u == target) {
+                main.post { webView?.let { injectHooks(it) } }
+                kotlinx.coroutines.delay(500)
+                return true
+            }
+        }
+        return looksLikeOrderPage(webView?.url)
+    }
+
+    fun lockCurrentAsOrderPage() {
+        val u = webView?.url
+        if (u.isNullOrBlank()) {
+            _ui.value = _ui.value.copy(status = "当前无页面，无法锁定")
+            return
+        }
+        rememberOrderPage(u)
+        _ui.value = _ui.value.copy(status = "已锁定为下单页（隐藏后再打开会恢复）")
     }
 
     fun reload() {
         main.post { webView?.reload() }
     }
+
+    private val GO_EVENT_MENU_JS = """
+    (function(){
+      function T(e){ try{ return (e.innerText||e.textContent||'').trim(); }catch(x){ return ''; } }
+      var nodes = document.querySelectorAll('a,button,div,span,li');
+      var keys = ['事件合约','事件','期权','Event','Option','二元','秒合约'];
+      for (var i=0;i<nodes.length;i++){
+        var t = T(nodes[i]);
+        if (!t || t.length>16) continue;
+        for (var k=0;k<keys.length;k++){
+          if (t.indexOf(keys[k])>=0){
+            try { nodes[i].click(); return 'clicked:'+t; } catch(e){}
+          }
+        }
+      }
+      return 'no-menu';
+    })();
+    """.trimIndent()
 
     fun clearSession(context: Context) {
         main.post {
@@ -149,6 +304,14 @@ object HibtWebSession {
         if (wv == null) return null
 
         main.post { wakeWebView(wv) }
+
+        // 隐藏后再下单：先恢复到已锁定的事件合约页（避免停在首页点不到买涨/买跌）
+        val onOrder = ensureOrderPage(10_000L)
+        if (!onOrder) {
+            _ui.value = _ui.value.copy(
+                status = "未在合约下单页：请打开 WebView 进入事件合约后点「锁定当前为下单页」",
+            )
+        }
 
         // 同步页面 origin
         main.post {

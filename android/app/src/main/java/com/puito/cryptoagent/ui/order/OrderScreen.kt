@@ -71,7 +71,7 @@ fun OrderScreen(repo: Repository) {
         ) {
             Text("HiBT 下单 · 行情 ${s.interval} · 自动 ${h.autoIntervals.joinToString(",")}", style = MaterialTheme.typography.titleMedium)
             Text(
-                "测试/自动下单一律走 WebView（已禁用原生时间戳 v）。请先登录 WebView 再隐藏保活；真实下单会发系统通知。",
+                "请登录后进入事件合约下单页并点「锁定当前为下单页」。隐藏只保活不回首页；自动下单前会自动恢复该页并由平台UI下单。",
                 color = MaterialTheme.colorScheme.secondary,
                 fontSize = 12.sp,
             )
@@ -101,15 +101,36 @@ fun OrderScreen(repo: Repository) {
                         Button(
                             onClick = {
                                 HibtWebSession.obtain(ctx)
-                                HibtWebSession.openHome(ctx, h.apiBase.takeIf { it.contains("hibt") }?.let { "https://hibt.com" } ?: "https://hibt.com")
+                                HibtWebSession.openSession(ctx, forceReload = false)
                                 showWeb = true
                             },
                             modifier = Modifier.weight(1f),
-                        ) { Text(if (webUi.loaded) "打开/显示 WebView" else "打开 WebView 登录") }
+                        ) { Text(if (webUi.loaded) "显示 WebView" else "打开 WebView 登录") }
                         OutlinedButton(
-                            onClick = { showWeb = false; HibtWebSession.detachFromParent() },
+                            onClick = {
+                                // 只隐藏界面，不销毁、不重新 load 首页
+                                showWeb = false
+                                HibtWebSession.detachFromParent()
+                            },
                             modifier = Modifier.weight(1f),
                         ) { Text("隐藏(保活)") }
+                    }
+                    Text(
+                        "下单页锁定：${webUi.orderPageLocked.ifBlank { "未锁定（进事件合约后点锁定）" }}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { HibtWebSession.lockCurrentAsOrderPage(); toast = "已锁定当前页" },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("锁定当前为下单页") }
+                        OutlinedButton(
+                            onClick = { HibtWebSession.goOrderPage(ctx); showWeb = true },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("进/恢复合约页") }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(
@@ -355,7 +376,9 @@ fun OrderScreen(repo: Repository) {
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                             )
                             if (wv.url.isNullOrBlank()) {
-                                wv.loadUrl("https://hibt.com")
+                                val resume = HibtWebSession.lastOrderPageUrl
+                                if (resume.isNotBlank()) wv.loadUrl(resume)
+                                // 否则等 openSession / 用户导航，避免强行首页冲掉状态
                             }
                             wv
                         },
