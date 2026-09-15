@@ -185,7 +185,8 @@ object Notify {
                 if (ai.error != null) appendLine("错误：${ai.error}")
                 appendLine()
             } else {
-                appendLine("【AI 评估】未开启")
+                appendLine("【AI 评估】未开启 → 仅通知，请手动下单")
+                appendLine("（自动下单需：开启AI评估 + 开启自动化 + 关闭Dry-Run）")
                 appendLine()
             }
             appendLine("【信号】")

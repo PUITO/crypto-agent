@@ -646,9 +646,21 @@ class Repository(ctx: Context) {
         intervalCode: String,
     ) {
         val h = s.hibt
+        // 自动下单三条件：开自动 + 开 AI 评估 +（由 place 路径尊重 dryRun）
+        // AI 关：只通知、手动下单，绝不自动下单
         if (!h.autoTrade) return
-        if (h.aiEvaluate) {
-            if (ai?.winRatePct == null || ai.passThreshold != true) return
+        if (!h.aiEvaluate) {
+            HibtWebSession.appendLog(
+                "信号仅通知(AI评估未开)，不自动下单 ${s.symbol} ${m.side} iv=$intervalCode"
+            )
+            return
+        }
+        if (ai?.winRatePct == null || ai.passThreshold != true) {
+            HibtWebSession.appendLog(
+                "AI未过阈值，跳过自动下单 ${s.symbol} ${m.side} iv=$intervalCode " +
+                    "ai=${ai?.winRatePct} 阈=${ai?.thresholdPct ?: h.aiMinWinRate}"
+            )
+            return
         }
         val unit = eventTimeUnitMinutes(intervalCode)
         val key = "${s.symbol}|${m.side}|${m.openTime}|${unit}"
