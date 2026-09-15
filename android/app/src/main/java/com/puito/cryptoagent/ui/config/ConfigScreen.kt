@@ -78,25 +78,23 @@ fun ConfigScreen(repo: Repository) {
 
         Text("缓存清理（不删配置）", style = MaterialTheme.typography.titleSmall)
         Text(
-            "普通缓存：模拟成交/统计、内存行情信号、应用临时文件。\n" +
-                "WebView 缓存：页面磁盘缓存；默认保留登录 Cookie。配置与策略不会删除。",
+            "普通缓存：模拟成交/统计、内存行情信号、应用临时文件。" +
+                " WebView 缓存：页面磁盘缓存；默认保留登录 Cookie。配置与策略不会删除。",
             color = MaterialTheme.colorScheme.secondary,
         )
-        Row(Modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = {
-                    HibtWebSession.clearLogs()
-                    msg = repo.clearDataCache()
-                },
-                modifier = Modifier.weight(1f),
-            ) { Text("清除普通缓存") }
-            OutlinedButton(
-                onClick = {
-                    msg = HibtWebSession.clearWebViewCache(keepLogin = true)
-                },
-                modifier = Modifier.weight(1f),
-            ) { Text("清除WV缓存") }
-        }
+        OutlinedButton(
+            onClick = {
+                HibtWebSession.clearLogs()
+                msg = repo.clearDataCache()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("清除普通数据缓存") }
+        OutlinedButton(
+            onClick = {
+                msg = HibtWebSession.clearWebViewCache(keepLogin = true)
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("清除 WebView 缓存（保留登录）") }
         OutlinedButton(
             onClick = {
                 val a = repo.clearDataCache()
