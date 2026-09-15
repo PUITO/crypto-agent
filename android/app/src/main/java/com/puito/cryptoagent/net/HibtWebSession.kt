@@ -117,9 +117,16 @@ object HibtWebSession {
                 javaScriptEnabled = true
                 domStorageEnabled = true
                 databaseEnabled = true
-                mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                // keep default WebView UA
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 cacheMode = WebSettings.LOAD_DEFAULT
+                loadsImagesAutomatically = true
+                mediaPlaybackRequiresUserGesture = false
+                // 关键默认带 "; wv)" 的 UA，很多站点会卡 API loading
+                userAgentString =
+                    "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+                setSupportMultipleWindows(false)
+                javaScriptCanOpenWindowsAutomatically = false
             }
             wv.addJavascriptInterface(Bridge(), "CaHibt")
             wv.webViewClient = object : WebViewClient() {
@@ -129,7 +136,8 @@ object HibtWebSession {
                     }
                     val tip = if (looksLikeOrderPage(url)) "合约下单页已锁定" else "页面已加载（请进入事件合约下单页）"
                     _ui.value = _ui.value.copy(pageUrl = url, loaded = true, status = tip)
-                    injectHooks(view)
+                    // 不全页狂刷注入；仅首次/冷却后补一次轻量脚本（无网络钩子）
+                    injectHooks(view, force = false)
                 }
             }
             webView = wv
@@ -546,7 +554,7 @@ object HibtWebSession {
         """.trimIndent()
         main.post {
             wakeWebView(wv)
-            injectHooks(wv)
+            injectHooks(wv, force = true)
             _ui.value = _ui.value.copy(status = "WebView 优先下单… origin=$origin")
             main.postDelayed({
                 wakeWebView(webView ?: return@postDelayed)
@@ -707,16 +715,15 @@ object HibtWebSession {
     }
 
     @Volatile private var lastInjectAt = 0L
-    private fun injectHooks(view: WebView) {
+    @Volatile private var injectEver = false
+    private fun injectHooks(view: WebView, force: Boolean = false) {
         val now = System.currentTimeMillis()
-        if (now - lastInjectAt < 2_500) return
+        // 非 force：首次后至少 15s 才再注，避免 SPA 反复 onPageFinished 刷日志/干扰页面
+        if (!force && injectEver && now - lastInjectAt < 15_000) return
+        if (!force && now - lastInjectAt < 3_000) return
         lastInjectAt = now
-        val script = INJECT_JS
-        view.evaluateJavascript(script, null)
-        // 延迟补注入，但不自动狂刷余额（CORS 易失败）
-        main.postDelayed({
-            webView?.evaluateJavascript(script, null)
-        }, 1200)
+        injectEver = true
+        view.evaluateJavascript(INJECT_JS, null)
     }
 
     private class Bridge {
@@ -835,10 +842,12 @@ object HibtWebSession {
     private val INJECT_JS = """
     (function(){
       if (window.__CA_HIBT_INJECTED__) {
-        if (window.CaHibt) CaHibt.onLog('脚本已存在(被动钩子)');
+        try { if (window.__caDisableNetHooks) window.__caDisableNetHooks(); } catch(e){}
+        try { if (window.__caScanSession) window.__caScanSession(); } catch(e){}
         return;
       }
       window.__CA_HIBT_INJECTED__ = 1;
+      try { if (window.__caDisableNetHooks) window.__caDisableNetHooks(); } catch(e){}
       var st = { token: '', v: '', apiBase: 'https://api.hibt0.com', origin: '', referer: '', vEnc: '', vPlain: '' };
       try { st.origin = location.origin || ''; st.referer = location.href || (st.origin + '/'); } catch(e){}
       function T(x){ return x==null?'':String(x).trim(); }
