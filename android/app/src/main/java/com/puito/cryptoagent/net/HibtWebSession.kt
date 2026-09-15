@@ -70,7 +70,7 @@ object HibtWebSession {
     @Volatile private var webView: WebView? = null
     @Volatile private var lastToken: String = ""
     @Volatile private var lastV: String = ""
-    @Volatile private var lastApiBase: String = "https://api.hibt0.com"
+    @Volatile private var lastApiBase: String = "https://api-ws.taichuwuji.com"
     @Volatile private var lastOrigin: String = "https://hibt.com"
     @Volatile private var lastReferer: String = "https://hibt.com/"
     /** 用户停留过的事件合约下单页（隐藏后再打开不丢） */
@@ -81,6 +81,8 @@ object HibtWebSession {
     @Volatile private var lastVEnc: String = ""
     /** 拦截/生成的明文时间戳 v */
     @Volatile private var lastVPlain: String = ""
+    @Volatile private var lastSyncedToken: String = ""
+    @Volatile private var lastSyncedApi: String = ""
     @Volatile private var placeWait: CompletableDeferred<PlaceOutcome>? = null
     private val placeSeq = AtomicLong(0)
 
@@ -300,6 +302,8 @@ object HibtWebSession {
             lastV = ""
             lastVEnc = ""
             lastVPlain = ""
+            lastSyncedToken = ""
+            lastSyncedApi = ""
             webView?.clearCache(true)
             CookieManager.getInstance().removeAllCookies(null)
             CookieManager.getInstance().flush()
@@ -329,8 +333,11 @@ object HibtWebSession {
         }
         main.post {
             wakeWebView(wv)
+            lastInjectAt = 0L
+            lastSyncedToken = ""
+            lastSyncedApi = ""
             injectHooks(wv)
-            appendLog("手动更新 token：重新注入并触发页面请求…")
+            appendLog("手动更新 token：请确保 WebView 已登录；若仍登录失效需重新登录")
             // 触发账户接口 + 强制把当前 st 推给原生
             val js = """
             (function(){
@@ -468,7 +475,7 @@ object HibtWebSession {
                     amount: '$amountStr',
                     symbol: '$sym',
                     timeUnit: $unit,
-                    dryRun: false,
+                    dryRun: ${if (dryRun) "true" else "false"},
                     origin: '$originJs',
                     referer: '$refererJs',
                     vEnc: '$vEncJs',
@@ -526,12 +533,16 @@ object HibtWebSession {
             return PlaceOutcome(true, msg, dryRun = true)
         }
 
-        // 原生降级前再刷一次 token，降低「登录失效」
-        appendLog("准备原生降级：先手动刷新 WebView token…")
-        forceRefreshToken()
-        kotlinx.coroutines.delay(1_200)
+        val webMsg = webResult?.message.orEmpty()
+        if (webMsg.contains("登录失效") || webMsg.contains("4000") || webMsg.contains("未登录")) {
+            val msg = "【登录失效】平台已返回登录失效。请打开 WebView 在 m.hibt1.com **重新登录** 后，再点「手动更新 Token」与「锁定下单页」。刷新 token 无法修复已失效会话。"
+            appendLog(msg)
+            _ui.value = _ui.value.copy(lastPlaceMsg = msg, status = msg.take(100))
+            return PlaceOutcome(false, msg, dryRun = false)
+        }
 
-        // —— 2) 原生降级：加密 v → 明文时间戳 v，均带 Origin ——
+        // —— 2) 原生降级（仅 UI/XHR 非登录类失败时）——
+        appendLog("准备原生降级，api优先=$lastApiBase origin=$lastOrigin")
         val tokenNow = lastToken.ifBlank { token }
         if (tokenNow.isBlank()) {
             val msg = webResult?.message
@@ -546,17 +557,17 @@ object HibtWebSession {
         vCandidates.add(vPlain)
         vCandidates.add(System.currentTimeMillis().toString())
 
-        // API 候选：解析到的 + 按 origin 推断
+        // API 候选：你日志里真实流量多为 api-ws.taichuwuji.com；api.hibt1.com 常 403
         val apiCandidates = linkedSetOf<String>()
-        apiCandidates.add(lastApiBase.ifBlank { "https://api.hibt0.com" })
-        apiCandidates.add("https://api.hibt0.com")
-        try {
-            val host = java.net.URI(lastOrigin).host ?: ""
-            if (host.contains("hibt1")) {
-                apiCandidates.add("https://api.hibt1.com")
-                apiCandidates.add("https://api.hibt0.com")
+        fun addApi(u: String) {
+            val x = u.trim().trimEnd('/')
+            if (x.startsWith("http") && !x.contains("://m.") && !x.contains("://www.")) {
+                apiCandidates.add(x)
             }
-        } catch (_: Exception) {}
+        }
+        addApi(lastApiBase)
+        addApi("https://api-ws.taichuwuji.com")
+        addApi("https://api.hibt0.com")
 
         var lastMsg = "原生降级无结果"
         for (apiBaseTry in apiCandidates) {
@@ -620,15 +631,17 @@ object HibtWebSession {
         }
     }
 
+    @Volatile private var lastInjectAt = 0L
     private fun injectHooks(view: WebView) {
-
+        val now = System.currentTimeMillis()
+        if (now - lastInjectAt < 2_500) return
+        lastInjectAt = now
         val script = INJECT_JS
         view.evaluateJavascript(script, null)
-        // 再延迟一次，覆盖晚加载的 bundle
+        // 延迟补注入，但不自动狂刷余额（CORS 易失败）
         main.postDelayed({
             webView?.evaluateJavascript(script, null)
-            webView?.evaluateJavascript("window.__caRefreshAccount && window.__caRefreshAccount()", null)
-        }, 1500)
+        }, 1200)
     }
 
     private class Bridge {
@@ -650,7 +663,15 @@ object HibtWebSession {
                     else lastVEnc = v
                     _ui.value = _ui.value.copy(hasV = true, lastVAt = System.currentTimeMillis())
                 }
-                if (api.startsWith("http")) lastApiBase = api.trimEnd('/')
+                // 过滤前端域名，保留真正 API
+                if (api.startsWith("http")) {
+                    val host = try { java.net.URI(api).host?.lowercase().orEmpty() } catch (_: Exception) { "" }
+                    val badFront = host.startsWith("m.") || host.startsWith("www.")
+                    val looksApi = host.startsWith("api") || host.contains("api-") || host.contains("taichuwuji")
+                    if (!badFront && looksApi) {
+                        lastApiBase = api.trimEnd('/')
+                    }
+                }
                 if (origin.startsWith("http")) {
                     lastOrigin = origin.trimEnd('/')
                     lastReferer = referer.ifBlank { lastOrigin + "/" }
@@ -662,17 +683,22 @@ object HibtWebSession {
                     } catch (_: Exception) {}
                 }
                 val preview = if (lastToken.length > 12) lastToken.take(8) + "…" + lastToken.takeLast(4) else lastToken
-                // 覆盖写回原生 token / api，避免 WebView 登录后还要手填
+                // 仅 token/api 变化时写回，避免刷屏
                 if (token.isNotBlank()) {
-                    try {
-                        settingsSync?.invoke(
-                            lastToken,
-                            lastApiBase.ifBlank { "https://api.hibt0.com" },
-                            lastOrigin.ifBlank { "https://hibt.com" },
-                        )
-                        appendLog("token 已写回原生 · api=$lastApiBase · origin=$lastOrigin · preview=$preview")
-                    } catch (e: Exception) {
-                        appendLog("写回原生 token 失败: ${e.message}")
+                    val apiOut = lastApiBase.ifBlank { "https://api-ws.taichuwuji.com" }
+                    if (token != lastSyncedToken || apiOut != lastSyncedApi) {
+                        try {
+                            settingsSync?.invoke(
+                                lastToken,
+                                apiOut,
+                                lastOrigin.ifBlank { "https://m.hibt1.com" },
+                            )
+                            lastSyncedToken = token
+                            lastSyncedApi = apiOut
+                            appendLog("token 已写回原生 · api=$apiOut · origin=$lastOrigin · preview=$preview")
+                        } catch (e: Exception) {
+                            appendLog("写回原生 token 失败: ${e.message}")
+                        }
                     }
                 }
                 _ui.value = _ui.value.copy(
@@ -761,7 +787,12 @@ object HibtWebSession {
       function pickApi(url){
         try {
           var u = new URL(url, location.href);
-          if (/hibt|bget|taichuwuji|api/i.test(u.hostname)) return u.protocol+'//'+u.host;
+          var host = (u.hostname||'').toLowerCase();
+          // 不要把前端 m.hibt1.com 当成 API；只要真正的 api 主机
+          if (/^m\./.test(host) || /www\./.test(host)) return st.apiBase;
+          if (/^(api[-.]|api-ws)/i.test(host) || /taichuwuji|hotscoin|hibt0|hibt1/i.test(host) && /api/i.test(host)) {
+            return u.protocol+'//'+u.host;
+          }
         } catch(e){}
         return st.apiBase;
       }
@@ -777,13 +808,21 @@ object HibtWebSession {
             if (/^\d{10,}$/.test(vv)) st.vPlain = vv; else st.vEnc = vv;
             try{ window.__CA_LAST_V = vv; }catch(e){}
           }
-          st.apiBase = pickApi(url);
-          try{ window.__CA_LAST_API = st.apiBase; }catch(e){}
+          var api = pickApi(url);
+          if (api && api !== st.apiBase && /api/i.test(api)) {
+            st.apiBase = api;
+            try{ window.__CA_LAST_API = st.apiBase; }catch(e){}
+          }
           try {
             st.origin = location.origin || st.origin;
             st.referer = location.href || st.referer;
           } catch(e){}
-          if (st.token || st.v) emitSession();
+          // 仅当 token/v/api 有实质变化时上报，避免刷屏写回原生
+          var sig = (st.token||'')+'|'+(st.v||'')+'|'+(st.apiBase||'');
+          if ((st.token || st.v) && sig !== window.__CA_LAST_SIG) {
+            window.__CA_LAST_SIG = sig;
+            emitSession();
+          }
         } catch(e){}
       }
       function maybePlaceResponse(url, status, bodyText){
@@ -920,7 +959,10 @@ object HibtWebSession {
               CaHibt.onAccount(JSON.stringify({ balance: bal, positions: '—' }));
             });
           }).catch(function(e){
-            CaHibt.onLog('余额请求失败 '+e);
+            if (!window.__CA_BAL_ERR) {
+              window.__CA_BAL_ERR = 1;
+              CaHibt.onLog('余额请求失败(可忽略CORS): '+String(e).slice(0,60));
+            }
           });
       };
       window.__caPlace = function(opt){
@@ -1164,7 +1206,7 @@ object HibtWebSession {
       };
 
       try { CaHibt.onLog('注入完成，请浏览订单/资产以捕获 token/v'); } catch(e){}
-      setTimeout(function(){ try{ window.__caRefreshAccount(); }catch(e){} }, 2000);
+      // 不自动刷余额（易 CORS Failed to fetch 刷屏）
     })();
     """.trimIndent()
 }
