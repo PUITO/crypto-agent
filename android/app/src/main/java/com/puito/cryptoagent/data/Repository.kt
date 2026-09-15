@@ -616,6 +616,7 @@ class Repository(ctx: Context) {
                 return
             }
         }
+        HibtWebSession.appendLog("自动下单触发 ${s.symbol} ${m.side} tu=${unit}m iv=$intervalCode")
         val result = placePreferWeb(
             directionUp = m.side == "B",
             amount = h.defaultAmount,
@@ -623,6 +624,7 @@ class Repository(ctx: Context) {
             timeUnit = unit,
             cfg = h,
         )
+        HibtWebSession.appendLog("自动下单结果 ok=${result.ok} dry=${result.dryRun} ${result.message.take(120)}")
         if (result.dryRun || !result.ok) {
             placedOrderKeys.remove(key)
         }
@@ -664,6 +666,9 @@ class Repository(ctx: Context) {
             message = "[WebView] ${outcome.message}",
             dryRun = outcome.dryRun,
             raw = outcome.message,
+        )
+        HibtWebSession.appendLog(
+            "placePreferWeb ok=${result.ok} dry=${result.dryRun} ${result.message.take(160)}"
         )
         // 真实下单或失败都通知；Dry-Run 也通知一条便于确认走的是 WebView
         Notify.orderResult(

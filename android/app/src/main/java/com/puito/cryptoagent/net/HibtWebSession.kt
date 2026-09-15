@@ -45,6 +45,29 @@ object HibtWebSession {
     private val _ui = MutableStateFlow(SessionUi())
     val ui: StateFlow<SessionUi> = _ui.asStateFlow()
 
+    private val logLock = Any()
+    private val _logs = MutableStateFlow<List<String>>(emptyList())
+    val logs: StateFlow<List<String>> = _logs.asStateFlow()
+    private val maxLogLines = 200
+
+    fun appendLog(msg: String) {
+        val line = android.text.format.DateFormat.format("HH:mm:ss", System.currentTimeMillis()).toString() + " " + msg.trim()
+        synchronized(logLock) {
+            val next = (_logs.value + line).takeLast(maxLogLines)
+            _logs.value = next
+        }
+        // 同步到 status 尾部便于观察
+        _ui.value = _ui.value.copy(status = msg.take(120))
+    }
+
+    fun clearLogs() {
+        _logs.value = emptyList()
+        appendLog("日志已清空")
+    }
+
+    fun dumpLogs(): String = _logs.value.joinToString("
+")
+
     @Volatile private var webView: WebView? = null
     @Volatile private var lastToken: String = ""
     @Volatile private var lastV: String = ""
@@ -291,6 +314,71 @@ object HibtWebSession {
         main.post {
             webView?.evaluateJavascript("window.__caRefreshAccount && window.__caRefreshAccount()", null)
             _ui.value = _ui.value.copy(status = "正在刷新账户…")
+            appendLog("刷新账户请求已发送")
+        }
+    }
+
+    /**
+     * 手动从 WebView 再抓 token/api 并写回原生输入框。
+     * 会注入脚本、触发页面请求、强制 emitSession。
+     */
+    fun forceRefreshToken() {
+        val wv = webView
+        if (wv == null) {
+            appendLog("手动更新 token 失败：WebView 未创建，请先打开并登录")
+            return
+        }
+        main.post {
+            wakeWebView(wv)
+            injectHooks(wv)
+            appendLog("手动更新 token：重新注入并触发页面请求…")
+            // 触发账户接口 + 强制把当前 st 推给原生
+            val js = """
+            (function(){
+              try {
+                if (window.__caRefreshAccount) window.__caRefreshAccount();
+                // 强制再发一次会话（即使 token 未变）
+                if (typeof emitSession === 'function') { /* local */ }
+                try {
+                  var tok = '';
+                  try { tok = sessionStorage.getItem('bget_token') || localStorage.getItem('bget_token') || ''; } catch(e){}
+                  var origin = location.origin || '';
+                  CaHibt.onSession(JSON.stringify({
+                    token: tok || (window.__CA_LAST_TOKEN||''),
+                    xAuthToken: tok,
+                    apiBase: (window.__CA_LAST_API||'') || 'https://api.hibt0.com',
+                    origin: origin,
+                    referer: location.href || (origin+'/'),
+                    v: (window.__CA_LAST_V||'')
+                  }));
+                } catch(e) { CaHibt.onLog('forceSession '+e); }
+                return 'ok';
+              } catch(e) { return String(e); }
+            })();
+            """.trimIndent()
+            wv.evaluateJavascript(js, null)
+            // 再从 cookie 读（部分站 token 在 cookie）
+            wv.evaluateJavascript(
+                """
+                (function(){
+                  try {
+                    var m = document.cookie.match(/(?:^|;\s*)(?:bget_token|token)=([^;]+)/);
+                    if (m) {
+                      CaHibt.onSession(JSON.stringify({
+                        token: decodeURIComponent(m[1]),
+                        xAuthToken: decodeURIComponent(m[1]),
+                        apiBase: window.__CA_LAST_API || 'https://api.hibt0.com',
+                        origin: location.origin||'',
+                        referer: location.href||''
+                      }));
+                      return 'cookie-token';
+                    }
+                  } catch(e){}
+                  return 'no-cookie';
+                })();
+                """.trimIndent(),
+                null,
+            )
         }
     }
 
@@ -435,13 +523,21 @@ object HibtWebSession {
         if (dryRun) {
             val msg = webResult?.message
                 ?: "DRY-RUN：未完成平台UI回调（不会真实下单）"
+            appendLog(msg)
             return PlaceOutcome(true, msg, dryRun = true)
         }
 
+        // 原生降级前再刷一次 token，降低「登录失效」
+        appendLog("准备原生降级：先手动刷新 WebView token…")
+        forceRefreshToken()
+        kotlinx.coroutines.delay(1_200)
+
         // —— 2) 原生降级：加密 v → 明文时间戳 v，均带 Origin ——
-        if (token.isBlank()) {
+        val tokenNow = lastToken.ifBlank { token }
+        if (tokenNow.isBlank()) {
             val msg = webResult?.message
-                ?: "无 token：请 WebView 登录；WebView 与原生均无法下单"
+                ?: "无 token：请 WebView 登录后点「手动更新 Token」"
+            appendLog(msg)
             return PlaceOutcome(false, msg, dryRun = false)
         }
         val native = HibtClient()
@@ -451,12 +547,25 @@ object HibtWebSession {
         vCandidates.add(vPlain)
         vCandidates.add(System.currentTimeMillis().toString())
 
+        // API 候选：解析到的 + 按 origin 推断
+        val apiCandidates = linkedSetOf<String>()
+        apiCandidates.add(lastApiBase.ifBlank { "https://api.hibt0.com" })
+        apiCandidates.add("https://api.hibt0.com")
+        try {
+            val host = java.net.URI(lastOrigin).host ?: ""
+            if (host.contains("hibt1")) {
+                apiCandidates.add("https://api.hibt1.com")
+                apiCandidates.add("https://api.hibt0.com")
+            }
+        } catch (_: Exception) {}
+
         var lastMsg = "原生降级无结果"
+        for (apiBaseTry in apiCandidates) {
         for (vTry in vCandidates) {
             val cfg = HibtSettings(
-                apiBase = lastApiBase.ifBlank { "https://api.hibt0.com" },
-                authToken = token,
-                xAuthToken = token,
+                apiBase = apiBaseTry,
+                authToken = tokenNow,
+                xAuthToken = tokenNow,
                 vParam = vTry,
                 vAutoTimestamp = false,
                 dryRun = false,
@@ -472,12 +581,17 @@ object HibtWebSession {
             }
             lastMsg = "[原生降级] ${r.message}"
             if (r.ok) {
+                appendLog(lastMsg)
                 _ui.value = _ui.value.copy(lastPlaceMsg = lastMsg, status = lastMsg.take(100))
                 return PlaceOutcome(true, lastMsg, dryRun = false)
+            } else {
+                appendLog(lastMsg.take(180))
             }
             // 参数错误则换下一个 v；405 也继续试
-        }
+        } // vCandidates
+        } // apiCandidates
         val fail = PlaceOutcome(false, lastMsg, dryRun = false)
+        appendLog(fail.message)
         _ui.value = _ui.value.copy(lastPlaceMsg = fail.message, status = fail.message.take(100))
         return fail
     }
@@ -557,7 +671,9 @@ object HibtWebSession {
                             lastApiBase.ifBlank { "https://api.hibt0.com" },
                             lastOrigin.ifBlank { "https://hibt.com" },
                         )
-                    } catch (_: Exception) {
+                        appendLog("token 已写回原生 · api=$lastApiBase · origin=$lastOrigin · preview=$preview")
+                    } catch (e: Exception) {
+                        appendLog("写回原生 token 失败: ${e.message}")
                     }
                 }
                 _ui.value = _ui.value.copy(
@@ -597,9 +713,11 @@ object HibtWebSession {
                 val dry = o.has("dryRun") && o.get("dryRun").asBoolean
                 val msg = if (o.has("message")) o.get("message").asString else json.take(200)
                 _ui.value = _ui.value.copy(lastPlaceMsg = msg, status = msg.take(80))
+                appendLog((if (ok) "下单OK " else "下单FAIL ") + (if (dry) "[DRY] " else "") + msg)
                 placeWait?.complete(PlaceOutcome(ok, msg, dry))
                 placeWait = null
             } catch (e: Exception) {
+                appendLog("下单结果解析失败: ${e.message}")
                 placeWait?.complete(PlaceOutcome(false, e.message ?: "parse error", false))
                 placeWait = null
             }
@@ -607,7 +725,7 @@ object HibtWebSession {
 
         @JavascriptInterface
         fun onLog(msg: String) {
-            _ui.value = _ui.value.copy(status = msg.take(120))
+            appendLog("[JS] $msg")
         }
     }
 
@@ -653,13 +771,15 @@ object HibtWebSession {
           var h = headers || {};
           var tok = T(h['x-auth-token'] || h['X-Auth-Token'] || h['authorization'] || h['Authorization'] || '');
           tok = tok.replace(/^Bearer\s+/i,'');
-          if (tok.length > 20) st.token = tok;
+          if (tok.length > 20) { st.token = tok; try{ window.__CA_LAST_TOKEN = tok; }catch(e){} }
           var vv = pickV(url);
           if (vv) {
             st.v = vv;
             if (/^\d{10,}$/.test(vv)) st.vPlain = vv; else st.vEnc = vv;
+            try{ window.__CA_LAST_V = vv; }catch(e){}
           }
           st.apiBase = pickApi(url);
+          try{ window.__CA_LAST_API = st.apiBase; }catch(e){}
           try {
             st.origin = location.origin || st.origin;
             st.referer = location.href || st.referer;

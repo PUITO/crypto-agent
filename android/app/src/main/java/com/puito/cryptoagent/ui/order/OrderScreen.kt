@@ -38,6 +38,7 @@ fun OrderScreen(repo: Repository) {
     var showWeb by remember { mutableStateOf(false) }
 
     val webUi by HibtWebSession.ui.collectAsState()
+    val webLogs by HibtWebSession.logs.collectAsState()
 
     // WebView 捕获 token 后刷新界面输入框（与原生设置同源）
     LaunchedEffect(webUi.nativeTokenSyncedAt, webUi.ready) {
@@ -141,6 +142,19 @@ fun OrderScreen(repo: Repository) {
                             modifier = Modifier.weight(1f),
                         ) { Text("进/恢复合约页") }
                     }
+                    Button(
+                        onClick = {
+                            HibtWebSession.forceRefreshToken()
+                            // 稍后再刷输入框
+                            scope.launch {
+                                kotlinx.coroutines.delay(1500)
+                                s = repo.settings()
+                                h = s.hibt
+                                toast = "已请求更新 Token（见完整日志）"
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("手动更新 Token（写回原生）") }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(
                             onClick = { HibtWebSession.refreshAccount() },
@@ -293,34 +307,52 @@ fun OrderScreen(repo: Repository) {
             }
 
             Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp)) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("测试信息", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        Text("完整日志（测试/自动下单）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         TextButton(onClick = {
                             val blob = buildString {
+                                appendLine("=== 最近操作 ===")
                                 appendLine(status)
-                                if (webUi.lastPlaceMsg.isNotBlank()) {
-                                    appendLine("---")
-                                    appendLine(webUi.lastPlaceMsg)
-                                }
-                                appendLine("webStatus=${webUi.status}")
+                                appendLine("=== WebView 会话 ===")
+                                appendLine("status=${webUi.status}")
                                 appendLine("token=${webUi.tokenPreview} hasV=${webUi.hasV}")
+                                appendLine("api 将以写回原生为准")
+                                appendLine("=== 流水日志 ${webLogs.size} 条 ===")
+                                append(HibtWebSession.dumpLogs())
                             }
                             val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("test_log", blob))
-                            toast = "已复制测试信息（含 WebView 下单结果）"
-                        }) { Text("复制") }
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("full_log", blob))
+                            toast = "已复制完整日志"
+                        }) { Text("复制全部") }
+                        TextButton(onClick = { HibtWebSession.clearLogs() }) { Text("清空") }
                         TextButton(onClick = { expandLog = !expandLog }) {
                             Text(if (expandLog) "收起" else "展开")
                         }
                     }
+                    Text(
+                        "最近：${status.take(120)}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                        maxLines = if (expandLog) 6 else 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     if (expandLog) {
-                        Text(status, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
-                        if (webUi.lastPlaceMsg.isNotBlank()) {
-                            Text("Web: ${webUi.lastPlaceMsg}", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        }
+                        val shown = webLogs.takeLast(40).joinToString("
+")
+                        Text(
+                            if (shown.isBlank()) "（暂无流水，测试或自动下单后出现）" else shown,
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     } else {
-                        Text(status, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            webLogs.lastOrNull() ?: "（展开查看自动化/测试全部日志）",
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }
