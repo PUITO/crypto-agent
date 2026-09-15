@@ -51,7 +51,7 @@ object HibtWebSession {
     private val maxLogLines = 200
 
     fun appendLog(msg: String) {
-        val line = android.text.format.DateFormat.format("HH:mm:ss", System.currentTimeMillis()).toString() + " " + msg.trim()
+        val line = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date()) + " " + msg.trim()
         synchronized(logLock) {
             val next = (_logs.value + line).takeLast(maxLogLines)
             _logs.value = next
@@ -65,8 +65,7 @@ object HibtWebSession {
         appendLog("日志已清空")
     }
 
-    fun dumpLogs(): String = _logs.value.joinToString("
-")
+    fun dumpLogs(): String = _logs.value.joinToString("\n")
 
     @Volatile private var webView: WebView? = null
     @Volatile private var lastToken: String = ""

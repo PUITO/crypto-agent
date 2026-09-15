@@ -338,8 +338,7 @@ fun OrderScreen(repo: Repository) {
                         overflow = TextOverflow.Ellipsis,
                     )
                     if (expandLog) {
-                        val shown = webLogs.takeLast(40).joinToString("
-")
+                        val shown = webLogs.takeLast(40).joinToString("\n")
                         Text(
                             if (shown.isBlank()) "（暂无流水，测试或自动下单后出现）" else shown,
                             fontSize = 10.sp,
