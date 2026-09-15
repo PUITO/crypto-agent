@@ -452,21 +452,16 @@ class Repository(ctx: Context) {
             )
         }
         return try {
-            val market = buildSignalMarketBrief(s.symbol, interval, barData, m)
-            val sys = (
-                "你是加密事件合约信号评估助手。" +
-                    "仅根据提供的行情K线与信号，估计该信号方向在本交易周期内获胜的概率(0-100)。" +
-                    "必须基于K线结构独立判断，禁止把本地回测总胜率直接当答案。" +
-                    "第一行严格输出 WINRATE:数字 ，随后1-3句中文理由。"
+            val maxBars = s.llmEvalMaxBars.coerceIn(6, 48)
+            val market = buildSignalMarketBrief(s.symbol, interval, barData, m, maxBars = maxBars)
+            val sys = "事件合约评估。只根据K线估胜率0-100。禁止照抄回测。仅一行: WINRATE:数字"
+            val user = market + "\n信号:" + dir + " px=" + m.price + " iv=" + interval + "\n输出WINRATE:"
+            val ans = llm.chat(
+                s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, user, s.llmTimeoutSec,
+                maxTokens = s.llmMaxTokens.coerceIn(16, 512),
+                temperature = s.llmTemperature.toDouble().coerceIn(0.0, 1.0),
+                thinkingEnabled = s.llmThinkingEnabled,
             )
-            val user = (
-                market +
-                    "\n【信号】方向: " + dir + " (" + m.side + ") 信号价: " + m.price +
-                    "\n【交易周期】" + interval +
-                    "\n【参考-本地回测总胜率】" + "%.1f".format(hist) + "% / " + tradeCount + "笔（勿直接照抄）" +
-                    "\n【程序阈值】" + "%.1f".format(threshold) + "%（你只需输出WINRATE，是否达阈值由程序判断）"
-            )
-            val ans = llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, user, s.llmTimeoutSec)
             val winEst = parseWinRate(ans, avoidEcho = hist)
             if (winEst == null) {
                 return@evaluateSignal AiEvalResult(
@@ -505,8 +500,9 @@ class Repository(ctx: Context) {
         interval: String,
         barData: List<Candle>,
         m: SignalMark,
+        maxBars: Int = 16,
     ): String {
-        val n = minOf(40, barData.size)
+        val n = minOf(maxBars.coerceIn(6, 48), barData.size)
         val bars = barData.takeLast(n)
         val last = bars.last()
         val hi = bars.maxOf { it.high }
@@ -822,7 +818,12 @@ class Repository(ctx: Context) {
         } else {
             user
         }
-        return llm.chat(s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, userPayload, s.llmTimeoutSec)
+        return llm.chat(
+            s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, userPayload, s.llmTimeoutSec,
+            maxTokens = maxOf(s.llmMaxTokens, 256).coerceIn(64, 2048),
+            temperature = s.llmTemperature.toDouble().coerceIn(0.0, 1.5),
+            thinkingEnabled = s.llmThinkingEnabled,
+        )
     }
 
 

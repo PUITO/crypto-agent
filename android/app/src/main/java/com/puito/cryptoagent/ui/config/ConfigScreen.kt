@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -23,6 +24,9 @@ fun ConfigScreen(repo: Repository) {
     var llmKey by remember { mutableStateOf(cur.llmApiKey) }
     var llmModel by remember { mutableStateOf(cur.llmModel) }
     var llmTimeout by remember { mutableStateOf(cur.llmTimeoutSec.toString()) }
+    var llmMaxTokens by remember { mutableStateOf(cur.llmMaxTokens.toString()) }
+    var llmEvalBars by remember { mutableStateOf(cur.llmEvalMaxBars.toString()) }
+    var llmThinking by remember { mutableStateOf(cur.llmThinkingEnabled) }
     var bg by remember { mutableStateOf(cur.backgroundEnabled) }
     var vibrate by remember { mutableStateOf(cur.notifyVibrate) }
     var msg by remember { mutableStateOf<String?>(null) }
@@ -47,11 +51,27 @@ fun ConfigScreen(repo: Repository) {
         OutlinedTextField(
             llmTimeout,
             { llmTimeout = it },
-            label = { Text("AI/对话超时(秒)，默认60，建议30～120") },
+            label = { Text("AI/对话超时(秒)，默认60") },
             modifier = Modifier.fillMaxWidth(),
         )
+        OutlinedTextField(
+            llmMaxTokens,
+            { llmMaxTokens = it },
+            label = { Text("max_tokens(评估建议64～128，越小越省)") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            llmEvalBars,
+            { llmEvalBars = it },
+            label = { Text("评估K线条数(6～48，默认16)") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("启用思考链thinking(DeepSeek贵，评估建议关)", modifier = Modifier.weight(1f))
+            Switch(llmThinking, { llmThinking = it })
+        }
         Text(
-            "信号 AI 评估与 Chat 共用该超时。过小易显示评估失败/超时；过大则单轮监控变慢。",
+            "省钱：deepseek-flash + 关thinking + 小max_tokens + 少K线。评估prompt已压缩。",
             color = MaterialTheme.colorScheme.secondary,
         )
 
@@ -79,6 +99,9 @@ fun ConfigScreen(repo: Repository) {
                 llmApiKey = llmKey.trim(),
                 llmModel = llmModel.trim(),
                 llmTimeoutSec = llmTimeout.toIntOrNull()?.coerceIn(10, 300) ?: 60,
+                llmMaxTokens = llmMaxTokens.toIntOrNull()?.coerceIn(16, 2048) ?: 96,
+                llmEvalMaxBars = llmEvalBars.toIntOrNull()?.coerceIn(6, 48) ?: 16,
+                llmThinkingEnabled = llmThinking,
                 backgroundEnabled = bg,
                 notifyVibrate = vibrate,
                 onboardingDone = true,

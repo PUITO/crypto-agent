@@ -834,7 +834,7 @@ object HibtWebSession {
     private val INJECT_JS = """
     (function(){
       if (window.__CA_HIBT_INJECTED__) {
-        if (window.CaHibt) CaHibt.onLog('脚本已存在');
+        if (window.CaHibt) CaHibt.onLog('脚本已存在(被动钩子)');
         return;
       }
       window.__CA_HIBT_INJECTED__ = 1;
@@ -926,44 +926,62 @@ object HibtWebSession {
           }));
         } catch(e){}
       }
+      // 被动钩子：不改请求、不改响应；仅在下单等待中才读 place 响应体，避免拖垮账户接口
       var OF = window.fetch;
-      if (typeof OF === 'function') {
-        window.fetch = function(){
-          var req = arguments[0], init = arguments[1] || {};
+      if (typeof OF === 'function' && !window.__CA_FETCH_OK) {
+        window.__CA_FETCH_OK = 1;
+        window.fetch = function(input, init){
           var url = '';
           try {
-            url = typeof req === 'string' ? req : (req && req.url) || '';
+            url = typeof input === 'string' ? input : (input && input.url) || '';
             var hdr = {};
             try {
-              if (init.headers) {
-                if (init.headers.forEach) init.headers.forEach(function(v,k){ hdr[k]=v; });
+              if (init && init.headers) {
+                if (typeof Headers !== 'undefined' && init.headers instanceof Headers) init.headers.forEach(function(v,k){ hdr[k]=v; });
+                else if (init.headers.forEach) init.headers.forEach(function(v,k){ hdr[k]=v; });
                 else Object.assign(hdr, init.headers);
               }
-              if (req && req.headers && req.headers.forEach) req.headers.forEach(function(v,k){ hdr[k]=v; });
             } catch(e){}
-            absorb(url, hdr);
+            // 只旁路记录，绝不改 arguments
+            try { absorb(url, hdr); } catch(e){}
           } catch(e){}
-          return OF.apply(this, arguments).then(function(resp){
-            try {
-              var c = resp.clone();
-              c.text().then(function(t){ maybePlaceResponse(url, resp.status, t); }).catch(function(){});
-            } catch(e){}
-            return resp;
-          });
+          var p = OF.apply(this, arguments);
+          try {
+            var pend = window.__caPendingPlace;
+            if (pend && !pend.done && /place/i.test(url||'')) {
+              p = p.then(function(resp){
+                try {
+                  resp.clone().text().then(function(t){ maybePlaceResponse(url, resp.status, t, false); }).catch(function(){});
+                } catch(e){}
+                return resp;
+              });
+            }
+          } catch(e){}
+          return p;
         };
       }
-      if (window.XMLHttpRequest && XMLHttpRequest.prototype) {
+      if (window.XMLHttpRequest && XMLHttpRequest.prototype && !window.__CA_XHR_OK) {
+        window.__CA_XHR_OK = 1;
         var OO = XMLHttpRequest.prototype.open, OS = XMLHttpRequest.prototype.setRequestHeader, OE = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function(m,u){ this.__caU=u; this.__caH={}; return OO.apply(this, arguments); };
-        XMLHttpRequest.prototype.setRequestHeader = function(n,v){ try{ this.__caH[n]=v; }catch(e){} return OS.apply(this, arguments); };
+        XMLHttpRequest.prototype.open = function(m,u){
+          try { this.__caU = u; this.__caH = {}; } catch(e){}
+          return OO.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.setRequestHeader = function(n,v){
+          try { if (!this.__caH) this.__caH = {}; this.__caH[n] = v; } catch(e){}
+          return OS.apply(this, arguments);
+        };
         XMLHttpRequest.prototype.send = function(){
-          try{ absorb(this.__caU||'', this.__caH||{}); }catch(e){}
+          try { absorb(this.__caU||'', this.__caH||{}); } catch(e){}
           try {
-            var xhr = this;
+            var pend = window.__caPendingPlace;
             var url = this.__caU||'';
-            xhr.addEventListener('load', function(){
-              try { maybePlaceResponse(url, xhr.status, xhr.responseText||''); } catch(e){}
-            });
+            if (pend && !pend.done && /place/i.test(url)) {
+              var xhr = this;
+              xhr.addEventListener('load', function(){
+                try { maybePlaceResponse(url, xhr.status, xhr.responseText||'', false); } catch(e){}
+              });
+            }
           } catch(e){}
           return OE.apply(this, arguments);
         };
@@ -976,9 +994,9 @@ object HibtWebSession {
         var h = {
           'accept': 'application/json, text/plain, */*',
           'content-type': 'application/x-www-form-urlencoded',
-          'client-type': 'web',
-          'platform': 'PC',
-          'hc-platform': 'web',
+          'client-type': (location.hostname||'').indexOf('m.')===0 ? 'h5' : 'web',
+          'platform': (location.hostname||'').indexOf('m.')===0 ? 'h5' : 'PC',
+          'hc-platform': (location.hostname||'').indexOf('m.')===0 ? 'h5' : 'web',
           'future_source': '1',
           'lang': 'zh_CN',
           'hc-language': 'zh_CN',

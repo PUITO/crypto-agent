@@ -145,6 +145,13 @@ data class AppSettings(
     val llmModel: String = "gpt-4o-mini",
     /** AI 评估 / 对话 HTTP 超时（秒）。原 poll 内硬编码 8s 易超时，默认 60 */
     val llmTimeoutSec: Int = 60,
+    /** 评估/短答最大输出 token，越小越省（信号评估建议 32～128） */
+    val llmMaxTokens: Int = 96,
+    val llmTemperature: Float = 0.2f,
+    /** DeepSeek 等：关闭 thinking 可大幅减少输出 token */
+    val llmThinkingEnabled: Boolean = false,
+    /** AI 评估只取最近 N 根 K 线摘要 */
+    val llmEvalMaxBars: Int = 16,
     val onboardingDone: Boolean = false,
     val chartIndicators: List<ChartIndicatorPref> = listOf(
         ChartIndicatorPref("ma7", "MA7", false, 7, 0xFF42A5F5),
