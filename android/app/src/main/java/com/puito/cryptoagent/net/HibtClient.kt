@@ -83,8 +83,12 @@ class HibtClient(
         header("platform", if (isH5) "h5" else "PC")
         header("hc-platform", if (isH5) "h5" else "web")
         header("future_source", "1")
-        header("origin", "https://hibt.com")
-        header("referer", "https://hibt.com/")
+        val origin = cfg.origin.trim().ifBlank { "https://hibt.com" }.trimEnd('/')
+        val referer = cfg.referer.trim().ifBlank { "$origin/" }
+        header("origin", origin)
+        header("Origin", origin)
+        header("referer", referer)
+        header("Referer", referer)
         header(
             "user-agent",
             if (isH5) "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"

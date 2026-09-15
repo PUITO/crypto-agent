@@ -46,6 +46,12 @@ object HibtWebSession {
     @Volatile private var lastToken: String = ""
     @Volatile private var lastV: String = ""
     @Volatile private var lastApiBase: String = "https://api.hibt0.com"
+    @Volatile private var lastOrigin: String = "https://hibt.com"
+    @Volatile private var lastReferer: String = "https://hibt.com/"
+    /** 拦截到的加密 v（长 base64 等） */
+    @Volatile private var lastVEnc: String = ""
+    /** 拦截/生成的明文时间戳 v */
+    @Volatile private var lastVPlain: String = ""
     @Volatile private var placeWait: CompletableDeferred<PlaceOutcome>? = null
     private val placeSeq = AtomicLong(0)
 
@@ -107,6 +113,8 @@ object HibtWebSession {
         main.post {
             lastToken = ""
             lastV = ""
+            lastVEnc = ""
+            lastVPlain = ""
             webView?.clearCache(true)
             CookieManager.getInstance().removeAllCookies(null)
             CookieManager.getInstance().flush()
@@ -124,10 +132,9 @@ object HibtWebSession {
     }
 
     /**
-     * 下单策略：
-     * 1) 优先用 WebView 拦截到的 token + 真实 v，经 **原生 OkHttp POST**（避免页面跨域 405）
-     * 2) 若无 v，再尝试 WebView 内 XHR（可能 405/后台超时）
-     * 3) 下单前 resumeTimers，缓解后台挂起
+     * 下单优先级：
+     * 1) WebView 页内 POST（带解析到的 Origin/Referer + v）
+     * 2) 降级原生 OkHttp POST（同样带 Origin；v 优先加密，其次明文时间戳）
      */
     suspend fun placeOrder(
         directionUp: Boolean,
@@ -141,6 +148,19 @@ object HibtWebSession {
         if (wv == null) return null
 
         main.post { wakeWebView(wv) }
+
+        // 同步页面 origin
+        main.post {
+            wv.evaluateJavascript(
+                "(function(){try{return location.origin||'';}catch(e){return ''}})()",
+            ) { originJs ->
+                val o = originJs?.trim()?.trim('"')?.takeIf { it.startsWith("http") }
+                if (!o.isNullOrBlank()) {
+                    lastOrigin = o
+                    lastReferer = o.trimEnd('/') + "/"
+                }
+            }
+        }
 
         val sym = when {
             symbol.equals("BTCUSDT", true) -> "btc_usdt"
@@ -157,60 +177,28 @@ object HibtWebSession {
             if (kotlin.math.abs(amount - amount.toLong()) < 1e-9) amount.toLong().toString()
             else amount.toString()
 
-        // —— 路径 A：原生 POST + WebView 会话（推荐，规避 CORS 405）——
+        val origin = lastOrigin.ifBlank { "https://hibt.com" }
+        val referer = lastReferer.ifBlank { "$origin/" }
         val token = lastToken.trim()
-        val vCap = lastV.trim()
-        if (token.isNotBlank()) {
-            if (dryRun) {
-                val msg = "WEB-SESS-DRY-RUN amount=$amountStr dir=$dir symbol=$sym tu=$unit v=${if (vCap.isBlank()) "(无,实盘需先触发页面请求)" else vCap.take(12)+"…"} base=$lastApiBase"
-                _ui.value = _ui.value.copy(lastPlaceMsg = msg, status = msg.take(80))
-                return PlaceOutcome(true, msg, dryRun = true)
-            }
-            if (vCap.isBlank()) {
-                // 尝试让页面发一次请求以刷新 v
-                main.post {
-                    wakeWebView(wv)
-                    injectHooks(wv)
-                    wv.evaluateJavascript("window.__caRefreshAccount && window.__caRefreshAccount()", null)
-                }
-                kotlinx.coroutines.delay(800)
-            }
-            val vUse = lastV.trim()
-            if (vUse.isNotBlank()) {
-                val cfg = HibtSettings(
-                    apiBase = lastApiBase.ifBlank { "https://api.hibt0.com" },
-                    authToken = token,
-                    xAuthToken = token,
-                    vParam = vUse,
-                    vAutoTimestamp = false,
-                    dryRun = false,
-                    autoTrade = true,
-                )
-                _ui.value = _ui.value.copy(status = "原生POST下单(Web会话)…")
-                val native = HibtClient()
-                val r = try {
-                    native.placeEventOrder(cfg, symbol, directionUp, amount, unit)
-                } catch (e: Exception) {
-                    HibtClient.OrderResult(false, "原生下单异常: ${e.message}", dryRun = false)
-                }
-                // 若 405，再试 WebView 路径；否则直接返回
-                val is405 = (r.message + (r.raw ?: "")).contains("405")
-                if (!is405) {
-                    val msg = "[会话POST] ${r.message}"
-                    _ui.value = _ui.value.copy(lastPlaceMsg = msg, status = msg.take(100))
-                    return PlaceOutcome(r.ok, msg, dryRun = r.dryRun)
-                }
-                _ui.value = _ui.value.copy(status = "原生405，改试页面内XHR…")
-            } else if (!dryRun) {
-                // 无 v 时仍可试原生（部分环境），但多数会参数错误；继续走 XHR
-                _ui.value = _ui.value.copy(status = "无捕获v，尝试页面XHR…")
-            }
+        val vEnc = lastVEnc.ifBlank { lastV }.trim().takeIf { it.isNotBlank() && !it.all(Char::isDigit) }.orEmpty()
+        val vPlain = lastVPlain.ifBlank {
+            if (lastV.all { it.isDigit() }) lastV else ""
+        }.ifBlank { System.currentTimeMillis().toString() }
+
+        if (dryRun) {
+            val msg = "DRY-RUN web-first amount=$amountStr dir=$dir $sym tu=$unit origin=$origin vEnc=${vEnc.take(10).ifBlank { "无" }}… vPlain=$vPlain"
+            _ui.value = _ui.value.copy(lastPlaceMsg = msg, status = msg.take(90))
+            return PlaceOutcome(true, msg, dryRun = true)
         }
 
-        // —— 路径 B：WebView 内脚本（可能跨域 405 / 后台超时）——
+        // —— 1) WebView 页内下单（优先）——
         val id = placeSeq.incrementAndGet()
         val deferred = CompletableDeferred<PlaceOutcome>()
         placeWait = deferred
+        val originJs = origin.replace("'", "\\'")
+        val refererJs = referer.replace("'", "\\'")
+        val vEncJs = vEnc.replace("\\", "\\\\").replace("'", "\\'")
+        val vPlainJs = vPlain.replace("'", "\\'")
         val js = """
             (function(){
               try {
@@ -221,11 +209,15 @@ object HibtWebSession {
                     amount: '$amountStr',
                     symbol: '$sym',
                     timeUnit: $unit,
-                    dryRun: ${if (dryRun) "true" else "false"}
+                    dryRun: false,
+                    origin: '$originJs',
+                    referer: '$refererJs',
+                    vEnc: '$vEncJs',
+                    vPlain: '$vPlainJs'
                   });
                 } else {
                   CaHibt.onPlaceResult(JSON.stringify({
-                    id: $id, ok: false, dryRun: ${if (dryRun) "true" else "false"},
+                    id: $id, ok: false, dryRun: false,
                     message: '脚本未注入，请打开 WebView 并登录合约页'
                   }));
                 }
@@ -239,19 +231,77 @@ object HibtWebSession {
         main.post {
             wakeWebView(wv)
             injectHooks(wv)
-            _ui.value = _ui.value.copy(status = if (dryRun) "WebView DRY-RUN…" else "WebView XHR下单…")
+            _ui.value = _ui.value.copy(status = "WebView 优先下单… origin=$origin")
             main.postDelayed({
                 wakeWebView(webView ?: return@postDelayed)
                 webView?.evaluateJavascript(js, null)
             }, 450)
         }
-        val waitMs = timeoutSec.coerceIn(10, 180) * 1000L
-        val result = withTimeoutOrNull(waitMs) { deferred.await() }
-        return result ?: PlaceOutcome(
-            false,
-            "WebView 下单超时（脚本未回调，已等 ${waitMs / 1000}s）。后台时请保持监控通知栏、可调大超时；建议先在合约页点一下资产刷新 v。",
-            dryRun,
-        )
+        val waitMs = (timeoutSec.coerceIn(10, 180) * 1000L).coerceAtMost(90_000L)
+        val webResult = withTimeoutOrNull(waitMs) { deferred.await() }
+        if (webResult != null) {
+            if (webResult.ok) {
+                _ui.value = _ui.value.copy(lastPlaceMsg = webResult.message, status = webResult.message.take(100))
+                return webResult
+            }
+            // 405/跨域/失败 → 降级原生
+            val softFail = webResult.message.contains("405") ||
+                webResult.message.contains("跨域") ||
+                webResult.message.contains("网络错误") ||
+                webResult.message.contains("超时") ||
+                webResult.message.contains("脚本未注入") ||
+                !webResult.ok
+            if (!softFail) {
+                _ui.value = _ui.value.copy(lastPlaceMsg = webResult.message)
+                return webResult
+            }
+            _ui.value = _ui.value.copy(status = "WebView失败，降级原生… ${webResult.message.take(40)}")
+        } else {
+            _ui.value = _ui.value.copy(status = "WebView 超时，降级原生 POST…")
+        }
+
+        // —— 2) 原生降级：加密 v → 明文时间戳 v，均带 Origin ——
+        if (token.isBlank()) {
+            val msg = webResult?.message
+                ?: "无 token：请 WebView 登录；WebView 与原生均无法下单"
+            return PlaceOutcome(false, msg, dryRun = false)
+        }
+        val native = HibtClient()
+        val vCandidates = linkedSetOf<String>()
+        if (vEnc.isNotBlank()) vCandidates.add(vEnc)
+        if (lastV.isNotBlank()) vCandidates.add(lastV.trim())
+        vCandidates.add(vPlain)
+        vCandidates.add(System.currentTimeMillis().toString())
+
+        var lastMsg = "原生降级无结果"
+        for (vTry in vCandidates) {
+            val cfg = HibtSettings(
+                apiBase = lastApiBase.ifBlank { "https://api.hibt0.com" },
+                authToken = token,
+                xAuthToken = token,
+                vParam = vTry,
+                vAutoTimestamp = false,
+                dryRun = false,
+                autoTrade = true,
+                origin = origin,
+                referer = referer,
+            )
+            _ui.value = _ui.value.copy(status = "原生POST v=${vTry.take(12)}… origin=$origin")
+            val r = try {
+                native.placeEventOrder(cfg, symbol, directionUp, amount, unit)
+            } catch (e: Exception) {
+                HibtClient.OrderResult(false, "原生异常: ${e.message}", dryRun = false)
+            }
+            lastMsg = "[原生降级] ${r.message}"
+            if (r.ok) {
+                _ui.value = _ui.value.copy(lastPlaceMsg = lastMsg, status = lastMsg.take(100))
+                return PlaceOutcome(true, lastMsg, dryRun = false)
+            }
+            // 参数错误则换下一个 v；405 也继续试
+        }
+        val fail = PlaceOutcome(false, lastMsg, dryRun = false)
+        _ui.value = _ui.value.copy(lastPlaceMsg = fail.message, status = fail.message.take(100))
+        return fail
     }
 
     fun applyNativeSettingsSnapshot(): HibtSettings? {
@@ -300,12 +350,26 @@ object HibtWebSession {
                 val token = s("token").ifBlank { s("xAuthToken") }
                 val v = s("v")
                 val api = s("apiBase").ifBlank { lastApiBase }
+                val origin = s("origin")
+                val referer = s("referer")
                 if (token.isNotBlank()) lastToken = token
                 if (v.isNotBlank()) {
                     lastV = v
+                    if (v.all { it.isDigit() }) lastVPlain = v
+                    else lastVEnc = v
                     _ui.value = _ui.value.copy(hasV = true, lastVAt = System.currentTimeMillis())
                 }
                 if (api.startsWith("http")) lastApiBase = api.trimEnd('/')
+                if (origin.startsWith("http")) {
+                    lastOrigin = origin.trimEnd('/')
+                    lastReferer = referer.ifBlank { lastOrigin + "/" }
+                } else if (referer.startsWith("http")) {
+                    lastReferer = referer
+                    try {
+                        val u = java.net.URI(referer)
+                        lastOrigin = "${u.scheme}://${u.host}"
+                    } catch (_: Exception) {}
+                }
                 val preview = if (lastToken.length > 12) lastToken.take(8) + "…" + lastToken.takeLast(4) else lastToken
                 _ui.value = _ui.value.copy(
                     ready = lastToken.isNotBlank(),
@@ -366,12 +430,16 @@ object HibtWebSession {
         return;
       }
       window.__CA_HIBT_INJECTED__ = 1;
-      var st = { token: '', v: '', apiBase: 'https://api.hibt0.com' };
+      var st = { token: '', v: '', apiBase: 'https://api.hibt0.com', origin: '', referer: '', vEnc: '', vPlain: '' };
+      try { st.origin = location.origin || ''; st.referer = location.href || (st.origin + '/'); } catch(e){}
       function T(x){ return x==null?'':String(x).trim(); }
       function emitSession(){
         try {
+          var origin = st.origin || '';
+          try { if (!origin) origin = location.origin || ''; } catch(e){}
           CaHibt.onSession(JSON.stringify({
-            token: st.token, v: st.v, apiBase: st.apiBase, xAuthToken: st.token
+            token: st.token, v: st.v, apiBase: st.apiBase, xAuthToken: st.token,
+            origin: origin, referer: st.referer || (origin ? origin + '/' : '')
           }));
         } catch(e){}
       }
@@ -396,8 +464,15 @@ object HibtWebSession {
           tok = tok.replace(/^Bearer\s+/i,'');
           if (tok.length > 20) st.token = tok;
           var vv = pickV(url);
-          if (vv) st.v = vv;
+          if (vv) {
+            st.v = vv;
+            if (/^\d{10,}$/.test(vv)) st.vPlain = vv; else st.vEnc = vv;
+          }
           st.apiBase = pickApi(url);
+          try {
+            st.origin = location.origin || st.origin;
+            st.referer = location.href || st.referer;
+          } catch(e){}
           if (st.token || st.v) emitSession();
         } catch(e){}
       }
@@ -426,7 +501,11 @@ object HibtWebSession {
         XMLHttpRequest.prototype.setRequestHeader = function(n,v){ try{ this.__caH[n]=v; }catch(e){} return OS.apply(this, arguments); };
         XMLHttpRequest.prototype.send = function(){ try{ absorb(this.__caU||'', this.__caH||{}); }catch(e){} return OE.apply(this, arguments); };
       }
-      function authHeaders(){
+      function authHeaders(opt){
+        opt = opt || {};
+        var origin = opt.origin || st.origin || '';
+        try { if (!origin) origin = location.origin || 'https://hibt.com'; } catch(e){ origin = origin || 'https://hibt.com'; }
+        var referer = opt.referer || st.referer || (origin + '/');
         var h = {
           'accept': 'application/json, text/plain, */*',
           'content-type': 'application/x-www-form-urlencoded',
@@ -435,7 +514,11 @@ object HibtWebSession {
           'hc-platform': 'web',
           'future_source': '1',
           'lang': 'zh_CN',
-          'hc-language': 'zh_CN'
+          'hc-language': 'zh_CN',
+          'Origin': origin,
+          'origin': origin,
+          'Referer': referer,
+          'referer': referer
         };
         if (st.token) {
           h['x-auth-token'] = st.token;
@@ -501,10 +584,13 @@ object HibtWebSession {
           timeUnit: String(opt.timeUnit||5),
           langCode: 'zh_CN'
         };
+        var origin = opt.origin || st.origin || '';
+        try { if (!origin) origin = location.origin || 'https://hibt.com'; } catch(e){ origin = 'https://hibt.com'; }
+        var referer = opt.referer || st.referer || (origin + '/');
         if (dry) {
           CaHibt.onPlaceResult(JSON.stringify({
             id: opt.id, ok: true, dryRun: true,
-            message: 'WEB-DRY-RUN '+JSON.stringify(payload)+' v='+(st.v?st.v.slice(0,12)+'…':'(无)')+' base='+st.apiBase
+            message: 'WEB-DRY-RUN '+JSON.stringify(payload)+' origin='+origin+' vEnc='+(st.vEnc||opt.vEnc||'').slice(0,10)+' vPlain='+(st.vPlain||opt.vPlain||'')
           }));
           return;
         }
@@ -512,22 +598,32 @@ object HibtWebSession {
           CaHibt.onPlaceResult(JSON.stringify({ id:opt.id, ok:false, dryRun:false, message:'无 token：请在 WebView 登录并点击订单/资产页以捕获会话' }));
           return;
         }
-        // 固定 API 主域，避免 apiBase 被钩成官网前端域导致 405
         var bases = ['https://api.hibt0.com'];
-        if (st.apiBase && st.apiBase.indexOf('api')>=0 && bases.indexOf(st.apiBase)<0) bases.push(st.apiBase);
-        var paths = [
-          '/option/option-order/place',
-          '/event/event-order/place'
-        ];
+        if (st.apiBase && /api/i.test(st.apiBase) && bases.indexOf(st.apiBase)<0) bases.push(st.apiBase);
+        var paths = ['/option/option-order/place', '/event/event-order/place'];
         var body = Object.keys(payload).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(payload[k]); }).join('&');
-        var hdr = authHeaders();
+        var vList = [];
+        function pushV(x){ if (x && vList.indexOf(x)<0) vList.push(x); }
+        pushV(opt.vEnc); pushV(st.vEnc); pushV(st.v);
+        pushV(opt.vPlain); pushV(st.vPlain); pushV(String(Date.now()));
+        var hdr = authHeaders({ origin: origin, referer: referer });
         function finish(ok, msg){
           CaHibt.onPlaceResult(JSON.stringify({ id: opt.id, ok: !!ok, dryRun: false, message: msg }));
         }
-        var baseIdx = 0;
-        function postOne(path, idx){
-          var base = bases[Math.min(baseIdx, bases.length-1)] || 'https://api.hibt0.com';
-          var url = base + path + (st.v ? ('?v='+encodeURIComponent(st.v)) : '');
+        var bi = 0, pi = 0, vi = 0;
+        function next(){
+          if (vi >= vList.length) {
+            vi = 0; pi++;
+          }
+          if (pi >= paths.length) {
+            pi = 0; bi++;
+          }
+          if (bi >= bases.length) {
+            finish(false, 'WebView POST 全失败(含405)。origin='+origin+' 将降级原生');
+            return;
+          }
+          var base = bases[bi], path = paths[pi], v = vList[vi];
+          var url = base + path + (v ? ('?v='+encodeURIComponent(v)) : '');
           try {
             var xhr = new XMLHttpRequest();
             xhr.open('POST', url, true);
@@ -537,49 +633,31 @@ object HibtWebSession {
             xhr.onreadystatechange = function(){
               if (xhr.readyState !== 4) return;
               var code = xhr.status, t = xhr.responseText || '';
-              if (code === 405) {
-                if (idx + 1 < paths.length) {
-                  CaHibt.onLog('405 '+path+'，尝试下一路径');
-                  postOne(paths[idx+1], idx+1);
-                  return;
-                }
-                if (baseIdx + 1 < bases.length) {
-                  baseIdx++;
-                  CaHibt.onLog('405 换 API 域 '+bases[baseIdx]);
-                  postOne(paths[0], 0);
-                  return;
-                }
-                finish(false, '405 POST 被拒(常为跨域)。请确保已捕获 v；App 会优先用原生会话POST。path='+path+' base='+base);
-                return;
-              }
               var ok = code>=200 && code<300 && t.indexOf('参数错误')<0 && t.indexOf('"code":500')<0 && t.indexOf('"code":401')<0 && t.indexOf('未登录')<0;
               try {
                 var j = JSON.parse(t);
                 if (j.code===0 || j.code===200 || j.success===true) ok = true;
                 if (j.code && j.code!==0 && j.code!==200) ok = false;
               } catch(e){}
-              if (!ok && idx + 1 < paths.length && (code===404 || code===405 || code===0)) {
-                postOne(paths[idx+1], idx+1);
+              if (ok) {
+                finish(true, '下单成功 '+code+' '+path+' v='+String(v).slice(0,12)+' '+(t||'').slice(0,100));
                 return;
               }
-              finish(ok, (ok?'下单成功 ':'下单失败 ')+code+' '+path+' '+(t||'').slice(0,140));
+              // 参数错误换 v；405/404 换 path/base
+              if (t.indexOf('参数')>=0 || t.indexOf('param')>=0) { vi++; next(); return; }
+              if (code===405 || code===404 || code===0) { vi++; if (vi>=vList.length){ vi=0; pi++; } next(); return; }
+              vi++; next();
             };
-            xhr.ontimeout = function(){
-              if (idx + 1 < paths.length) postOne(paths[idx+1], idx+1);
-              else finish(false, 'XHR 超时 '+path);
-            };
-            xhr.onerror = function(){
-              if (idx + 1 < paths.length) postOne(paths[idx+1], idx+1);
-              else finish(false, 'XHR 网络错误 '+path);
-            };
+            xhr.ontimeout = function(){ vi++; next(); };
+            xhr.onerror = function(){ vi++; next(); };
             xhr.send(body);
           } catch(e) {
-            if (idx + 1 < paths.length) postOne(paths[idx+1], idx+1);
-            else finish(false, String(e));
+            vi++; next();
           }
         }
-        postOne(paths[0], 0);
+        next();
       };
+
       try { CaHibt.onLog('注入完成，请浏览订单/资产以捕获 token/v'); } catch(e){}
       setTimeout(function(){ try{ window.__caRefreshAccount(); }catch(e){} }, 2000);
     })();

@@ -109,6 +109,9 @@ data class HibtSettings(
     val bgetId: String = "",
     val langCode: String = "zh_CN",
     val clientType: String = "web", // web | h5
+    /** 下单 Origin/Referer，与官网一致可降低 405/风控 */
+    val origin: String = "https://hibt.com",
+    val referer: String = "https://hibt.com/",
     val autoTrade: Boolean = false,
     val aiEvaluate: Boolean = false,
     val aiMinWinRate: Double = 55.0, // 百分比
