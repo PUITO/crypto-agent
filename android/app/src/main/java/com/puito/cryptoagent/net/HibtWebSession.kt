@@ -337,12 +337,13 @@ object HibtWebSession {
             lastSyncedToken = ""
             lastSyncedApi = ""
             injectHooks(wv)
-            appendLog("手动更新 token：请确保 WebView 已登录；若仍登录失效需重新登录")
+            appendLog("手动更新 token：从页面存储扫描（不钩网络，避免账户loading）")
             // 触发账户接口 + 强制把当前 st 推给原生
             val js = """
             (function(){
               try {
-                if (window.__caRefreshAccount) window.__caRefreshAccount();
+                if (window.__caScanSession) window.__caScanSession();
+                // 不自动调余额接口（易 CORS / 干扰页面）
                 // 强制再发一次会话（即使 token 未变）
                 if (typeof emitSession === 'function') { /* local */ }
                 try {
@@ -829,7 +830,7 @@ object HibtWebSession {
     }
 
     /**
-     * 注入：钩 fetch/XHR 抓会话；__caPlace 优先点平台UI下单（官网自处理v），失败再XHR/原生降级。
+     * 注入：默认不钩 fetch/XHR（避免账户接口一直 loading）；会话从 storage/cookie 读；下单时可选短时开钩。
      */
     private val INJECT_JS = """
     (function(){
@@ -926,66 +927,119 @@ object HibtWebSession {
           }));
         } catch(e){}
       }
-      // 被动钩子：不改请求、不改响应；仅在下单等待中才读 place 响应体，避免拖垮账户接口
-      var OF = window.fetch;
-      if (typeof OF === 'function' && !window.__CA_FETCH_OK) {
-        window.__CA_FETCH_OK = 1;
-        window.fetch = function(input, init){
-          var url = '';
-          try {
-            url = typeof input === 'string' ? input : (input && input.url) || '';
-            var hdr = {};
+      // ========== 默认不钩 fetch/XHR ==========
+      // 永久钩子会导致部分 SPA 账户/行情接口一直 loading（UI 可点但数据不来）
+      // 会话从 storage/cookie 读取；仅下单时短时启用网络钩子
+      window.__caEnableNetHooks = function(){
+        if (window.__CA_FETCH_OK) return 'already';
+        var OF = window.fetch;
+        if (typeof OF === 'function') {
+          window.__CA_FETCH_OK = 1;
+          window.__CA_OF = OF;
+          window.fetch = function(input, init){
+            var url = '';
             try {
-              if (init && init.headers) {
-                if (typeof Headers !== 'undefined' && init.headers instanceof Headers) init.headers.forEach(function(v,k){ hdr[k]=v; });
-                else if (init.headers.forEach) init.headers.forEach(function(v,k){ hdr[k]=v; });
-                else Object.assign(hdr, init.headers);
+              url = typeof input === 'string' ? input : (input && input.url) || '';
+              var hdr = {};
+              try {
+                if (init && init.headers) {
+                  if (typeof Headers !== 'undefined' && init.headers instanceof Headers)
+                    init.headers.forEach(function(v,k){ hdr[k]=v; });
+                  else if (init.headers.forEach) init.headers.forEach(function(v,k){ hdr[k]=v; });
+                  else Object.assign(hdr, init.headers);
+                }
+              } catch(e){}
+              try { absorb(url, hdr); } catch(e){}
+            } catch(e){}
+            var p = OF.apply(this, arguments);
+            try {
+              var pend = window.__caPendingPlace;
+              if (pend && !pend.done && /place/i.test(url||'')) {
+                p = p.then(function(resp){
+                  try {
+                    resp.clone().text().then(function(t){
+                      maybePlaceResponse(url, resp.status, t, false);
+                    }).catch(function(){});
+                  } catch(e){}
+                  return resp;
+                });
               }
             } catch(e){}
-            // 只旁路记录，绝不改 arguments
-            try { absorb(url, hdr); } catch(e){}
-          } catch(e){}
-          var p = OF.apply(this, arguments);
+            return p;
+          };
+        }
+        if (window.XMLHttpRequest && XMLHttpRequest.prototype && !window.__CA_XHR_OK) {
+          window.__CA_XHR_OK = 1;
+          var OO = XMLHttpRequest.prototype.open, OS = XMLHttpRequest.prototype.setRequestHeader, OE = XMLHttpRequest.prototype.send;
+          window.__CA_XHR = { OO: OO, OS: OS, OE: OE };
+          XMLHttpRequest.prototype.open = function(m,u){
+            try { this.__caU = u; this.__caH = {}; } catch(e){}
+            return OO.apply(this, arguments);
+          };
+          XMLHttpRequest.prototype.setRequestHeader = function(n,v){
+            try { if (!this.__caH) this.__caH = {}; this.__caH[n] = v; } catch(e){}
+            return OS.apply(this, arguments);
+          };
+          XMLHttpRequest.prototype.send = function(){
+            try { absorb(this.__caU||'', this.__caH||{}); } catch(e){}
+            try {
+              var pend = window.__caPendingPlace;
+              var url = this.__caU||'';
+              if (pend && !pend.done && /place/i.test(url)) {
+                var xhr = this;
+                xhr.addEventListener('load', function(){
+                  try { maybePlaceResponse(url, xhr.status, xhr.responseText||'', false); } catch(e){}
+                });
+              }
+            } catch(e){}
+            return OE.apply(this, arguments);
+          };
+        }
+        return 'hooks-on';
+      };
+      window.__caDisableNetHooks = function(){
+        try {
+          if (window.__CA_OF) { window.fetch = window.__CA_OF; window.__CA_FETCH_OK = 0; }
+          if (window.__CA_XHR) {
+            XMLHttpRequest.prototype.open = window.__CA_XHR.OO;
+            XMLHttpRequest.prototype.setRequestHeader = window.__CA_XHR.OS;
+            XMLHttpRequest.prototype.send = window.__CA_XHR.OE;
+            window.__CA_XHR_OK = 0;
+          }
+        } catch(e){}
+        return 'hooks-off';
+      };
+      // 无网络钩子时从本地存储/Cookie 抓 token（不拦截任何请求）
+      window.__caScanSession = function(){
+        try {
+          var keys = ['token','x-auth-token','xAuthToken','authToken','accessToken','bget_token','Authorization'];
+          var tok = '';
+          for (var i=0;i<keys.length;i++){
+            try { var a = localStorage.getItem(keys[i]); if (a && a.length>20) { tok=a; break; } } catch(e){}
+            try { var b = sessionStorage.getItem(keys[i]); if (b && b.length>20) { tok=b; break; } } catch(e){}
+          }
+          if (!tok) {
+            try {
+              var m = document.cookie.match(/(?:^|;\s*)(?:token|bget_token|x-auth-token)=([^;]+)/i);
+              if (m) tok = decodeURIComponent(m[1]);
+            } catch(e){}
+          }
+          tok = (tok||'').replace(/^Bearer\s+/i,'');
+          if (tok.length > 20) {
+            st.token = tok;
+            try { window.__CA_LAST_TOKEN = tok; } catch(e){}
+          }
           try {
-            var pend = window.__caPendingPlace;
-            if (pend && !pend.done && /place/i.test(url||'')) {
-              p = p.then(function(resp){
-                try {
-                  resp.clone().text().then(function(t){ maybePlaceResponse(url, resp.status, t, false); }).catch(function(){});
-                } catch(e){}
-                return resp;
-              });
-            }
+            st.origin = location.origin || st.origin;
+            st.referer = location.href || st.referer;
           } catch(e){}
-          return p;
-        };
-      }
-      if (window.XMLHttpRequest && XMLHttpRequest.prototype && !window.__CA_XHR_OK) {
-        window.__CA_XHR_OK = 1;
-        var OO = XMLHttpRequest.prototype.open, OS = XMLHttpRequest.prototype.setRequestHeader, OE = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function(m,u){
-          try { this.__caU = u; this.__caH = {}; } catch(e){}
-          return OO.apply(this, arguments);
-        };
-        XMLHttpRequest.prototype.setRequestHeader = function(n,v){
-          try { if (!this.__caH) this.__caH = {}; this.__caH[n] = v; } catch(e){}
-          return OS.apply(this, arguments);
-        };
-        XMLHttpRequest.prototype.send = function(){
-          try { absorb(this.__caU||'', this.__caH||{}); } catch(e){}
-          try {
-            var pend = window.__caPendingPlace;
-            var url = this.__caU||'';
-            if (pend && !pend.done && /place/i.test(url)) {
-              var xhr = this;
-              xhr.addEventListener('load', function(){
-                try { maybePlaceResponse(url, xhr.status, xhr.responseText||'', false); } catch(e){}
-              });
-            }
-          } catch(e){}
-          return OE.apply(this, arguments);
-        };
-      }
+          if (st.token) emitSession();
+          return st.token ? ('token:'+st.token.slice(0,8)) : 'no-token';
+        } catch(e){ return 'err'; }
+      };
+      // 启动时只扫存储，不装网络钩子
+      try { window.__caScanSession(); } catch(e){}
+      setTimeout(function(){ try { window.__caScanSession(); } catch(e){} }, 1500);
       function authHeaders(opt){
         opt = opt || {};
         var origin = opt.origin || st.origin || '';
@@ -1064,6 +1118,8 @@ object HibtWebSession {
       };
       window.__caPlace = function(opt){
         opt = opt || {};
+        try { if (window.__caEnableNetHooks) window.__caEnableNetHooks(); } catch(e){}
+        try { if (window.__caScanSession) window.__caScanSession(); } catch(e){}
         var dry = !!opt.dryRun;
         var amount = String(opt.amount||'3');
         var direction = Number(opt.direction==null?1:opt.direction);
@@ -1072,6 +1128,7 @@ object HibtWebSession {
         var pendingId = opt.id;
 
         function finish(ok, msg, isDry){
+          try { if (window.__caDisableNetHooks) window.__caDisableNetHooks(); } catch(e){}
           CaHibt.onPlaceResult(JSON.stringify({
             id: pendingId, ok: !!ok, dryRun: !!isDry, message: msg
           }));
