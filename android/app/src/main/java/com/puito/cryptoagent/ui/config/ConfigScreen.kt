@@ -105,7 +105,7 @@ fun ConfigScreen(repo: Repository) {
             },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("一键清除全部缓存（保留配置与登录）") }
-        TextButton(
+        OutlinedButton(
             onClick = {
                 msg = HibtWebSession.clearWebViewCache(keepLogin = false)
             },
