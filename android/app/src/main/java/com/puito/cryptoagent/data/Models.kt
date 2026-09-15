@@ -112,6 +112,8 @@ data class HibtSettings(
     /** 下单 Origin/Referer，与官网一致可降低 405/风控 */
     val origin: String = "https://hibt.com",
     val referer: String = "https://hibt.com/",
+    /** WebView Cookie 串，原生下单与手动一致 */
+    val cookieHeader: String = "",
     val autoTrade: Boolean = false,
     val aiEvaluate: Boolean = false,
     val aiMinWinRate: Double = 55.0, // 百分比

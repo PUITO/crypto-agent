@@ -457,7 +457,56 @@ object HibtWebSession {
             // 仍走注入 dryRun，让页面脚本回报将要点击的按钮
         }
 
-        // —— 1) WebView 平台 UI 下单（优先，参数由官网处理）——
+        // —— 0) 原生+WebView Cookie（≈0.24 可用路径，与手动同源 Cookie）——
+        if (!dryRun && lastToken.isNotBlank()) {
+            val cookie0 = cookieHeaderFor(origin)
+            if (cookie0.isNotBlank()) {
+                appendLog("优先原生+Cookie下单 api=$lastApiBase cookieLen=${cookie0.length}")
+                val native0 = HibtClient()
+                val vTryList = linkedSetOf<String>()
+                if (vEnc.isNotBlank()) vTryList.add(vEnc)
+                if (lastV.isNotBlank()) vTryList.add(lastV)
+                vTryList.add(vPlain)
+                val apis = linkedSetOf(
+                    lastApiBase.ifBlank { "https://api-ws.taichuwuji.com" },
+                    "https://api-ws.taichuwuji.com",
+                    "https://api.hibt0.com",
+                )
+                for (apiB in apis) {
+                    for (vT in vTryList) {
+                        val cfg0 = HibtSettings(
+                            apiBase = apiB,
+                            authToken = lastToken,
+                            xAuthToken = lastToken,
+                            vParam = vT,
+                            vAutoTimestamp = false,
+                            dryRun = false,
+                            autoTrade = true,
+                            origin = origin,
+                            referer = referer,
+                            cookieHeader = cookie0,
+                            clientType = if (origin.contains("m.") || origin.contains("hibt1")) "h5" else "web",
+                        )
+                        val r0 = try {
+                            native0.placeEventOrder(cfg0, symbol, directionUp, amount, unit)
+                        } catch (e: Exception) {
+                            HibtClient.OrderResult(false, "原生异常 ${e.message}", false)
+                        }
+                        appendLog("原生+Cookie ${if (r0.ok) "OK" else "FAIL"} $apiB ${r0.message.take(80)}")
+                        if (r0.ok) {
+                            val msg = "[原生+Cookie] ${r0.message}"
+                            _ui.value = _ui.value.copy(lastPlaceMsg = msg, status = msg.take(100))
+                            return PlaceOutcome(true, msg, dryRun = false)
+                        }
+                    }
+                }
+                appendLog("原生+Cookie未成交，再试平台UI点击")
+            } else {
+                appendLog("WebView Cookie 为空，跳过原生优先，走平台UI")
+            }
+        }
+
+        // —— 1) WebView 平台 UI 下单（参数由官网处理）——
         val id = placeSeq.incrementAndGet()
         val deferred = CompletableDeferred<PlaceOutcome>()
         placeWait = deferred
@@ -533,16 +582,14 @@ object HibtWebSession {
             return PlaceOutcome(true, msg, dryRun = true)
         }
 
-        val webMsg = webResult?.message.orEmpty()
-        if (webMsg.contains("登录失效") || webMsg.contains("4000") || webMsg.contains("未登录")) {
-            val msg = "【登录失效】平台已返回登录失效。请打开 WebView 在 m.hibt1.com **重新登录** 后，再点「手动更新 Token」与「锁定下单页」。刷新 token 无法修复已失效会话。"
-            appendLog(msg)
-            _ui.value = _ui.value.copy(lastPlaceMsg = msg, status = msg.take(100))
-            return PlaceOutcome(false, msg, dryRun = false)
+        // 平台 UI 已成功则直接返回
+        if (webResult != null && webResult.ok) {
+            return webResult
         }
 
-        // —— 2) 原生降级（仅 UI/XHR 非登录类失败时）——
-        appendLog("准备原生降级，api优先=$lastApiBase origin=$lastOrigin")
+        val webMsg = webResult?.message.orEmpty()
+        // 无 Cookie 的自建 XHR 常误报「登录失效」；手动同 WebView 正常 → 改走「Cookie+Token 原生」
+        appendLog("UI/XHR未成交(${webMsg.take(60)})，改用原生+WebView Cookie（旧版可用路径）")
         val tokenNow = lastToken.ifBlank { token }
         if (tokenNow.isBlank()) {
             val msg = webResult?.message
@@ -572,6 +619,8 @@ object HibtWebSession {
         var lastMsg = "原生降级无结果"
         for (apiBaseTry in apiCandidates) {
         for (vTry in vCandidates) {
+            val cookie = cookieHeaderFor(origin)
+            val isMobile = origin.contains("m.") || origin.contains("hibt1")
             val cfg = HibtSettings(
                 apiBase = apiBaseTry,
                 authToken = tokenNow,
@@ -582,7 +631,10 @@ object HibtWebSession {
                 autoTrade = true,
                 origin = origin,
                 referer = referer,
+                cookieHeader = cookie,
+                clientType = if (isMobile) "h5" else "web",
             )
+            appendLog("原生尝试 api=$apiBaseTry v=${vTry.take(10)}… cookie=${if (cookie.isBlank()) "无" else "有${cookie.length}字"}")
             _ui.value = _ui.value.copy(status = "原生POST v=${vTry.take(12)}… origin=$origin")
             val r = try {
                 native.placeEventOrder(cfg, symbol, directionUp, amount, unit)
@@ -618,6 +670,28 @@ object HibtWebSession {
     }
 
     fun wakeIfNeeded(wv: WebView) = wakeWebView(wv)
+
+    /** 从 WebView CookieManager 取与手动操作一致的 Cookie，供原生下单 */
+    fun cookieHeaderFor(url: String = lastOrigin.ifBlank { "https://m.hibt1.com" }): String {
+        return try {
+            val u = when {
+                url.startsWith("http") -> url
+                else -> "https://m.hibt1.com"
+            }
+            android.webkit.CookieManager.getInstance().getCookie(u)?.trim().orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    fun snapshotForNativePlace(): Triple<String, String, String> {
+        // token, api, cookie
+        return Triple(
+            lastToken.trim(),
+            lastApiBase.ifBlank { "https://api-ws.taichuwuji.com" },
+            cookieHeaderFor(lastOrigin.ifBlank { "https://m.hibt1.com" }),
+        )
+    }
 
     private fun wakeWebView(wv: WebView) {
         try {
@@ -825,21 +899,26 @@ object HibtWebSession {
           }
         } catch(e){}
       }
-      function maybePlaceResponse(url, status, bodyText){
+      function maybePlaceResponse(url, status, bodyText, fromXhrFallback){
         try {
           var p = window.__caPendingPlace;
           if (!p || p.done) return;
           var u = String(url||'');
-          if (!/place|event-order|option-order/i.test(u)) return;
-          if (!/place/i.test(u) && status) { /* still allow event-order place */ }
           if (!/place/i.test(u)) return;
           var t = bodyText||'';
-          var ok = status>=200 && status<300 && t.indexOf('参数错误')<0 && t.indexOf('"code":500')<0 && t.indexOf('"code":401')<0 && t.indexOf('未登录')<0;
+          var ok = status>=200 && status<300 && t.indexOf('参数错误')<0 && t.indexOf('"code":500')<0 && t.indexOf('"code":401')<0 && t.indexOf('未登录')<0 && t.indexOf('登录失效')<0 && t.indexOf('"code":4000')<0;
           try {
             var j = JSON.parse(t);
             if (j.code===0 || j.code===200 || j.success===true) ok = true;
             if (j.code && j.code!==0 && j.code!==200) ok = false;
           } catch(e){}
+          // 自建 XHR 失败不终结 UI 等待（避免误报登录失效打断后续原生）
+          if (fromXhrFallback && !ok) return;
+          if (p.mode==='ui' && !ok && (t.indexOf('4000')>=0 || t.indexOf('登录失效')>=0)) {
+            // 可能是页面误请求；不立即 done，留给超时后走原生 Cookie 路径
+            CaHibt.onLog('捕获到登录失效响应，保留会话改走原生Cookie路径');
+            return;
+          }
           p.done = true;
           CaHibt.onPlaceResult(JSON.stringify({
             id: p.id, ok: !!ok, dryRun: !!p.dry,
@@ -985,7 +1064,8 @@ object HibtWebSession {
           id: pendingId,
           at: Date.now(),
           dry: dry,
-          done: false
+          done: false,
+          mode: 'ui'
         };
 
         function textOf(el){
@@ -1081,8 +1161,8 @@ object HibtWebSession {
             return;
           }
           if (!sub) {
-            // UI 找不到则降级自建 POST（仍带 origin）
-            window.__caPlaceXhrFallback && window.__caPlaceXhrFallback(opt);
+            // 找不到提交按钮：不走无Cookie的XHR（易误报登录失效），交还原生Cookie路径
+            finish(false, '未找到提交按钮，交还原生Cookie下单。步骤:'+steps.join('; '));
             return;
           }
           clickEl(sub);
@@ -1125,8 +1205,8 @@ object HibtWebSession {
             var p = window.__caPendingPlace;
             if (p && !p.done && p.id===pendingId) {
               var hint = p.confirmHint
-                ? '【二次确认】页面可能弹出确认框，脚本未自动点确认（第二层保障）。请打开 WebView 手动点「确认」完成下单，或在官网关闭二次确认后重试。'
-                : '已点击平台下单，但未捕获 place 响应。请确认在事件合约页。';
+                ? '【二次确认】请手动点确认；将尝试原生+Cookie下单'
+                : 'UI未捕获成功响应，将尝试原生+Cookie下单';
               finish(false, hint+' 步骤:'+steps.join('; '));
               p.done = true;
             }
@@ -1134,7 +1214,7 @@ object HibtWebSession {
           return;
         } catch(e) {
           CaHibt.onLog('UI下单异常 '+e);
-          window.__caPlaceXhrFallback && window.__caPlaceXhrFallback(opt);
+          finish(false, 'UI异常交还原生: '+String(e));
         }
       };
 

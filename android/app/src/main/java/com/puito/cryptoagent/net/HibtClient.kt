@@ -110,6 +110,10 @@ class HibtClient(
             header("x-auth-token", cfg.xAuthToken.ifBlank { tok }.trim().removePrefix("Bearer ").trim())
             header("Authorization", cfg.authToken.ifBlank { tok }.trim())
         }
+        val cookie = cfg.cookieHeader.trim()
+        if (cookie.isNotBlank()) {
+            header("Cookie", cookie)
+        }
         return this
     }
 
