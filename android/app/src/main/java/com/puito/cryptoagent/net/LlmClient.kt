@@ -34,8 +34,8 @@ class LlmClient(
         system: String,
         user: String,
         timeoutSec: Int = 60,
-        maxTokens: Int = 256,
-        temperature: Double = 0.2,
+        maxTokens: Int = 512,
+        temperature: Double = 0.3,
         thinkingEnabled: Boolean = false,
     ): String = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {

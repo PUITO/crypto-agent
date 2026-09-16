@@ -26,6 +26,7 @@ fun ConfigScreen(repo: Repository) {
     var llmModel by remember { mutableStateOf(cur.llmModel) }
     var llmTimeout by remember { mutableStateOf(cur.llmTimeoutSec.toString()) }
     var llmMaxTokens by remember { mutableStateOf(cur.llmMaxTokens.toString()) }
+    var llmTemp by remember { mutableStateOf(cur.llmTemperature.toString()) }
     var llmEvalBars by remember { mutableStateOf(cur.llmEvalMaxBars.toString()) }
     var llmThinking by remember { mutableStateOf(cur.llmThinkingEnabled) }
     var bg by remember { mutableStateOf(cur.backgroundEnabled) }
@@ -58,21 +59,27 @@ fun ConfigScreen(repo: Repository) {
         OutlinedTextField(
             llmMaxTokens,
             { llmMaxTokens = it },
-            label = { Text("max_tokens(评估建议64～128，越小越省)") },
+            label = { Text("max_tokens(原版默认512，可64～2048)") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            llmTemp,
+            { llmTemp = it },
+            label = { Text("temperature(原版默认0.3)") },
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
             llmEvalBars,
             { llmEvalBars = it },
-            label = { Text("评估K线条数(6～48，默认16)") },
+            label = { Text("评估K线条数(原版默认40，范围6～48)") },
             modifier = Modifier.fillMaxWidth(),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("启用思考链thinking(DeepSeek贵，评估建议关)", modifier = Modifier.weight(1f))
+            Text("启用思考链thinking(默认关，开更贵)", modifier = Modifier.weight(1f))
             Switch(llmThinking, { llmThinking = it })
         }
         Text(
-            "省钱：deepseek-flash + 关thinking + 小max_tokens + 少K线。评估prompt已压缩。",
+            "默认已恢复原版评估：prompt完整 + temp0.3 + tokens512 + K线40。仍可在此调小省钱。",
             color = MaterialTheme.colorScheme.secondary,
         )
 
@@ -134,8 +141,9 @@ fun ConfigScreen(repo: Repository) {
                 llmApiKey = llmKey.trim(),
                 llmModel = llmModel.trim(),
                 llmTimeoutSec = llmTimeout.toIntOrNull()?.coerceIn(10, 300) ?: 60,
-                llmMaxTokens = llmMaxTokens.toIntOrNull()?.coerceIn(16, 2048) ?: 96,
-                llmEvalMaxBars = llmEvalBars.toIntOrNull()?.coerceIn(6, 48) ?: 16,
+                llmMaxTokens = llmMaxTokens.toIntOrNull()?.coerceIn(64, 2048) ?: 512,
+                llmTemperature = llmTemp.toFloatOrNull()?.coerceIn(0f, 2f) ?: 0.3f,
+                llmEvalMaxBars = llmEvalBars.toIntOrNull()?.coerceIn(6, 48) ?: 40,
                 llmThinkingEnabled = llmThinking,
                 backgroundEnabled = bg,
                 notifyVibrate = vibrate,
