@@ -72,8 +72,8 @@ object HibtWebSession {
     @Volatile private var lastToken: String = ""
     @Volatile private var lastV: String = ""
     @Volatile private var lastApiBase: String = "https://api-ws.taichuwuji.com"
-    @Volatile private var lastOrigin: String = "https://hibt.com"
-    @Volatile private var lastReferer: String = "https://hibt.com/"
+    @Volatile private var lastOrigin: String = "https://m.hibt.com"
+    @Volatile private var lastReferer: String = "https://m.hibt.com/"
     /** 用户停留过的事件合约下单页（隐藏后再打开不丢） */
     @Volatile var lastOrderPageUrl: String = ""
         private set
@@ -186,12 +186,32 @@ object HibtWebSession {
      * - 否则优先恢复「已记住的事件合约页」
      * - 都没有才打开官网根路径让用户登录后自己点进合约
      */
-    fun openSession(context: Context, forceReload: Boolean = false) {
+    fun openSession(
+        context: Context,
+        forceReload: Boolean = false,
+        homeUrl: String = "https://m.hibt.com/",
+    ) {
+        val home = homeUrl.trim().ifBlank { "https://m.hibt.com/" }.let {
+            if (it.startsWith("http://") || it.startsWith("https://")) it else "https://$it"
+        }
         val wv = obtain(context)
         main.post {
+            try {
+                lastOrigin = android.net.Uri.parse(home).let { u ->
+                    "${u.scheme}://${u.host}".trimEnd('/')
+                }
+                lastReferer = home
+            } catch (_: Exception) {
+                lastOrigin = "https://m.hibt.com"
+                lastReferer = home
+            }
             val cur = wv.url
             when {
-                !forceReload && !cur.isNullOrBlank() && cur != "about:blank" -> {
+                forceReload -> {
+                    _ui.value = _ui.value.copy(status = "打开线路 $home")
+                    wv.loadUrl(home)
+                }
+                !cur.isNullOrBlank() && cur != "about:blank" -> {
                     _ui.value = _ui.value.copy(
                         status = if (looksLikeOrderPage(cur)) "显示中·合约页保活" else "显示中·请进入事件合约下单页",
                         pageUrl = cur,
@@ -203,16 +223,56 @@ object HibtWebSession {
                     wv.loadUrl(lastOrderPageUrl)
                 }
                 else -> {
-                    _ui.value = _ui.value.copy(status = "首次打开官网，登录后请进入事件合约并点「锁定当前为下单页」")
-                    wv.loadUrl("https://hibt.com")
+                    _ui.value = _ui.value.copy(status = "打开线路 $home ，登录后请进入事件合约并锁定下单页")
+                    wv.loadUrl(home)
                 }
             }
         }
     }
 
     @Deprecated("Use openSession")
-    fun openHome(context: Context, url: String = "https://hibt.com") {
-        openSession(context, forceReload = false)
+    fun openHome(context: Context, url: String = "https://m.hibt.com/") {
+        openSession(context, forceReload = false, homeUrl = url)
+    }
+
+    /**
+     * 停止并销毁 WebView（释放内存）。再次打开会重新创建。
+     * 不删除 App 配置；可选保留已锁定的下单页 URL。
+     */
+    fun stopWebView(clearLockedPage: Boolean = false) {
+        main.post {
+            val wv = webView
+            webView = null
+            injectEver = false
+            lastInjectAt = 0L
+            lastToken = ""
+            lastV = ""
+            lastVEnc = ""
+            lastVPlain = ""
+            lastSyncedToken = ""
+            lastSyncedApi = ""
+            if (clearLockedPage) {
+                lastOrderPageUrl = ""
+                prefs?.edit()?.remove("order_page_url")?.apply()
+            }
+            try {
+                (wv?.parent as? ViewGroup)?.removeView(wv)
+            } catch (_: Exception) {}
+            try {
+                wv?.stopLoading()
+                wv?.loadUrl("about:blank")
+                wv?.onPause()
+                wv?.removeAllViews()
+                wv?.destroy()
+            } catch (e: Exception) {
+                appendLog("停止 WebView: ${e.message}")
+            }
+            _ui.value = SessionUi(
+                status = if (clearLockedPage) "WebView 已停止（含锁定页）" else "WebView 已停止",
+                orderPageLocked = if (clearLockedPage) "" else lastOrderPageUrl,
+            )
+            appendLog("WebView 已停止并销毁")
+        }
     }
 
     /** 显式进入/恢复事件合约页（下单前也会自动调用） */
@@ -408,7 +468,7 @@ object HibtWebSession {
             CookieManager.getInstance().removeAllCookies(null)
             CookieManager.getInstance().flush()
             _ui.value = SessionUi(status = "会话已清除，请重新登录")
-            webView?.loadUrl("https://hibt.com")
+            webView?.loadUrl("https://m.hibt.com/")
         }
     }
 

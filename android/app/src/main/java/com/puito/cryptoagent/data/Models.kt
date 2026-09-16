@@ -110,8 +110,10 @@ data class HibtSettings(
     val langCode: String = "zh_CN",
     val clientType: String = "web", // web | h5
     /** 下单 Origin/Referer，与官网一致可降低 405/风控 */
-    val origin: String = "https://hibt.com",
-    val referer: String = "https://hibt.com/",
+    val origin: String = "https://m.hibt.com",
+    val referer: String = "https://m.hibt.com/",
+    /** WebView 起始/线路地址，用于控制访问线路 */
+    val webHomeUrl: String = "https://m.hibt.com/",
     /** WebView Cookie 串，原生下单与手动一致 */
     val cookieHeader: String = "",
     val autoTrade: Boolean = false,

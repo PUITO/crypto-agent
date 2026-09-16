@@ -36,6 +36,9 @@ fun OrderScreen(repo: Repository) {
     var expandLog by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
     var showWeb by remember { mutableStateOf(false) }
+    var homeUrl by remember {
+        mutableStateOf(h.webHomeUrl.ifBlank { "https://m.hibt.com/" })
+    }
 
     val webUi by HibtWebSession.ui.collectAsState()
     val webLogs by HibtWebSession.logs.collectAsState()
@@ -107,11 +110,44 @@ fun OrderScreen(repo: Repository) {
                     if (webUi.lastPlaceMsg.isNotBlank()) {
                         Text("最近下单：${webUi.lastPlaceMsg}", fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
+                    OutlinedTextField(
+                        value = homeUrl,
+                        onValueChange = { homeUrl = it },
+                        label = { Text("线路/起始网址（默认 m.hibt.com）") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                val u = homeUrl.trim().ifBlank { "https://m.hibt.com/" }
+                                homeUrl = u
+                                persist(h.copy(
+                                    webHomeUrl = u,
+                                    origin = try {
+                                        val p = android.net.Uri.parse(u)
+                                        "${p.scheme}://${p.host}"
+                                    } catch (_: Exception) { h.origin },
+                                    referer = u,
+                                ))
+                                toast = "线路已保存"
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("保存线路") }
+                        OutlinedButton(
+                            onClick = {
+                                HibtWebSession.obtain(ctx)
+                                HibtWebSession.openSession(ctx, forceReload = true, homeUrl = homeUrl)
+                                showWeb = true
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("按线路打开") }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         Button(
                             onClick = {
                                 HibtWebSession.obtain(ctx)
-                                HibtWebSession.openSession(ctx, forceReload = false)
+                                HibtWebSession.openSession(ctx, forceReload = false, homeUrl = homeUrl)
                                 showWeb = true
                             },
                             modifier = Modifier.weight(1f),
@@ -171,6 +207,24 @@ fun OrderScreen(repo: Repository) {
                             },
                             modifier = Modifier.weight(1f),
                         ) { Text("清会话") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                showWeb = false
+                                HibtWebSession.stopWebView(clearLockedPage = false)
+                                toast = "WebView 已停止"
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("停止 WebView") }
+                        OutlinedButton(
+                            onClick = {
+                                showWeb = false
+                                HibtWebSession.stopWebView(clearLockedPage = true)
+                                toast = "WebView 已停止并清除锁定页"
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("停止并清锁定页") }
                     }
                 }
             }
