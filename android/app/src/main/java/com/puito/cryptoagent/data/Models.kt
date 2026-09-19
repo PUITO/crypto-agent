@@ -57,6 +57,8 @@ data class SignalNotifyPayload(
     val intervalWinRatePct: Double,
     val intervalTrades: Int = 0,
     val ai: AiEvalResult? = null,
+    /** 1m_confirm | ht_native */
+    val source: String = "1m_confirm",
 )
 
 data class SimTrade(
