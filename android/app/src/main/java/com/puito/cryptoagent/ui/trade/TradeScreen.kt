@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.puito.cryptoagent.data.*
@@ -128,6 +129,12 @@ fun TradeScreen(repo: Repository) {
                                     "买${cfg.buyRules.size} / 卖${cfg.sellRules.size}",
                                     fontSize = 11.sp,
                                 )
+                                Text(
+                                    summarizeRules(cfg),
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    maxLines = 3,
+                                )
                             }
                             Switch(
                                 checked = cfg.enabled,
@@ -177,6 +184,15 @@ fun TradeScreen(repo: Repository) {
     }
 }
 
+
+private fun summarizeRules(cfg: StrategyConfig): String {
+    fun one(r: Rule) = "${r.indicator.label}${r.op.label}${fmtNum(r.value)}(p${r.period})"
+    val b = cfg.buyRules.take(3).joinToString(" | ") { one(it) }
+    val s = cfg.sellRules.take(3).joinToString(" | ") { one(it) }
+    return "买: $b\n卖: $s"
+}
+
+
 @Composable
 private fun EditStrategy(
     cfg: StrategyConfig,
@@ -187,63 +203,204 @@ private fun EditStrategy(
     var title by remember { mutableStateOf(cfg.title) }
     var buy by remember { mutableStateOf(cfg.buyRules) }
     var sell by remember { mutableStateOf(cfg.sellRules) }
-    // refresh when LLM updates cfg
-    LaunchedEffect(cfg.id, cfg.buyRules, cfg.sellRules, cfg.title) {
+    LaunchedEffect(cfg.id, cfg.title, cfg.buyRules, cfg.sellRules) {
         title = cfg.title
         buy = cfg.buyRules
         sell = cfg.sellRules
     }
     Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState())) {
         TextButton(onBack) { Text("← 返回") }
-        OutlinedTextField(title, { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth())
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { onLlmTune(cfg.copy(title = title, buyRules = buy, sellRules = sell)) }) {
-                Text("LLM调优本策略")
-            }
+        OutlinedTextField(
+            title,
+            { title = it },
+            label = { Text("策略标题") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { onLlmTune(cfg.copy(title = title, buyRules = buy, sellRules = sell)) },
+                modifier = Modifier.weight(1f),
+            ) { Text("LLM调优本策略") }
         }
-        Text("买入（OR）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+        Text(
+            "规则参数均可改：指标 / 比较 / 阈值 / 周期(period)。同侧多条为 OR。",
+            color = MaterialTheme.colorScheme.secondary,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+
+        Text("买入条件（满足任一即买）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
         buy.forEachIndexed { i, rule ->
-            RuleEditor(rule) { nr -> buy = buy.toMutableList().also { it[i] = nr } }
+            RuleEditor(
+                index = i + 1,
+                rule = rule,
+                onChange = { nr -> buy = buy.toMutableList().also { it[i] = nr } },
+                onDelete = { buy = buy.toMutableList().also { it.removeAt(i) } },
+            )
         }
         TextButton({ buy = buy + Rule() }) { Text("+ 买入条件") }
-        Text("卖出（OR）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+
+        Text("卖出条件（满足任一即卖）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
         sell.forEachIndexed { i, rule ->
-            RuleEditor(rule) { nr -> sell = sell.toMutableList().also { it[i] = nr } }
+            RuleEditor(
+                index = i + 1,
+                rule = rule,
+                onChange = { nr -> sell = sell.toMutableList().also { it[i] = nr } },
+                onDelete = { sell = sell.toMutableList().also { it.removeAt(i) } },
+            )
         }
-        TextButton({ sell = sell + Rule(IndicatorType.RSI, CompareOp.GT, 70.0) }) { Text("+ 卖出条件") }
+        TextButton({ sell = sell + Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14) }) { Text("+ 卖出条件") }
+
         Spacer(Modifier.height(16.dp))
         Button(
-            { onSave(cfg.copy(title = title, buyRules = buy, sellRules = sell)) },
-            Modifier.fillMaxWidth(),
-        ) { Text("保存") }
+            onClick = {
+                onSave(
+                    cfg.copy(
+                        title = title.ifBlank { cfg.title },
+                        buyRules = buy.ifEmpty { listOf(Rule()) },
+                        sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
+                    ),
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("保存策略") }
     }
 }
 
 @Composable
-private fun RuleEditor(rule: Rule, onChange: (Rule) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        EnumDrop(IndicatorType.entries, rule.indicator, { it.label }) { onChange(rule.copy(indicator = it)) }
-        EnumDrop(CompareOp.entries, rule.op, { it.label }) { onChange(rule.copy(op = it)) }
-        var t by remember(rule.value) { mutableStateOf(rule.value.toString()) }
-        OutlinedTextField(
-            t,
-            {
-                t = it
-                it.toDoubleOrNull()?.let { v -> onChange(rule.copy(value = v)) }
-            },
-            Modifier.width(88.dp),
-            singleLine = true,
-        )
+private fun RuleEditor(
+    index: Int,
+    rule: Rule,
+    onChange: (Rule) -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+    ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("条件 #$index", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = onDelete) { Text("删除") }
+            }
+            Text(
+                "摘要: ${rule.indicator.label} ${rule.op.label} ${fmtNum(rule.value)} · period=${rule.period}",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                Box(Modifier.weight(1.2f)) {
+                    EnumDrop(IndicatorType.entries, rule.indicator, { it.label }) {
+                        onChange(rule.copy(indicator = it))
+                    }
+                }
+                Box(Modifier.weight(1f)) {
+                    EnumDrop(CompareOp.entries, rule.op, { it.label }) {
+                        onChange(rule.copy(op = it))
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                SoftDoubleField(
+                    value = rule.value,
+                    onCommit = { onChange(rule.copy(value = it)) },
+                    label = "阈值",
+                    modifier = Modifier.weight(1f),
+                )
+                SoftIntField(
+                    value = rule.period,
+                    onCommit = { onChange(rule.copy(period = it.coerceIn(2, 200))) },
+                    label = "周期period",
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
     }
+}
+
+/** 数字输入：允许清空/中间态，不强制回填默认值；合法数字才回写 */
+@Composable
+private fun SoftDoubleField(
+    value: Double,
+    onCommit: (Double) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var text by remember { mutableStateOf(fmtNum(value)) }
+    LaunchedEffect(value, focused) {
+        if (!focused) text = fmtNum(value)
+    }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { raw ->
+            val filtered = raw.filter { it.isDigit() || it == '.' || it == '-' }
+            // 最多一个小数点、一个负号且仅在开头
+            val norm = buildString {
+                var dot = false
+                filtered.forEachIndexed { i, c ->
+                    when (c) {
+                        '-' -> if (i == 0 && isEmpty()) append(c)
+                        '.' -> if (!dot) { append(c); dot = true }
+                        else -> append(c)
+                    }
+                }
+            }
+            text = norm
+            norm.toDoubleOrNull()?.let { onCommit(it) }
+        },
+        label = { Text(label) },
+        singleLine = true,
+        modifier = modifier.onFocusChanged { focused = it.isFocused },
+    )
+}
+
+@Composable
+private fun SoftIntField(
+    value: Int,
+    onCommit: (Int) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var text by remember { mutableStateOf(value.toString()) }
+    LaunchedEffect(value, focused) {
+        if (!focused) text = value.toString()
+    }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { raw ->
+            val norm = raw.filter { it.isDigit() }
+            text = norm
+            norm.toIntOrNull()?.let { onCommit(it) }
+        },
+        label = { Text(label) },
+        singleLine = true,
+        modifier = modifier.onFocusChanged { focused = it.isFocused },
+    )
+}
+
+private fun fmtNum(v: Double): String {
+    return if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
 }
 
 @Composable
 private fun <T> EnumDrop(items: List<T>, sel: T, label: (T) -> String, on: (T) -> Unit) {
     var e by remember { mutableStateOf(false) }
     Box {
-        OutlinedButton({ e = true }) { Text(label(sel)) }
+        OutlinedButton(
+            onClick = { e = true },
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+        ) { Text(label(sel), maxLines = 1) }
         DropdownMenu(e, { e = false }) {
-            items.forEach { DropdownMenuItem({ Text(label(it)) }, { on(it); e = false }) }
+            items.forEach {
+                DropdownMenuItem(
+                    text = { Text(label(it)) },
+                    onClick = { on(it); e = false },
+                )
+            }
         }
     }
 }

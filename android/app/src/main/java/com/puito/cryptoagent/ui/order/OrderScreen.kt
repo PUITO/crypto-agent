@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -39,9 +40,20 @@ fun OrderScreen(repo: Repository) {
     var homeUrl by remember {
         mutableStateOf(h.webHomeUrl.ifBlank { "https://m.hibt.com/" })
     }
+    var aiMinText by remember { mutableStateOf(h.aiMinWinRate.toString()) }
+    var amountText by remember { mutableStateOf(h.defaultAmount.toString()) }
+    var timeoutText by remember { mutableStateOf(h.placeTimeoutSec.toString()) }
+    var numFocused by remember { mutableStateOf(false) }
 
     val webUi by HibtWebSession.ui.collectAsState()
     val webLogs by HibtWebSession.logs.collectAsState()
+    LaunchedEffect(h.aiMinWinRate, h.defaultAmount, h.placeTimeoutSec, numFocused) {
+        if (!numFocused) {
+            aiMinText = formatSoftNum(h.aiMinWinRate)
+            amountText = formatSoftNum(h.defaultAmount)
+            timeoutText = h.placeTimeoutSec.toString()
+        }
+    }
 
     // WebView 捕获 token 后刷新界面输入框（与原生设置同源）
     LaunchedEffect(webUi.nativeTokenSyncedAt, webUi.ready) {
@@ -317,26 +329,47 @@ fun OrderScreen(repo: Repository) {
                 Switch(h.aiEvaluate, { persist(h.copy(aiEvaluate = it)) })
             }
             OutlinedTextField(
-                h.aiMinWinRate.toString(),
-                { it.toDoubleOrNull()?.let { v -> persist(h.copy(aiMinWinRate = v)) } },
+                value = aiMinText,
+                onValueChange = { raw ->
+                    aiMinText = filterDecimal(raw)
+                    aiMinText.toDoubleOrNull()?.let { v -> persist(h.copy(aiMinWinRate = v)) }
+                },
                 label = { Text("AI 胜率阈值(%)") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                modifier = Modifier.fillMaxWidth().onFocusChanged {
+                    numFocused = it.isFocused
+                    if (!it.isFocused) aiMinText.toDoubleOrNull()?.let { v -> persist(h.copy(aiMinWinRate = v)) }
+                },
+                singleLine = true,
             )
             OutlinedTextField(
-                h.defaultAmount.toString(),
-                { it.toDoubleOrNull()?.let { v -> persist(h.copy(defaultAmount = v)) } },
+                value = amountText,
+                onValueChange = { raw ->
+                    amountText = filterDecimal(raw)
+                    amountText.toDoubleOrNull()?.let { v -> persist(h.copy(defaultAmount = v)) }
+                },
                 label = { Text("默认下单金额") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                modifier = Modifier.fillMaxWidth().onFocusChanged {
+                    numFocused = it.isFocused
+                    if (!it.isFocused) amountText.toDoubleOrNull()?.let { v -> persist(h.copy(defaultAmount = v)) }
+                },
+                singleLine = true,
             )
             OutlinedTextField(
-                h.placeTimeoutSec.toString(),
-                {
-                    it.toIntOrNull()?.let { v ->
+                value = timeoutText,
+                onValueChange = { raw ->
+                    timeoutText = raw.filter { ch -> ch.isDigit() }
+                    timeoutText.toIntOrNull()?.let { v ->
                         persist(h.copy(placeTimeoutSec = v.coerceIn(10, 180)))
                     }
                 },
                 label = { Text("WebView 下单超时(秒) 10–180，默认45") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                modifier = Modifier.fillMaxWidth().onFocusChanged {
+                    numFocused = it.isFocused
+                    if (!it.isFocused) timeoutText.toIntOrNull()?.let { v ->
+                        persist(h.copy(placeTimeoutSec = v.coerceIn(10, 180)))
+                    }
+                },
+                singleLine = true,
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -506,3 +539,21 @@ fun OrderScreen(repo: Repository) {
         )
     }
 }
+
+
+private fun filterDecimal(raw: String): String {
+    val filtered = raw.filter { it.isDigit() || it == '.' || it == '-' }
+    return buildString {
+        var dot = false
+        filtered.forEachIndexed { i, c ->
+            when (c) {
+                '-' -> if (i == 0 && isEmpty()) append(c)
+                '.' -> if (!dot) { append(c); dot = true }
+                else -> append(c)
+            }
+        }
+    }
+}
+
+private fun formatSoftNum(v: Double): String =
+    if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
