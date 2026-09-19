@@ -993,6 +993,7 @@ class Repository(ctx: Context) {
     suspend fun optimizeStrategyWithLlm(
         baseId: String? = null,
         rounds: Int = 2,
+        userGoal: String? = null,
         onProgress: ((String) -> Unit)? = null,
     ): Result<StrategyOptimizeResult> = withContext(Dispatchers.IO) {
         val s = settings()
@@ -1034,10 +1035,26 @@ class Repository(ctx: Context) {
             onProgress?.invoke("基准回测 胜率${"%.1f".format(st0.winRate * 100)}%")
         }
 
-        var lastFeedback = if (base != null) {
-            "当前策略JSON:\n${strategyToJson(base)}\n回测: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%。请在保持规则可解析前提下提升胜率与交易次数平衡。"
-        } else {
-            "请从零设计一套事件合约短线策略，目标高胜率且交易次数不宜过少。"
+        val goal = userGoal?.trim().orEmpty()
+        if (goal.isNotBlank()) {
+            log.appendLine("用户需求: $goal")
+            onProgress?.invoke("需求: ${goal.take(40)}")
+        }
+        var lastFeedback = buildString {
+            if (goal.isNotBlank()) {
+                appendLine("【用户明确需求——必须优先满足】")
+                appendLine(goal)
+                appendLine("请按需求选择指标与阈值，不要无故退化成仅 RSI+KDJ，除非用户要求。")
+            }
+            if (base != null) {
+                appendLine("当前策略JSON:")
+                appendLine(strategyToJson(base))
+                appendLine("回测: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%。在满足用户需求前提下提升胜率与交易次数平衡。")
+            } else if (goal.isBlank()) {
+                appendLine("请从零设计事件合约短线策略，高胜率且交易不宜过少；可组合 MA/EMA/BOLL/RSI/MACD 等，避免只会 RSI+KDJ。")
+            } else {
+                appendLine("请严格按用户需求从零设计策略 JSON。")
+            }
         }
 
         val schema = """
@@ -1066,7 +1083,7 @@ $schema
 $marketBrief
 
 【任务】第${round}轮优化（事件合约视角，周期=${s.interval}）
-$lastFeedback
+${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
 
 请输出改进后的完整策略JSON。
 """.trimIndent()

@@ -26,6 +26,8 @@ fun TradeScreen(repo: Repository) {
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf<String?>(null) }
     var report by remember { mutableStateOf<String?>(null) }
+    var goalDialog by remember { mutableStateOf<Pair<String?, String>?>(null) } // baseId to title
+    var goalDraft by remember { mutableStateOf("") }
 
     if (editing != null) {
         EditStrategy(
@@ -39,8 +41,7 @@ fun TradeScreen(repo: Repository) {
                 list = n
                 editing = null
             },
-            onLlmTune = { cfg ->
-                // 先落盘再优化，避免编辑器未保存规则
+            onLlmTune = { cfg, goal ->
                 val n = list.toMutableList()
                 val i = n.indexOfFirst { it.id == cfg.id }
                 if (i >= 0) n[i] = cfg else n.add(cfg)
@@ -50,7 +51,9 @@ fun TradeScreen(repo: Repository) {
                     busy = true
                     progress = "基于「${cfg.title}」LLM优化中…"
                     report = null
-                    val r = repo.optimizeStrategyWithLlm(baseId = cfg.id, rounds = 2) { progress = it }
+                    val r = repo.optimizeStrategyWithLlm(
+                        baseId = cfg.id, rounds = 2, userGoal = goal,
+                    ) { progress = it }
                     r.onSuccess {
                         list = repo.strategies()
                         report = it.report
@@ -82,20 +85,8 @@ fun TradeScreen(repo: Repository) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
-                    scope.launch {
-                        busy = true
-                        progress = "LLM 生成新策略…"
-                        report = null
-                        val r = repo.optimizeStrategyWithLlm(baseId = null, rounds = 2) { progress = it }
-                        r.onSuccess {
-                            list = repo.strategies()
-                            report = it.report
-                        }.onFailure {
-                            report = "失败: ${it.message}"
-                        }
-                        busy = false
-                        progress = null
-                    }
+                    goalDraft = ""
+                    goalDialog = null to "生成新策略"
                 },
                 enabled = !busy,
                 modifier = Modifier.weight(1f),
@@ -112,6 +103,57 @@ fun TradeScreen(repo: Repository) {
                     Text(it, fontSize = 11.sp)
                 }
             }
+        }
+        if (goalDialog != null) {
+            val (baseId, title) = goalDialog!!
+            AlertDialog(
+                onDismissRequest = { if (!busy) goalDialog = null },
+                title = { Text(if (baseId == null) "生成策略 · 填写需求" else "优化「$title」· 填写需求") },
+                text = {
+                    Column {
+                        Text("请说明市场偏好、指标、风格等（必填，避免默认 RSI+KDJ）", fontSize = 12.sp)
+                        OutlinedTextField(
+                            value = goalDraft,
+                            onValueChange = { goalDraft = it },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp),
+                            placeholder = {
+                                Text("例：震荡布林+RSI；或趋势 MA 金叉死叉；减少假信号…")
+                            },
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = !busy && goalDraft.trim().length >= 4,
+                        onClick = {
+                            val goal = goalDraft.trim()
+                            val id = baseId
+                            goalDialog = null
+                            scope.launch {
+                                busy = true
+                                progress = if (id == null) "生成中…" else "优化中…"
+                                report = null
+                                val r = repo.optimizeStrategyWithLlm(
+                                    baseId = id,
+                                    rounds = 2,
+                                    userGoal = goal,
+                                ) { progress = it }
+                                r.onSuccess {
+                                    list = repo.strategies()
+                                    report = it.report
+                                }.onFailure {
+                                    report = "失败: ${it.message}"
+                                }
+                                busy = false
+                                progress = null
+                            }
+                        },
+                    ) { Text("开始") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { goalDialog = null }, enabled = !busy) { Text("取消") }
+                },
+            )
         }
         LazyColumn {
             items(list, key = { it.id }) { cfg ->
@@ -152,22 +194,8 @@ fun TradeScreen(repo: Repository) {
                             TextButton({ editing = cfg }) { Text("编辑") }
                             TextButton(
                                 onClick = {
-                                    scope.launch {
-                                        busy = true
-                                        progress = "优化「${cfg.title}」…"
-                                        report = null
-                                        val r = repo.optimizeStrategyWithLlm(baseId = cfg.id, rounds = 2) {
-                                            progress = it
-                                        }
-                                        r.onSuccess {
-                                            list = repo.strategies()
-                                            report = it.report
-                                        }.onFailure {
-                                            report = "失败: ${it.message}"
-                                        }
-                                        busy = false
-                                        progress = null
-                                    }
+                                    goalDraft = ""
+                                    goalDialog = cfg.id to cfg.title
                                 },
                                 enabled = !busy,
                             ) { Text("LLM优化") }
@@ -198,11 +226,12 @@ private fun EditStrategy(
     cfg: StrategyConfig,
     onBack: () -> Unit,
     onSave: (StrategyConfig) -> Unit,
-    onLlmTune: (StrategyConfig) -> Unit,
+    onLlmTune: (StrategyConfig, String) -> Unit,
 ) {
     var title by remember { mutableStateOf(cfg.title) }
     var buy by remember { mutableStateOf(cfg.buyRules) }
     var sell by remember { mutableStateOf(cfg.sellRules) }
+    var tuneGoal by remember { mutableStateOf("") }
     LaunchedEffect(cfg.id, cfg.title, cfg.buyRules, cfg.sellRules) {
         title = cfg.title
         buy = cfg.buyRules
@@ -217,9 +246,22 @@ private fun EditStrategy(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
+        OutlinedTextField(
+            value = tuneGoal,
+            onValueChange = { tuneGoal = it },
+            label = { Text("调优需求（必填）") },
+            placeholder = { Text("例：加强趋势过滤，少假信号…") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 2,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(
-                onClick = { onLlmTune(cfg.copy(title = title, buyRules = buy, sellRules = sell)) },
+                onClick = {
+                    if (tuneGoal.trim().length >= 4) {
+                        onLlmTune(cfg.copy(title = title, buyRules = buy, sellRules = sell), tuneGoal.trim())
+                    }
+                },
+                enabled = tuneGoal.trim().length >= 4,
                 modifier = Modifier.weight(1f),
             ) { Text("LLM调优本策略") }
         }

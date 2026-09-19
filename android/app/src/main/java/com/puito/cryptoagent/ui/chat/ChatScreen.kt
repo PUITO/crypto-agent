@@ -60,8 +60,16 @@ private val templates = listOf(
     ChipTpl("清除绘图", TplAction.SEND_CMD, "清除绘图"),
     ChipTpl("打开MA20", TplAction.SEND_CMD, "打开MA20"),
     ChipTpl("列出策略", TplAction.SEND_CMD, "列出策略"),
-    ChipTpl("LLM优化当前策略", TplAction.SEND_CMD, "LLM优化策略"),
-    ChipTpl("LLM生成新策略", TplAction.SEND_CMD, "LLM生成策略"),
+    ChipTpl(
+        "LLM优化当前策略",
+        TplAction.FILL_MARKET,
+        "优化策略：\n需求：（例如：更少假信号、加强趋势过滤、保留现有RSI思路）",
+    ),
+    ChipTpl(
+        "LLM生成新策略",
+        TplAction.FILL_MARKET,
+        "生成策略：\n需求：（例如：震荡市布林带+RSI；或趋势市MA金叉死叉；不要默认只做RSI+KDJ）",
+    ),
 )
 
 @Composable
@@ -98,29 +106,42 @@ fun ChatScreen(repo: Repository) {
         sendJob?.cancel()
         sendJob = scope.launch {
             try {
-                val reply = when (body.trim()) {
-                    "LLM优化策略" -> {
-                        val en = repo.strategies().find { it.enabled } ?: repo.strategies().firstOrNull()
-                        if (en == null) {
-                            "没有可优化的策略，请先在策略页新建或到设置配置 LLM。"
+                val trimmed = body.trim()
+                val reply = when {
+                    trimmed == "LLM优化策略" || trimmed == "优化策略" || trimmed == "优化策略：" ||
+                        trimmed.startsWith("优化策略：") || trimmed.startsWith("优化策略:") ||
+                        trimmed.startsWith("LLM优化策略") -> {
+                        val goal = extractStrategyGoal(trimmed, listOf("优化策略：", "优化策略:", "优化策略", "LLM优化策略"))
+                        if (goal.isBlank() || goal.startsWith("（") || goal.startsWith("(") || "例如" in goal && goal.length < 40) {
+                            "请先写清优化需求再发送。\n模板示例：\n优化策略：减少假突破，加入均线趋势过滤，目标胜率更高"
                         } else {
-                            msgs.add(Msg("assistant", "开始优化「${en.title}」…"))
-                            val r = repo.optimizeStrategyWithLlm(baseId = en.id, rounds = 2) { p ->
-                                // progress only in last assistant bubble hard; append lightly
+                            val en = repo.strategies().find { it.enabled } ?: repo.strategies().firstOrNull()
+                            if (en == null) {
+                                "没有可优化的策略，请先在策略页新建。"
+                            } else {
+                                msgs.add(Msg("assistant", "按需求优化「${en.title}」…\n需求：$goal"))
+                                repo.optimizeStrategyWithLlm(baseId = en.id, rounds = 2, userGoal = goal).fold(
+                                    onSuccess = { "【策略优化完成】\n${it.report}" },
+                                    onFailure = { "优化失败: ${it.message}" },
+                                )
                             }
-                            r.fold(
-                                onSuccess = { "【策略优化完成】\n${it.report}" },
-                                onFailure = { "优化失败: ${it.message}" },
-                            )
                         }
                     }
-                    "LLM生成策略" -> {
-                        msgs.add(Msg("assistant", "开始生成新策略…"))
-                        val r = repo.optimizeStrategyWithLlm(baseId = null, rounds = 2)
-                        r.fold(
-                            onSuccess = { "【新策略已创建】\n${it.report}" },
-                            onFailure = { "生成失败: ${it.message}" },
-                        )
+                    trimmed == "LLM生成策略" || trimmed == "生成策略" || trimmed == "生成策略：" ||
+                        trimmed.startsWith("生成策略：") || trimmed.startsWith("生成策略:") ||
+                        trimmed.startsWith("LLM生成策略") -> {
+                        val goal = extractStrategyGoal(trimmed, listOf("生成策略：", "生成策略:", "生成策略", "LLM生成策略"))
+                        if (goal.isBlank() || goal.startsWith("（") || goal.startsWith("(") ||
+                            ("例如" in goal && "需求" in trimmed && goal.length < 48)
+                        ) {
+                            "请先写清策略需求再发送（不要空着默认跑）。\n模板示例：\n生成策略：震荡市用布林带中轨+RSI超卖超买；避免只做RSI+KDJ\n生成策略：趋势跟踪，MA20/MA60 金叉死叉为主"
+                        } else {
+                            msgs.add(Msg("assistant", "按需求生成策略…\n需求：$goal"))
+                            repo.optimizeStrategyWithLlm(baseId = null, rounds = 2, userGoal = goal).fold(
+                                onSuccess = { "【新策略已创建】\n${it.report}" },
+                                onFailure = { "生成失败: ${it.message}" },
+                            )
+                        }
                     }
                     else -> {
                         val bars = if (attach) marketBars else 0
@@ -158,8 +179,9 @@ fun ChatScreen(repo: Repository) {
                 sendOnce(tpl.payload, attach = true)
             }
             TplAction.FILL_MARKET -> {
-                // 只填充，不发送
-                withMarket = true
+                // 只填充，不发送；策略需求类不强制附带行情（优化函数会自己拉K线）
+                val isStrategy = tpl.payload.startsWith("生成策略") || tpl.payload.startsWith("优化策略")
+                withMarket = !isStrategy
                 input = tpl.payload
             }
         }
@@ -263,4 +285,27 @@ fun ChatScreen(repo: Repository) {
             )
         }
     }
+}
+
+
+private fun extractStrategyGoal(body: String, prefixes: List<String>): String {
+    var t = body.trim()
+    // 去掉首行前缀
+    for (p in prefixes.sortedByDescending { it.length }) {
+        if (t.startsWith(p)) {
+            t = t.removePrefix(p).trim()
+            break
+        }
+    }
+    // 支持「需求：」多行
+    val lines = t.lines().map { it.trim() }.filter { it.isNotEmpty() }
+    val joined = lines.joinToString(" ")
+    val afterNeed = Regex("需求\s*[:：]\s*(.*)", RegexOption.DOT_MATCHES_ALL).find(t)
+        ?.groupValues?.getOrNull(1)?.trim()
+    val goal = (afterNeed ?: joined).trim()
+    // 去掉占位提示句
+    return goal
+        .replace(Regex("（例如[^）]*）"), "")
+        .replace(Regex("\(例如[^)]*\)"), "")
+        .trim()
 }
