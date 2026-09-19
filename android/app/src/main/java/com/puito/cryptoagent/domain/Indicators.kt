@@ -28,6 +28,18 @@ object Indicators {
         return out
     }
 
+    /** 0=下轨 50=中轨 100=上轨；带宽为0时返回50 */
+    fun bollPct(closes: List<Double>, period: Int = 20): List<Double?> {
+        val (upper, _, lower) = boll(closes, period)
+        return closes.indices.map { i ->
+            val u = upper.getOrNull(i) ?: return@map null
+            val l = lower.getOrNull(i) ?: return@map null
+            val c = closes[i]
+            val w = u - l
+            if (w == 0.0) 50.0 else ((c - l) / w * 100.0).coerceIn(-20.0, 120.0)
+        }
+    }
+
     fun boll(closes: List<Double>, period: Int = 20): Triple<List<Double?>, List<Double?>, List<Double?>> {
         val mid = sma(closes, period)
         val upper = MutableList<Double?>(closes.size) { null }

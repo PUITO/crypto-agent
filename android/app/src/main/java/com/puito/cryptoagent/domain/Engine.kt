@@ -19,6 +19,17 @@ object StrategyEngine {
                     IndicatorType.MA -> Indicators.sma(closes, period).getOrNull(i)
                     IndicatorType.EMA -> Indicators.ema(closes, period).getOrNull(i)
                     IndicatorType.BOLL -> Indicators.boll(closes, period).second.getOrNull(i)
+                    IndicatorType.BOLL_PCT -> Indicators.bollPct(closes, period).getOrNull(i)
+                    IndicatorType.MA_BIAS -> {
+                        val ma = Indicators.sma(closes, period).getOrNull(i) ?: return@any false
+                        if (ma == 0.0) return@any false
+                        (closes[i] / ma - 1.0) * 100.0
+                    }
+                    IndicatorType.EMA_BIAS -> {
+                        val ema = Indicators.ema(closes, period).getOrNull(i) ?: return@any false
+                        if (ema == 0.0) return@any false
+                        (closes[i] / ema - 1.0) * 100.0
+                    }
                 } ?: return@any false
                 when (r.op) {
                     CompareOp.GT -> v > r.value

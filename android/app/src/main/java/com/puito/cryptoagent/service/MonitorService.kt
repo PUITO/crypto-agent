@@ -47,11 +47,10 @@ class MonitorService : Service() {
             while (isActive) {
                 try {
                     val st = repo.settings()
-                    if (!st.backgroundEnabled) {
-                        update("后台已关闭")
-                    } else if (!st.strategyRunning) {
-                        update("${st.symbol} · 策略暂停")
+                    if (!st.strategyRunning) {
+                        update("${st.symbol} · 策略暂停（无信号通知）")
                     } else {
+                        // 策略运行即 poll → 通知+AI（不再因 backgroundEnabled=false 停掉信号）
                         runCatching { HibtWebSession.peek()?.let { HibtWebSession.wakeIfNeeded(it) } }
                         val fresh = repo.poll()
                         fresh.forEach {

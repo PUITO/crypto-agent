@@ -228,7 +228,7 @@ class Repository(ctx: Context) {
 
     /** 收盘后允许的最大延迟；1m 主源更严，避免过期推送 */
     private fun maxLateMs(interval: String): Long = when (interval) {
-        "1m" -> 50_000L
+        "1m" -> 120_000L
         "5m" -> 90_000L
         "10m" -> 120_000L
         "30m" -> 180_000L
@@ -261,8 +261,8 @@ class Repository(ctx: Context) {
         val last = window.last().close
         // 软确认：不与近端均线强烈逆向即可
         return when (side) {
-            "B" -> last >= ma * 0.997
-            "S" -> last <= ma * 1.003
+            "B" -> last >= ma * 0.992
+            "S" -> last <= ma * 1.008
             else -> true
         }
     }
@@ -1058,12 +1058,18 @@ class Repository(ctx: Context) {
         }
 
         val schema = """
-支持指标 indicator: RSI, MACD, KDJ_J, CLOSE, MA, EMA, BOLL
+支持指标 indicator（优先用相对指标，禁止用绝对价格当阈值）:
+- RSI: 0-100
+- MACD: MACD柱
+- KDJ_J: J值
+- BOLL_PCT: 收盘在布林带位置，0=下轨 50=中轨 100=上轨（震荡市必用这个，不要用BOLL绝对值）
+- MA_BIAS / EMA_BIAS: (价/均线-1)*100，如 -1 表示低1%
+- MA/EMA/BOLL/CLOSE: 仅特殊情况，value不要填绝对币价
 比较 op: GT, GTE, LT, LTE
-period: 2-200（RSI/MA/EMA/BOLL 有意义）
-同侧多条规则为 OR。
-必须只输出一个 JSON 对象，不要 markdown，格式:
-{"title":"名称","buyRules":[{"indicator":"RSI","op":"LT","value":30,"period":14}],"sellRules":[{"indicator":"RSI","op":"GT","value":70,"period":14}]}
+period: 2-200
+同侧多条规则为 OR，可组合例如 买: BOLL_PCT LT 15 OR RSI LT 30
+必须只输出一个 JSON，不要 markdown:
+{"title":"名称","buyRules":[{"indicator":"BOLL_PCT","op":"LT","value":15,"period":20}],"sellRules":[{"indicator":"BOLL_PCT","op":"GT","value":85,"period":20}]}
 """.trimIndent()
 
         val marketBrief = buildSignalMarketBrief(
@@ -1182,12 +1188,19 @@ ${strategyToJson(parsed)}
                         it.name == ind || it.name == ind.replace("KDJJ", "KDJ_J") ||
                             it.label == r.get("indicator")?.asString
                     } ?: when {
+                        ind.contains("BOLL_PCT") || ind.contains("BOLLPTC") ||
+                            ind.contains("布林位置") || ind.contains("PERCENT") && ind.contains("BOLL") ->
+                            IndicatorType.BOLL_PCT
+                        ind.contains("MA_BIAS") || ind.contains("MABIAS") || ind.contains("MA偏离") ->
+                            IndicatorType.MA_BIAS
+                        ind.contains("EMA_BIAS") || ind.contains("EMABIAS") || ind.contains("EMA偏离") ->
+                            IndicatorType.EMA_BIAS
                         ind.contains("RSI") -> IndicatorType.RSI
                         ind.contains("MACD") -> IndicatorType.MACD
                         ind.contains("KDJ") -> IndicatorType.KDJ_J
                         ind.contains("EMA") -> IndicatorType.EMA
                         ind.contains("MA") -> IndicatorType.MA
-                        ind.contains("BOLL") -> IndicatorType.BOLL
+                        ind.contains("BOLL") -> IndicatorType.BOLL_PCT // 旧名BOLL默认改为相对位置
                         ind.contains("CLOSE") || ind.contains("收盘") -> IndicatorType.CLOSE
                         else -> return@mapNotNull null
                     }

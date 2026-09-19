@@ -89,7 +89,8 @@ fun HomeScreen(repo: Repository) {
                         repo.resetNotificationState()
                         scope.launch {
                             repo.refreshMarket(); tick++
-                            if (ns.backgroundEnabled) MonitorService.start(ctx)
+                            // 通知/AI评估依赖前台服务 poll；策略启动即拉起（与「后台开关」解耦）
+                            MonitorService.start(ctx)
                         }
                     } else {
                         MonitorService.stop(ctx); tick++

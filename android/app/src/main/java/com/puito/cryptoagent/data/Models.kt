@@ -17,8 +17,20 @@ data class Candle(
 )
 
 enum class IndicatorType(val label: String) {
-    RSI("RSI"), MACD("MACD柱"), KDJ_J("KDJ-J"), CLOSE("收盘价"),
-    MA("MA"), EMA("EMA"), BOLL("布林带")
+    RSI("RSI"),
+    MACD("MACD柱"),
+    KDJ_J("KDJ-J"),
+    CLOSE("收盘价"),
+    MA("MA均线值"),
+    EMA("EMA均线值"),
+    /** 收盘价在布林带中的位置 0=下轨 50=中轨 100=上轨（震荡市推荐） */
+    BOLL_PCT("布林位置%"),
+    /** 兼容旧策略：按布林中轨绝对值（不推荐） */
+    BOLL("布林中轨"),
+    /** (收盘/MA-1)*100，如 -1 表示低于MA约1% */
+    MA_BIAS("MA偏离%"),
+    /** (收盘/EMA-1)*100 */
+    EMA_BIAS("EMA偏离%"),
 }
 
 enum class CompareOp(val label: String) {
