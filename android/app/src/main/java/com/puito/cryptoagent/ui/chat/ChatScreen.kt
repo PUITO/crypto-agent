@@ -300,12 +300,11 @@ private fun extractStrategyGoal(body: String, prefixes: List<String>): String {
     // 支持「需求：」多行
     val lines = t.lines().map { it.trim() }.filter { it.isNotEmpty() }
     val joined = lines.joinToString(" ")
-    val afterNeed = Regex("需求\s*[:：]\s*(.*)", RegexOption.DOT_MATCHES_ALL).find(t)
+    val afterNeed = Regex("""需求\s*[:：]\s*(.*)""", RegexOption.DOT_MATCHES_ALL).find(t)
         ?.groupValues?.getOrNull(1)?.trim()
     val goal = (afterNeed ?: joined).trim()
-    // 去掉占位提示句
     return goal
         .replace(Regex("（例如[^）]*）"), "")
-        .replace(Regex("\(例如[^)]*\)"), "")
+        .replace(Regex("""\(例如[^)]*\)"""), "")
         .trim()
 }
