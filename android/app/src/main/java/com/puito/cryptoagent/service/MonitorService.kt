@@ -72,7 +72,7 @@ class MonitorService : Service() {
                 } catch (e: Exception) {
                     update("监控异常: ${e.message?.take(40)}")
                 }
-                delay(8_000L) // 1m 主源：约 8s 一轮
+                delay(15_000L) // 降频减轻卡顿，约 15s 一轮
             }
         }
     }

@@ -242,6 +242,28 @@ fun Chart(
                 val widthPx = with(density) { maxWidth.toPx() }
                 val heightPx = with(density) { maxHeight.toPx() }
 
+                // 指标只算一次（K线/开关变化才重算），避免每次重绘/滑动重算布林
+                val closesAll = remember(candles) { candles.map { it.close } }
+                val indCache = remember(candles, indicators) {
+                    val map = LinkedHashMap<String, Any>()
+                    for (ind in indicators) {
+                        if (!ind.enabled) continue
+                        val key = ind.id + "|" + ind.period
+                        when {
+                            ind.name.startsWith("BOLL", true) || ind.id.startsWith("boll") -> {
+                                map[key] = Indicators.boll(closesAll, ind.period)
+                            }
+                            ind.name.startsWith("EMA", true) || ind.id.startsWith("ema") -> {
+                                map[key] = Indicators.ema(closesAll, ind.period)
+                            }
+                            else -> {
+                                map[key] = Indicators.sma(closesAll, ind.period)
+                            }
+                        }
+                    }
+                    map
+                }
+
                 // 边距：给 Y 轴文字、X 轴时间留足空间，避免被裁切
                 val padL = 80f
                 val padR = 16f
@@ -309,34 +331,33 @@ fun Chart(
                         val endI = (startI + visibleCount).coerceAtMost(candles.size)
                         if (startI >= endI) return@Canvas
                         val win = candles.subList(startI, endI)
-                        val closesAll = candles.map { it.close }
                         // 亚像素偏移：平滑滑动不跳动
                         val pixelShift = (startF - startI) * barW
 
                         var maxH = win.maxOf { it.high }
                         var minL = win.minOf { it.low }
                         indicators.forEach { ind ->
-                            val series = when {
-                                ind.name.startsWith("MA", true) || ind.id.startsWith("ma") ->
-                                    Indicators.sma(closesAll, ind.period)
-                                ind.name.startsWith("EMA", true) || ind.id.startsWith("ema") ->
-                                    Indicators.ema(closesAll, ind.period)
-                                ind.name.startsWith("BOLL", true) || ind.id.startsWith("boll") -> {
-                                    val (u, m, l) = Indicators.boll(closesAll, ind.period)
-                                    listOf(u, m, l).forEach { ser ->
+                            val key = ind.id + "|" + ind.period
+                            when (val cached = indCache[key]) {
+                                is Triple<*, *, *> -> {
+                                    @Suppress("UNCHECKED_CAST")
+                                    val t = cached as Triple<List<Double?>, List<Double?>, List<Double?>>
+                                    listOf(t.first, t.second, t.third).forEach { ser ->
                                         for (i in startI until endI) {
                                             ser.getOrNull(i)?.let { v ->
                                                 maxH = max(maxH, v); minL = min(minL, v)
                                             }
                                         }
                                     }
-                                    emptyList()
                                 }
-                                else -> emptyList()
-                            }
-                            for (i in startI until endI) {
-                                series.getOrNull(i)?.let { v ->
-                                    maxH = max(maxH, v); minL = min(minL, v)
+                                is List<*> -> {
+                                    @Suppress("UNCHECKED_CAST")
+                                    val series = cached as List<Double?>
+                                    for (i in startI until endI) {
+                                        series.getOrNull(i)?.let { v ->
+                                            maxH = max(maxH, v); minL = min(minL, v)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -397,17 +418,19 @@ fun Chart(
                         }
                         indicators.forEach { ind ->
                             val col = Color(ind.colorArgb)
-                            when {
-                                ind.name.startsWith("BOLL", true) || ind.id.startsWith("boll") -> {
-                                    val (u, m, l) = Indicators.boll(closesAll, ind.period)
-                                    drawSeries(u, col.copy(alpha = 0.7f))
-                                    drawSeries(m, col)
-                                    drawSeries(l, col.copy(alpha = 0.7f))
+                            val key = ind.id + "|" + ind.period
+                            when (val cached = indCache[key]) {
+                                is Triple<*, *, *> -> {
+                                    @Suppress("UNCHECKED_CAST")
+                                    val t = cached as Triple<List<Double?>, List<Double?>, List<Double?>>
+                                    drawSeries(t.first, col.copy(alpha = 0.7f))
+                                    drawSeries(t.second, col)
+                                    drawSeries(t.third, col.copy(alpha = 0.7f))
                                 }
-                                ind.name.startsWith("EMA", true) || ind.id.startsWith("ema") ->
-                                    drawSeries(Indicators.ema(closesAll, ind.period), col)
-                                ind.name.startsWith("RSI", true) -> Unit
-                                else -> drawSeries(Indicators.sma(closesAll, ind.period), col)
+                                is List<*> -> {
+                                    @Suppress("UNCHECKED_CAST")
+                                    drawSeries(cached as List<Double?>, col)
+                                }
                             }
                         }
 

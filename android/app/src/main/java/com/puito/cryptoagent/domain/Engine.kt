@@ -4,33 +4,52 @@ import com.puito.cryptoagent.data.*
 import java.util.UUID
 
 object StrategyEngine {
+    /**
+     * 先按 (指标,周期) 只算一遍序列，再扫 K 线。
+     * 旧实现每根 K 线都重算 RSI/布林等，叠加指标后 O(n²)～O(n³) 导致严重卡顿。
+     */
     fun signals(candles: List<Candle>, cfg: StrategyConfig): List<SignalMark> {
         if (candles.isEmpty()) return emptyList()
         val closes = candles.map { it.close }
-        val out = mutableListOf<SignalMark>()
-        for (i in candles.indices) {
-            fun side(rules: List<Rule>): Boolean = rules.any { r ->
-                val period = r.period.coerceIn(2, 200)
-                val v = when (r.indicator) {
-                    IndicatorType.RSI -> Indicators.rsi(closes, period).getOrNull(i)
-                    IndicatorType.MACD -> Indicators.macdHist(closes).getOrNull(i)
-                    IndicatorType.KDJ_J -> Indicators.kdjJ(candles).getOrNull(i)
-                    IndicatorType.CLOSE -> closes[i]
-                    IndicatorType.MA -> Indicators.sma(closes, period).getOrNull(i)
-                    IndicatorType.EMA -> Indicators.ema(closes, period).getOrNull(i)
-                    IndicatorType.BOLL -> Indicators.boll(closes, period).second.getOrNull(i)
-                    IndicatorType.BOLL_PCT -> Indicators.bollPct(closes, period).getOrNull(i)
+        val rules = cfg.buyRules + cfg.sellRules
+        val cache = HashMap<String, List<Double?>>()
+        fun series(r: Rule): List<Double?> {
+            val period = r.period.coerceIn(2, 200)
+            val key = "${r.indicator.name}|$period"
+            return cache.getOrPut(key) {
+                when (r.indicator) {
+                    IndicatorType.RSI -> Indicators.rsi(closes, period)
+                    IndicatorType.MACD -> Indicators.macdHist(closes)
+                    IndicatorType.KDJ_J -> Indicators.kdjJ(candles)
+                    IndicatorType.CLOSE -> closes.map { it as Double? }
+                    IndicatorType.MA -> Indicators.sma(closes, period)
+                    IndicatorType.EMA -> Indicators.ema(closes, period)
+                    IndicatorType.BOLL -> Indicators.boll(closes, period).second
+                    IndicatorType.BOLL_PCT -> Indicators.bollPct(closes, period)
                     IndicatorType.MA_BIAS -> {
-                        val ma = Indicators.sma(closes, period).getOrNull(i) ?: return@any false
-                        if (ma == 0.0) return@any false
-                        (closes[i] / ma - 1.0) * 100.0
+                        val ma = Indicators.sma(closes, period)
+                        closes.indices.map { i ->
+                            val m = ma.getOrNull(i) ?: return@map null
+                            if (m == 0.0) null else (closes[i] / m - 1.0) * 100.0
+                        }
                     }
                     IndicatorType.EMA_BIAS -> {
-                        val ema = Indicators.ema(closes, period).getOrNull(i) ?: return@any false
-                        if (ema == 0.0) return@any false
-                        (closes[i] / ema - 1.0) * 100.0
+                        val ema = Indicators.ema(closes, period)
+                        closes.indices.map { i ->
+                            val m = ema.getOrNull(i) ?: return@map null
+                            if (m == 0.0) null else (closes[i] / m - 1.0) * 100.0
+                        }
                     }
-                } ?: return@any false
+                }
+            }
+        }
+        // 预热所有规则序列
+        rules.forEach { series(it) }
+
+        val out = mutableListOf<SignalMark>()
+        for (i in candles.indices) {
+            fun side(rs: List<Rule>): Boolean = rs.any { r ->
+                val v = series(r).getOrNull(i) ?: return@any false
                 when (r.op) {
                     CompareOp.GT -> v > r.value
                     CompareOp.GTE -> v >= r.value

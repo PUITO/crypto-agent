@@ -44,13 +44,37 @@ object Indicators {
         val mid = sma(closes, period)
         val upper = MutableList<Double?>(closes.size) { null }
         val lower = MutableList<Double?>(closes.size) { null }
-        for (i in period - 1 until closes.size) {
+        if (closes.size < period) return Triple(upper, mid, lower)
+        // 滚动平方和：O(n) 代替每窗口 O(period) 的 std
+        var sum = 0.0
+        var sumSq = 0.0
+        for (i in 0 until period) {
+            val x = closes[i]
+            sum += x
+            sumSq += x * x
+        }
+        fun stdFrom(s: Double, sq: Double): Double {
+            val mean = s / period
+            val var_ = (sq / period - mean * mean).coerceAtLeast(0.0)
+            return kotlin.math.sqrt(var_)
+        }
+        run {
+            val m = mid[period - 1]
+            if (m != null) {
+                val sd = stdFrom(sum, sumSq)
+                upper[period - 1] = m + 2 * sd
+                lower[period - 1] = m - 2 * sd
+            }
+        }
+        for (i in period until closes.size) {
+            val xin = closes[i]
+            val xout = closes[i - period]
+            sum += xin - xout
+            sumSq += xin * xin - xout * xout
             val m = mid[i] ?: continue
-            val slice = closes.subList(i - period + 1, i + 1)
-            val mean = slice.average()
-            val std = kotlin.math.sqrt(slice.map { (it - mean) * (it - mean) }.average())
-            upper[i] = m + 2 * std
-            lower[i] = m - 2 * std
+            val sd = stdFrom(sum, sumSq)
+            upper[i] = m + 2 * sd
+            lower[i] = m - 2 * sd
         }
         return Triple(upper, mid, lower)
     }
