@@ -63,12 +63,12 @@ private val templates = listOf(
     ChipTpl(
         "LLM优化当前策略",
         TplAction.FILL_MARKET,
-        "优化策略：\n需求：（例如：更少假信号、加强趋势过滤、保留现有RSI思路）",
+        "优化策略：\n需求：",
     ),
     ChipTpl(
         "LLM生成新策略",
         TplAction.FILL_MARKET,
-        "生成策略：\n需求：（例如：震荡市布林带+RSI；或趋势市MA金叉死叉；不要默认只做RSI+KDJ）",
+        "生成策略：\n需求：",
     ),
 )
 
@@ -112,8 +112,8 @@ fun ChatScreen(repo: Repository) {
                         trimmed.startsWith("优化策略：") || trimmed.startsWith("优化策略:") ||
                         trimmed.startsWith("LLM优化策略") -> {
                         val goal = extractStrategyGoal(trimmed, listOf("优化策略：", "优化策略:", "优化策略", "LLM优化策略"))
-                        if (goal.isBlank() || goal.startsWith("（") || goal.startsWith("(") || "例如" in goal && goal.length < 40) {
-                            "请先写清优化需求再发送。\n模板示例：\n优化策略：减少假突破，加入均线趋势过滤，目标胜率更高"
+                        if (isBlankStrategyGoal(goal)) {
+                            "请先写清优化需求再发送。\n在「需求：」后面直接写，例如：\n优化策略：\n需求：减少假突破，加入均线趋势过滤"
                         } else {
                             val en = repo.strategies().find { it.enabled } ?: repo.strategies().firstOrNull()
                             if (en == null) {
@@ -131,10 +131,8 @@ fun ChatScreen(repo: Repository) {
                         trimmed.startsWith("生成策略：") || trimmed.startsWith("生成策略:") ||
                         trimmed.startsWith("LLM生成策略") -> {
                         val goal = extractStrategyGoal(trimmed, listOf("生成策略：", "生成策略:", "生成策略", "LLM生成策略"))
-                        if (goal.isBlank() || goal.startsWith("（") || goal.startsWith("(") ||
-                            ("例如" in goal && "需求" in trimmed && goal.length < 48)
-                        ) {
-                            "请先写清策略需求再发送（不要空着默认跑）。\n模板示例：\n生成策略：震荡市用布林带中轨+RSI超卖超买；避免只做RSI+KDJ\n生成策略：趋势跟踪，MA20/MA60 金叉死叉为主"
+                        if (isBlankStrategyGoal(goal)) {
+                            "请先写清策略需求再发送。\n在「需求：」后面直接写，例如：\n生成策略：\n需求：震荡市布林带+RSI，减少假突破"
                         } else {
                             msgs.add(Msg("assistant", "按需求生成策略…\n需求：$goal"))
                             repo.optimizeStrategyWithLlm(baseId = null, rounds = 2, userGoal = goal).fold(
@@ -290,32 +288,67 @@ fun ChatScreen(repo: Repository) {
 
 private fun extractStrategyGoal(body: String, prefixes: List<String>): String {
     var t = body.trim()
+    // 去掉命令前缀（最长优先）
     for (p in prefixes.sortedByDescending { it.length }) {
         if (t.startsWith(p)) {
             t = t.removePrefix(p).trim()
             break
         }
     }
-    val lines = t.lines().map { it.trim() }.filter { it.isNotEmpty() }
-    var goal = lines.joinToString(" ")
-    val keyCn = "需求："
-    val keyCn2 = "需求:"
-    val idxCn = t.indexOf(keyCn)
-    val idxCn2 = t.indexOf(keyCn2)
-    val idx = when {
-        idxCn >= 0 && idxCn2 >= 0 -> minOf(idxCn, idxCn2)
-        idxCn >= 0 -> idxCn
-        idxCn2 >= 0 -> idxCn2
-        else -> -1
+    // 优先取「需求：」后的全部内容（可多行）
+    val markers = listOf("需求：", "需求:")
+    var goal: String? = null
+    for (m in markers) {
+        val i = t.indexOf(m)
+        if (i >= 0) {
+            goal = t.substring(i + m.length).trim()
+            break
+        }
     }
-    if (idx >= 0) {
-        val keyLen = if (idxCn >= 0 && idx == idxCn) keyCn.length else keyCn2.length
-        goal = t.substring(idx + keyLen).trim()
+    if (goal == null) {
+        goal = t.lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
     }
-    // 去掉括号占位提示
-    val cut = goal.indexOf("（例如")
-    if (cut >= 0) goal = goal.substring(0, cut).trim()
-    val cut2 = goal.indexOf("(例如")
-    if (cut2 >= 0) goal = goal.substring(0, cut2).trim()
-    return goal.trim()
+    return normalizeStrategyGoal(goal)
+}
+
+/** 去掉外壳括号与纯占位「例如」前缀，保留用户真实文字 */
+private fun normalizeStrategyGoal(raw: String): String {
+    var g = raw.trim()
+    // 整段被全角/半角括号包住 → 剥开
+    if ((g.startsWith("（") && g.endsWith("）")) || (g.startsWith("(") && g.endsWith(")"))) {
+        g = g.substring(1, g.length - 1).trim()
+    }
+    // 「例如：xxx」若用户只改了后半段，去掉「例如」标签
+    for (p in listOf("例如：", "例如:", "例如 ")) {
+        if (g.startsWith(p)) {
+            g = g.removePrefix(p).trim()
+            break
+        }
+    }
+    // 若仍含「例如：」在中间，取例如之后的部分（用户常在模板后追加）
+    for (p in listOf("例如：", "例如:")) {
+        val i = g.indexOf(p)
+        if (i >= 0) {
+            val after = g.substring(i + p.length).trim()
+            val before = g.substring(0, i).trim()
+            // 优先用更长、更像需求的一段
+            g = listOf(before, after).maxByOrNull { it.length } ?: after
+            break
+        }
+    }
+    return g.trim()
+}
+
+private fun isBlankStrategyGoal(goal: String): Boolean {
+    val g = normalizeStrategyGoal(goal)
+    if (g.isBlank()) return true
+    // 纯模板残留
+    val boilerplate = listOf(
+        "请填写", "在此输入", "写需求", "输入需求",
+        "更少假信号、加强趋势过滤、保留现有RSI思路",
+        "震荡市布林带+RSI；或趋势市MA金叉死叉；不要默认只做RSI+KDJ",
+    )
+    if (boilerplate.any { g == it || g.replace(" ", "") == it.replace(" ", "") }) return true
+    // 至少 2 个有效字符（中文一字也算）
+    return g.length < 2
 }
