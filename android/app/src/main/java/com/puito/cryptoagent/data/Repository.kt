@@ -403,11 +403,19 @@ class Repository(ctx: Context) {
                     try {
                         val barsHt = binance.fetch(s.symbol, Interval.from(iv), limitHt)
                         if (barsHt.size < minBarsForSignal(iv)) return@async emptyList()
-                        val (_, st) = runStrategy(
-                            s.symbol, iv, cfg, barsHt,
-                            notifyNew = false,
-                            updateUiState = (iv == s.interval),
-                        )
+                        // 与行情图同源：1m 信号 + 高周期确认（不再在 HT K 线上另算一套策略）
+                        val mapped = map1mMarksToInterval(marks1m, barsHt, iv)
+                        val (tlist, st) = EventSim.backtest(barsHt, mapped, s.symbol, iv)
+                        sp.edit()
+                            .putString("trades_$iv", gson.toJson(tlist))
+                            .putString("stats_$iv", gson.toJson(st))
+                            .apply()
+                        if (iv == s.interval) {
+                            candles = barsHt
+                            signals = mapped
+                            trades = tlist
+                            stats = st
+                        }
                         fresh1m.mapNotNull { m ->
                             if (!higherTfAgrees(barsHt, m.side)) return@mapNotNull null
                             if (isSignalExpired("1m", m.openTime)) return@mapNotNull null
