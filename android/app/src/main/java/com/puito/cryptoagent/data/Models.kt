@@ -40,6 +40,14 @@ data class StrategyConfig(
     val sellRules: List<Rule> = listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)),
 )
 
+data class StrategyOptimizeResult(
+    val strategy: StrategyConfig,
+    val report: String,
+    val winRate: Double,
+    val trades: Int,
+    val created: Boolean,
+)
+
 data class SignalMark(val openTime: Long, val side: String, val price: Double)
 
 /** AI 对单条信号的评估（可与真实下单解耦） */

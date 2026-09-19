@@ -2,6 +2,7 @@ package com.puito.cryptoagent.data
 
 import android.content.Context
 import com.google.gson.Gson
+import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
 import com.puito.cryptoagent.domain.EventSim
 import com.puito.cryptoagent.domain.StrategyEngine
@@ -980,6 +981,228 @@ class Repository(ctx: Context) {
             temperature = s.llmTemperature.toDouble().coerceIn(0.0, 1.5),
             thinkingEnabled = s.llmThinkingEnabled,
         )
+    }
+
+
+
+    /**
+     * LLM + 本地历史回测闭环优化策略。
+     * @param baseId 非空则基于该策略优化并更新；空则生成新策略
+     * @param rounds 与 LLM 迭代轮数（每轮：出策略 → 回测 → 反馈）
+     */
+    suspend fun optimizeStrategyWithLlm(
+        baseId: String? = null,
+        rounds: Int = 2,
+        onProgress: ((String) -> Unit)? = null,
+    ): Result<StrategyOptimizeResult> = withContext(Dispatchers.IO) {
+        val s = settings()
+        if (s.llmApiKey.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("请先在设置中配置 LLM API Key"))
+        }
+        binance.updateBase(s.binanceBaseUrl)
+        val bars = try {
+            binance.fetch(
+                s.symbol,
+                Interval.from(s.interval),
+                s.klineLimit.coerceIn(200, 1000),
+            )
+        } catch (e: Exception) {
+            return@withContext Result.failure(e)
+        }
+        if (bars.size < 80) {
+            return@withContext Result.failure(IllegalStateException("历史K线不足(${bars.size})，无法回测优化"))
+        }
+        val existing = strategies()
+        val base = baseId?.let { id -> existing.find { it.id == id } }
+        val createNew = base == null
+        var bestCfg: StrategyConfig = base ?: StrategyConfig(
+            id = java.util.UUID.randomUUID().toString(),
+            title = "LLM策略-${s.interval}",
+            enabled = false,
+        )
+        var bestWr = -1.0
+        var bestTrades = 0
+        val log = StringBuilder()
+        log.appendLine("标的 ${s.symbol} 周期 ${s.interval} K线 ${bars.size} 根 · 迭代 $rounds 轮")
+        if (base != null) {
+            val (t0, st0) = EventSim.backtest(
+                bars, StrategyEngine.signals(bars, base), s.symbol, s.interval,
+            )
+            bestWr = st0.winRate
+            bestTrades = st0.trades
+            log.appendLine("基准「${base.title}」回测: ${st0.trades}笔 胜率${"%.1f".format(st0.winRate * 100)}%")
+            onProgress?.invoke("基准回测 胜率${"%.1f".format(st0.winRate * 100)}%")
+        }
+
+        var lastFeedback = if (base != null) {
+            "当前策略JSON:\n${strategyToJson(base)}\n回测: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%。请在保持规则可解析前提下提升胜率与交易次数平衡。"
+        } else {
+            "请从零设计一套事件合约短线策略，目标高胜率且交易次数不宜过少。"
+        }
+
+        val schema = """
+支持指标 indicator: RSI, MACD, KDJ_J, CLOSE, MA, EMA, BOLL
+比较 op: GT, GTE, LT, LTE
+period: 2-200（RSI/MA/EMA/BOLL 有意义）
+同侧多条规则为 OR。
+必须只输出一个 JSON 对象，不要 markdown，格式:
+{"title":"名称","buyRules":[{"indicator":"RSI","op":"LT","value":30,"period":14}],"sellRules":[{"indicator":"RSI","op":"GT","value":70,"period":14}]}
+""".trimIndent()
+
+        val marketBrief = buildSignalMarketBrief(
+            s.symbol, s.interval, bars,
+            SignalMark(bars.last().openTime, "B", bars.last().close),
+            maxBars = minOf(32, bars.size),
+        )
+
+        for (round in 1..rounds.coerceIn(1, 4)) {
+            onProgress?.invoke("第${round}/${rounds}轮：请求 LLM…")
+            val sys = """
+你是量化策略工程师。根据历史K线与回测反馈，输出可在本App运行的策略JSON。
+$schema
+禁止编造未给出的数据；不要解释，只输出JSON。
+""".trimIndent()
+            val user = """
+$marketBrief
+
+【任务】第${round}轮优化（事件合约视角，周期=${s.interval}）
+$lastFeedback
+
+请输出改进后的完整策略JSON。
+""".trimIndent()
+            val ans = try {
+                llm.chat(
+                    s.llmBaseUrl, s.llmApiKey, s.llmModel, sys, user, s.llmTimeoutSec,
+                    maxTokens = maxOf(s.llmMaxTokens, 400).coerceIn(128, 2048),
+                    temperature = (s.llmTemperature.toDouble() + 0.1).coerceIn(0.1, 1.2),
+                    thinkingEnabled = s.llmThinkingEnabled,
+                )
+            } catch (e: Exception) {
+                log.appendLine("第${round}轮 LLM失败: ${e.message}")
+                onProgress?.invoke("第${round}轮失败: ${e.message?.take(40)}")
+                continue
+            }
+            val parsed = parseStrategyFromLlm(ans, bestCfg.id, keepEnabled = base?.enabled == true)
+            if (parsed == null) {
+                log.appendLine("第${round}轮解析失败: ${ans.take(120)}")
+                onProgress?.invoke("第${round}轮JSON解析失败")
+                lastFeedback = "上轮输出无法解析，请严格只输出JSON。样例见schema。上轮片段:\n${ans.take(200)}"
+                continue
+            }
+            val marks = StrategyEngine.signals(bars, parsed)
+            val (tlist, st) = EventSim.backtest(bars, marks, s.symbol, s.interval)
+            log.appendLine(
+                "第${round}轮「${parsed.title}」: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% " +
+                    "买${parsed.buyRules.size}条/卖${parsed.sellRules.size}条",
+            )
+            onProgress?.invoke(
+                "第${round}轮 回测 ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}%",
+            )
+            val score = st.winRate * 100 + minOf(st.trades, 30) * 0.15 // 略奖励成交笔数
+            val bestScore = bestWr * 100 + minOf(bestTrades, 30) * 0.15
+            if (st.trades >= 3 && (bestTrades < 3 || score >= bestScore)) {
+                bestCfg = parsed
+                bestWr = st.winRate
+                bestTrades = st.trades
+            }
+            lastFeedback = """
+上轮策略:
+${strategyToJson(parsed)}
+回测: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}%
+当前最优: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%
+请继续优化：提高胜率，避免交易过少(<3)；规则用支持的指标与比较符。
+""".trimIndent()
+        }
+
+        if (bestTrades < 1 && createNew) {
+            // 兜底：仍保存 LLM 最后能解析的结构
+            log.appendLine("警告: 有效成交不足，仍保存当前最优结构供手工调整")
+        }
+        val list = strategies().toMutableList()
+        if (createNew) {
+            list.add(bestCfg.copy(enabled = false))
+        } else {
+            val i = list.indexOfFirst { it.id == bestCfg.id }
+            if (i >= 0) list[i] = bestCfg else list.add(bestCfg)
+        }
+        saveStrategies(list)
+        val report = log.toString() + "\n最终: 「${bestCfg.title}」 ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}% " +
+            (if (createNew) "【已新建】" else "【已更新】")
+        onProgress?.invoke("完成 胜率${"%.1f".format(bestWr * 100)}%")
+        Result.success(
+            StrategyOptimizeResult(
+                strategy = bestCfg,
+                report = report,
+                winRate = bestWr,
+                trades = bestTrades,
+                created = createNew,
+            ),
+        )
+    }
+
+    private fun strategyToJson(cfg: StrategyConfig): String {
+        fun rules(rs: List<Rule>) = rs.joinToString(",") { r ->
+            """{"indicator":"${r.indicator.name}","op":"${r.op.name}","value":${r.value},"period":${r.period}}"""
+        }
+        return """{"title":"${cfg.title.replace("\"", "")}","buyRules":[${rules(cfg.buyRules)}],"sellRules":[${rules(cfg.sellRules)}]}"""
+    }
+
+    private fun parseStrategyFromLlm(
+        text: String,
+        id: String,
+        keepEnabled: Boolean,
+    ): StrategyConfig? {
+        val jsonStr = extractJsonObject(text) ?: return null
+        return try {
+            val o = JsonParser.parseString(jsonStr).asJsonObject
+            val title = o.get("title")?.asString?.take(40) ?: "LLM策略"
+            fun parseRules(key: String): List<Rule> {
+                val arr = o.getAsJsonArray(key) ?: return emptyList()
+                return arr.mapNotNull { el ->
+                    val r = el.asJsonObject
+                    val ind = r.get("indicator")?.asString?.uppercase()?.replace("-", "_") ?: return@mapNotNull null
+                    val indicator = IndicatorType.entries.find {
+                        it.name == ind || it.name == ind.replace("KDJJ", "KDJ_J") ||
+                            it.label == r.get("indicator")?.asString
+                    } ?: when {
+                        ind.contains("RSI") -> IndicatorType.RSI
+                        ind.contains("MACD") -> IndicatorType.MACD
+                        ind.contains("KDJ") -> IndicatorType.KDJ_J
+                        ind.contains("EMA") -> IndicatorType.EMA
+                        ind.contains("MA") -> IndicatorType.MA
+                        ind.contains("BOLL") -> IndicatorType.BOLL
+                        ind.contains("CLOSE") || ind.contains("收盘") -> IndicatorType.CLOSE
+                        else -> return@mapNotNull null
+                    }
+                    val opRaw = r.get("op")?.asString?.uppercase() ?: "LT"
+                    val op = CompareOp.entries.find { it.name == opRaw }
+                        ?: when {
+                            opRaw.contains("GTE") || opRaw == ">=" -> CompareOp.GTE
+                            opRaw.contains("GT") || opRaw == ">" -> CompareOp.GT
+                            opRaw.contains("LTE") || opRaw == "<=" -> CompareOp.LTE
+                            else -> CompareOp.LT
+                        }
+                    val value = r.get("value")?.asDouble ?: return@mapNotNull null
+                    val period = r.get("period")?.asInt?.coerceIn(2, 200) ?: 14
+                    Rule(indicator, op, value, period)
+                }
+            }
+            val buy = parseRules("buyRules").ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)) }
+            val sell = parseRules("sellRules").ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) }
+            StrategyConfig(id = id, title = title, enabled = keepEnabled, buyRules = buy, sellRules = sell)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun extractJsonObject(text: String): String? {
+        val t = text.trim()
+        val fence = Regex("```(?:json)?\\s*([\\s\\S]*?)```", RegexOption.IGNORE_CASE).find(t)
+        val body = fence?.groupValues?.getOrNull(1)?.trim() ?: t
+        val start = body.indexOf('{')
+        val end = body.lastIndexOf('}')
+        if (start < 0 || end <= start) return null
+        return body.substring(start, end + 1)
     }
 
 

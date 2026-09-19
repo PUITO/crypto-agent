@@ -60,6 +60,8 @@ private val templates = listOf(
     ChipTpl("清除绘图", TplAction.SEND_CMD, "清除绘图"),
     ChipTpl("打开MA20", TplAction.SEND_CMD, "打开MA20"),
     ChipTpl("列出策略", TplAction.SEND_CMD, "列出策略"),
+    ChipTpl("LLM优化当前策略", TplAction.SEND_CMD, "LLM优化策略"),
+    ChipTpl("LLM生成新策略", TplAction.SEND_CMD, "LLM生成策略"),
 )
 
 @Composable
@@ -96,8 +98,35 @@ fun ChatScreen(repo: Repository) {
         sendJob?.cancel()
         sendJob = scope.launch {
             try {
-                val bars = if (attach) marketBars else 0
-                val reply = repo.chat(body, attachMarketBars = bars)
+                val reply = when (body.trim()) {
+                    "LLM优化策略" -> {
+                        val en = repo.strategies().find { it.enabled } ?: repo.strategies().firstOrNull()
+                        if (en == null) {
+                            "没有可优化的策略，请先在策略页新建或到设置配置 LLM。"
+                        } else {
+                            msgs.add(Msg("assistant", "开始优化「${en.title}」…"))
+                            val r = repo.optimizeStrategyWithLlm(baseId = en.id, rounds = 2) { p ->
+                                // progress only in last assistant bubble hard; append lightly
+                            }
+                            r.fold(
+                                onSuccess = { "【策略优化完成】\n${it.report}" },
+                                onFailure = { "优化失败: ${it.message}" },
+                            )
+                        }
+                    }
+                    "LLM生成策略" -> {
+                        msgs.add(Msg("assistant", "开始生成新策略…"))
+                        val r = repo.optimizeStrategyWithLlm(baseId = null, rounds = 2)
+                        r.fold(
+                            onSuccess = { "【新策略已创建】\n${it.report}" },
+                            onFailure = { "生成失败: ${it.message}" },
+                        )
+                    }
+                    else -> {
+                        val bars = if (attach) marketBars else 0
+                        repo.chat(body, attachMarketBars = bars)
+                    }
+                }
                 msgs.add(Msg("assistant", reply))
                 try {
                     state.animateScrollToItem(msgs.lastIndex)
