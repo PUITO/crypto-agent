@@ -140,6 +140,15 @@ data class AppSettings(
     val interval: String = "10m",
     val klineLimit: Int = 1000, // 足够历史，指标/回测更稳
     val strategyRunning: Boolean = true,
+    /**
+     * 信号模式一：1m 策略触发 + 高周期软确认（低延迟，过滤噪声）。
+     * 与 signalModeHtNative 可同时开，信号更多。
+     */
+    val signalMode1mConfirm: Boolean = true,
+    /**
+     * 信号模式二：在 5m/10m/30m/1h 上直接跑策略（周期原生，信号更多）。
+     */
+    val signalModeHtNative: Boolean = true,
     val backgroundEnabled: Boolean = true,
     val notifyVibrate: Boolean = true, // 信号通知默认震动
     val llmBaseUrl: String = "https://api.openai.com/v1",

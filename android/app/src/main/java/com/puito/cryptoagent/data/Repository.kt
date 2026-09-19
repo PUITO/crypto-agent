@@ -266,6 +266,25 @@ class Repository(ctx: Context) {
         }
     }
 
+    /** 将 1m 信号对齐到目标周期 K 线 openTime，供回测/图表展示 */
+    private fun map1mMarksToInterval(
+        marks1m: List<SignalMark>,
+        barsHt: List<Candle>,
+        interval: String,
+    ): List<SignalMark> {
+        if (marks1m.isEmpty() || barsHt.isEmpty()) return emptyList()
+        val ivMs = intervalMs(interval)
+        return marks1m.map { m ->
+            val bar = barsHt.lastOrNull { it.openTime <= m.openTime && m.openTime < it.openTime + ivMs }
+                ?: barsHt.minByOrNull { kotlin.math.abs(it.openTime - m.openTime) }
+            SignalMark(
+                openTime = bar?.openTime ?: m.openTime,
+                side = m.side,
+                price = m.price,
+            )
+        }.distinctBy { it.openTime to it.side }
+    }
+
     /**
      * 多周期新信号过滤：
      * 1) 全量历史只用于计算/回测；通知只针对「启动后新出现」的信号
@@ -379,90 +398,150 @@ class Repository(ctx: Context) {
         val tradeIntervals = listOf("5m", "10m", "30m", "1h")
         val limit1m = s.klineLimit.coerceIn(200, 500)
         val limitHt = s.klineLimit.coerceIn(200, 500)
+        val mode1m = s.signalMode1mConfirm
+        val modeHt = s.signalModeHtNative
+        // 至少一个模式开启；都关则退回双开
+        val use1m = mode1m || (!mode1m && !modeHt)
+        val useHt = modeHt || (!mode1m && !modeHt)
 
-        // 1) 主源：1m
-        val bars1m = try {
-            binance.fetch(s.symbol, Interval.M1, limit1m)
-        } catch (_: Exception) {
-            emptyList()
-        }
-        if (bars1m.size < minBarsForSignal("1m")) return@withContext emptyList()
+        val batch = mutableListOf<SignalNotifyPayload>()
+        var bars1m: List<Candle> = emptyList()
 
-        val (marks1m, _) = runStrategy(
-            s.symbol, "1m", cfg, bars1m,
-            notifyNew = true,
-            updateUiState = false,
-        )
-        val fresh1m = freshMarks(s.symbol, "1m", marks1m, bars1m, notifyNew = true)
-        if (fresh1m.isEmpty()) return@withContext emptyList()
-
-        // 2) 并行拉高周期，确认 + 统计
-        val batch = coroutineScope {
-            tradeIntervals.map { iv ->
-                async {
-                    try {
-                        val barsHt = binance.fetch(s.symbol, Interval.from(iv), limitHt)
-                        if (barsHt.size < minBarsForSignal(iv)) return@async emptyList()
-                        // 与行情图同源：1m 信号 + 高周期确认（不再在 HT K 线上另算一套策略）
-                        val mapped = map1mMarksToInterval(marks1m, barsHt, iv)
-                        val (tlist, st) = EventSim.backtest(barsHt, mapped, s.symbol, iv)
-                        sp.edit()
-                            .putString("trades_$iv", gson.toJson(tlist))
-                            .putString("stats_$iv", gson.toJson(st))
-                            .apply()
-                        if (iv == s.interval) {
-                            candles = barsHt
-                            signals = mapped
-                            trades = tlist
-                            stats = st
-                        }
-                        fresh1m.mapNotNull { m ->
-                            if (!higherTfAgrees(barsHt, m.side)) return@mapNotNull null
-                            if (isSignalExpired("1m", m.openTime)) return@mapNotNull null
-                            val ai = if (s.hibt.aiEvaluate) {
-                                val toMs = s.llmTimeoutSec.coerceIn(10, 300) * 1000L
-                                withTimeoutOrNull(toMs) {
-                                    evaluateSignal(s, m, iv, barsHt, st.winRate * 100, st.trades)
+        // —— 模式一：1m 触发 + 高周期软确认 ——
+        if (use1m) {
+            bars1m = try {
+                binance.fetch(s.symbol, Interval.M1, limit1m)
+            } catch (_: Exception) {
+                emptyList()
+            }
+            if (bars1m.size >= minBarsForSignal("1m")) {
+                val (marks1m, _) = runStrategy(
+                    s.symbol, "1m", cfg, bars1m,
+                    notifyNew = true,
+                    updateUiState = false,
+                )
+                val fresh1m = freshMarks(s.symbol, "1m", marks1m, bars1m, notifyNew = true)
+                if (fresh1m.isNotEmpty()) {
+                    val from1m = coroutineScope {
+                        tradeIntervals.map { iv ->
+                            async {
+                                try {
+                                    val barsHt = binance.fetch(s.symbol, Interval.from(iv), limitHt)
+                                    if (barsHt.size < minBarsForSignal(iv)) return@async emptyList()
+                                    val mapped = map1mMarksToInterval(marks1m, barsHt, iv)
+                                    val (tlist, st) = EventSim.backtest(barsHt, mapped, s.symbol, iv)
+                                    sp.edit()
+                                        .putString("trades_$iv", gson.toJson(tlist))
+                                        .putString("stats_$iv", gson.toJson(st))
+                                        .apply()
+                                    if (iv == s.interval) {
+                                        candles = barsHt
+                                        signals = mapped
+                                        trades = tlist
+                                        stats = st
+                                    }
+                                    fresh1m.mapNotNull { m ->
+                                        if (!higherTfAgrees(barsHt, m.side)) return@mapNotNull null
+                                        if (isSignalExpired("1m", m.openTime)) return@mapNotNull null
+                                        val ai = if (s.hibt.aiEvaluate) {
+                                            val toMs = s.llmTimeoutSec.coerceIn(10, 300) * 1000L
+                                            withTimeoutOrNull(toMs) {
+                                                evaluateSignal(s, m, iv, barsHt, st.winRate * 100, st.trades)
+                                            }
+                                        } else null
+                                        SignalNotifyPayload(
+                                            mark = m,
+                                            interval = iv,
+                                            intervalWinRatePct = st.winRate * 100,
+                                            intervalTrades = st.trades,
+                                            ai = ai,
+                                            source = "1m_confirm",
+                                        )
+                                    }
+                                } catch (_: Exception) {
+                                    emptyList()
                                 }
-                            } else null
-                            SignalNotifyPayload(
-                                mark = m,
-                                interval = iv,
-                                intervalWinRatePct = st.winRate * 100,
-                                intervalTrades = st.trades,
-                                ai = ai,
-                            )
-                        }
-                    } catch (_: Exception) {
-                        emptyList()
+                            }
+                        }.awaitAll().flatten()
                     }
+                    batch += from1m
                 }
-            }.awaitAll().flatten()
+            }
         }
 
-        val timely = batch.filter { !isSignalExpired("1m", it.mark.openTime) }
-        // 跨周期去重：同一 1m 信号可能打到多个 HT，保留当前选中周期优先，否则胜率高的
+        // —— 模式二：各交易周期原生策略信号 ——
+        if (useHt) {
+            val fromHt = coroutineScope {
+                tradeIntervals.map { iv ->
+                    async {
+                        try {
+                            val barsHt = binance.fetch(s.symbol, Interval.from(iv), limitHt)
+                            if (barsHt.size < minBarsForSignal(iv)) return@async emptyList()
+                            val (marksHt, st) = runStrategy(
+                                s.symbol, iv, cfg, barsHt,
+                                notifyNew = true,
+                                updateUiState = (iv == s.interval && !use1m),
+                            )
+                            val fresh = freshMarks(s.symbol, iv, marksHt, barsHt, notifyNew = true)
+                            fresh.mapNotNull { m ->
+                                if (isSignalExpired(iv, m.openTime)) return@mapNotNull null
+                                val ai = if (s.hibt.aiEvaluate) {
+                                    val toMs = s.llmTimeoutSec.coerceIn(10, 300) * 1000L
+                                    withTimeoutOrNull(toMs) {
+                                        evaluateSignal(s, m, iv, barsHt, st.winRate * 100, st.trades)
+                                    }
+                                } else null
+                                SignalNotifyPayload(
+                                    mark = m,
+                                    interval = iv,
+                                    intervalWinRatePct = st.winRate * 100,
+                                    intervalTrades = st.trades,
+                                    ai = ai,
+                                    source = "ht_native",
+                                )
+                            }
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    }
+                }.awaitAll().flatten()
+            }
+            batch += fromHt
+        }
+
+        val timely = batch.filter {
+            val baseIv = if (it.source == "1m_confirm") "1m" else it.interval
+            !isSignalExpired(baseIv, it.mark.openTime)
+        }
+        // 去重：同方向 + 同周期 + 同 openTime 只留一条（优先 1m_confirm）
         val dedup = linkedMapOf<String, SignalNotifyPayload>()
         for (p in timely.sortedWith(
-            compareByDescending<SignalNotifyPayload> { it.interval == s.interval }
+            compareByDescending<SignalNotifyPayload> { it.source == "1m_confirm" }
+                .thenByDescending { it.interval == s.interval }
                 .thenByDescending { it.intervalWinRatePct },
         )) {
-            val k = "${p.mark.openTime}|${p.mark.side}"
+            val k = "${p.mark.openTime}|${p.mark.side}|${p.interval}"
             if (k !in dedup) dedup[k] = p
         }
         val out = filterCrossInterval(dedup.values.toList())
 
-        // 自动下单：按配置多选周期（与行情全局 interval 解耦）；用未去重的 timely 以便多周期同时下
         if (s.hibt.autoTrade) {
             val selected = s.hibt.autoIntervals
                 .map { it.trim().lowercase() }
                 .filter { it in setOf("5m", "10m", "30m", "1h") }
                 .ifEmpty { listOf(s.interval) }
-            // 1m 主源 bars 供防追单
-            val barsForChase = bars1m
+            val barsForChase = bars1m.ifEmpty {
+                try {
+                    binance.fetch(s.symbol, Interval.M1, 80)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            }
             val orderList = timely.filter { it.interval.lowercase() in selected }
             for (p in orderList) {
-                if (s.hibt.antiChaseEnabled && isOneSidedChase(barsForChase, p.mark.side, s.hibt.antiChaseBars)) {
+                if (s.hibt.antiChaseEnabled && barsForChase.isNotEmpty() &&
+                    isOneSidedChase(barsForChase, p.mark.side, s.hibt.antiChaseBars)
+                ) {
                     continue
                 }
                 maybeAutoOrder(s, p.mark, p.ai, p.interval)

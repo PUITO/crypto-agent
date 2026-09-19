@@ -31,6 +31,8 @@ fun ConfigScreen(repo: Repository) {
     var llmThinking by remember { mutableStateOf(cur.llmThinkingEnabled) }
     var bg by remember { mutableStateOf(cur.backgroundEnabled) }
     var vibrate by remember { mutableStateOf(cur.notifyVibrate) }
+    var mode1m by remember { mutableStateOf(cur.signalMode1mConfirm) }
+    var modeHt by remember { mutableStateOf(cur.signalModeHtNative) }
     var msg by remember { mutableStateOf<String?>(null) }
 
     Column(
@@ -45,6 +47,20 @@ fun ConfigScreen(repo: Repository) {
         OutlinedTextField(symbol, { symbol = it }, label = { Text("交易对") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(interval, { interval = it }, label = { Text("周期 5m/10m/30m/1h") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(limit, { limit = it }, label = { Text("K 线条数(建议 500～1000，过小易失真)") }, modifier = Modifier.fillMaxWidth())
+
+        Text("信号模式（可双开，信号更多）", style = MaterialTheme.typography.titleSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("模式1：1m触发+高周期确认", modifier = Modifier.weight(1f))
+            Switch(mode1m, { mode1m = it })
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("模式2：周期原生策略(5m/10m/30m/1h)", modifier = Modifier.weight(1f))
+            Switch(modeHt, { modeHt = it })
+        }
+        Text(
+            "双开时合并两套信号去重。都关则自动双开。模式1低延迟；模式2周期独立出信号更多。",
+            color = MaterialTheme.colorScheme.secondary,
+        )
 
         Text("LLM（对话）", style = MaterialTheme.typography.titleSmall)
         OutlinedTextField(llmUrl, { llmUrl = it }, label = { Text("LLM Base URL") }, modifier = Modifier.fillMaxWidth())
