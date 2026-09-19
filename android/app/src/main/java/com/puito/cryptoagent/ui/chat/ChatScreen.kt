@@ -297,12 +297,25 @@ private fun extractStrategyGoal(body: String, prefixes: List<String>): String {
         }
     }
     val lines = t.lines().map { it.trim() }.filter { it.isNotEmpty() }
-    val joined = lines.joinToString(" ")
-    val afterNeed = Regex("需求\s*[:：]\s*(.*)", RegexOption.DOT_MATCHES_ALL).find(t)
-        ?.groupValues?.getOrNull(1)?.trim()
-    val goal = (afterNeed ?: joined).trim()
-    return goal
-        .replace(Regex("（例如[^）]*）"), "")
-        .replace(Regex("（例如.*"), "")
-        .trim()
+    var goal = lines.joinToString(" ")
+    val keyCn = "需求："
+    val keyCn2 = "需求:"
+    val idxCn = t.indexOf(keyCn)
+    val idxCn2 = t.indexOf(keyCn2)
+    val idx = when {
+        idxCn >= 0 && idxCn2 >= 0 -> minOf(idxCn, idxCn2)
+        idxCn >= 0 -> idxCn
+        idxCn2 >= 0 -> idxCn2
+        else -> -1
+    }
+    if (idx >= 0) {
+        val keyLen = if (idxCn >= 0 && idx == idxCn) keyCn.length else keyCn2.length
+        goal = t.substring(idx + keyLen).trim()
+    }
+    // 去掉括号占位提示
+    val cut = goal.indexOf("（例如")
+    if (cut >= 0) goal = goal.substring(0, cut).trim()
+    val cut2 = goal.indexOf("(例如")
+    if (cut2 >= 0) goal = goal.substring(0, cut2).trim()
+    return goal.trim()
 }
