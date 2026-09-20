@@ -1068,6 +1068,8 @@ class Repository(ctx: Context) {
         baseId: String? = null,
         rounds: Int = 2,
         userGoal: String? = null,
+        minWinRatePct: Double? = null,
+        minTrades: Int? = null,
         onProgress: ((String) -> Unit)? = null,
     ): Result<StrategyOptimizeResult> = withContext(Dispatchers.IO) {
         val s = settings()
@@ -1110,22 +1112,39 @@ class Repository(ctx: Context) {
         }
 
         val goal = userGoal?.trim().orEmpty()
+        val targetWr = minWinRatePct
+        val targetTrades = minTrades
         if (goal.isNotBlank()) {
             log.appendLine("用户需求: $goal")
             onProgress?.invoke("需求: ${goal.take(40)}")
         }
+        if (targetWr != null) log.appendLine("目标胜率 ≥ ${"%.1f".format(targetWr)}%")
+        if (targetTrades != null) log.appendLine("最少成交 ≥ $targetTrades 笔")
+        onProgress?.invoke(
+            buildString {
+                append("训练 ${rounds.coerceIn(1, 6)} 轮")
+                targetWr?.let { append(" · 胜率≥${"%.0f".format(it)}%") }
+                targetTrades?.let { append(" · ≥${it}笔") }
+            },
+        )
         var lastFeedback = buildString {
             if (goal.isNotBlank()) {
                 appendLine("【用户明确需求——必须优先满足】")
                 appendLine(goal)
-                appendLine("请按需求选择指标与阈值，不要无故退化成仅 RSI+KDJ，除非用户要求。")
+                appendLine("可优先 kind=ALGO（TREND_FOLLOW/PEARSON_TRIPLE/BREAKOUT），不要无故退化成仅 RSI+KDJ。")
+            }
+            if (targetWr != null || targetTrades != null) {
+                appendLine("【训练约束——回测必须尽量达到】")
+                targetWr?.let { appendLine("- 胜率 ≥ ${"%.1f".format(it)}%") }
+                targetTrades?.let { appendLine("- 成交笔数 ≥ $it") }
+                appendLine("未达标时请加大趋势过滤或调整 algoParams/规则。")
             }
             if (base != null) {
                 appendLine("当前策略JSON:")
                 appendLine(strategyToJson(base))
-                appendLine("回测: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%。在满足用户需求前提下提升胜率与交易次数平衡。")
+                appendLine("回测: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%。在满足约束与需求下提升表现。")
             } else if (goal.isBlank()) {
-                appendLine("请从零设计事件合约短线策略，高胜率且交易不宜过少；可组合 MA/EMA/BOLL/RSI/MACD 等，避免只会 RSI+KDJ。")
+                appendLine("请从零设计事件合约策略；优先 ALGO 顺势/皮尔逊，高胜率且交易不宜过少。")
             } else {
                 appendLine("请严格按用户需求从零设计策略 JSON。")
             }
@@ -1159,8 +1178,10 @@ op: GT,GTE,LT,LTE  period:2-200  同侧OR
             maxBars = minOf(32, bars.size),
         )
 
-        for (round in 1..rounds.coerceIn(1, 4)) {
-            onProgress?.invoke("第${round}/${rounds}轮：请求 LLM…")
+        val maxRounds = rounds.coerceIn(1, 6)
+        var metTarget = false
+        for (round in 1..maxRounds) {
+            onProgress?.invoke("第${round}/${maxRounds}轮：请求 LLM…")
             val sys = """
 你是量化策略工程师。根据历史K线与回测反馈，输出可在本App运行的策略JSON。
 $schema
@@ -1202,20 +1223,46 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             onProgress?.invoke(
                 "第${round}轮 回测 ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}%",
             )
-            val score = st.winRate * 100 + minOf(st.trades, 30) * 0.15 // 略奖励成交笔数
-            val bestScore = bestWr * 100 + minOf(bestTrades, 30) * 0.15
-            if (st.trades >= 3 && (bestTrades < 3 || score >= bestScore)) {
+            fun meets(stWr: Double, stTrades: Int): Boolean {
+                val okWr = targetWr == null || stWr * 100 >= targetWr - 1e-6
+                val okTr = targetTrades == null || stTrades >= targetTrades
+                return okWr && okTr && stTrades >= 1
+            }
+            // 评分：达标优先，再比胜率与笔数
+            fun scoreOf(stWr: Double, stTrades: Int): Double {
+                val base = stWr * 100 + minOf(stTrades, 40) * 0.2
+                return if (meets(stWr, stTrades)) base + 1000.0 else base
+            }
+            if (scoreOf(st.winRate, st.trades) >= scoreOf(bestWr, bestTrades) &&
+                (st.trades >= 1 || bestTrades < 1)
+            ) {
                 bestCfg = parsed
                 bestWr = st.winRate
                 bestTrades = st.trades
             }
-            lastFeedback = """
-上轮策略:
-${strategyToJson(parsed)}
-回测: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}%
-当前最优: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%
-请继续优化：提高胜率，避免交易过少(<3)；规则用支持的指标与比较符。
-""".trimIndent()
+            if (meets(st.winRate, st.trades)) {
+                metTarget = true
+                log.appendLine("第${round}轮已达训练目标，提前结束")
+                onProgress?.invoke("已达目标，提前结束")
+            }
+            lastFeedback = buildString {
+                appendLine("上轮策略:")
+                appendLine(strategyToJson(parsed))
+                appendLine("回测: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% kind=${parsed.kind} algo=${parsed.algoId}")
+                appendLine("当前最优: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%")
+                if (targetWr != null || targetTrades != null) {
+                    appendLine("目标: " + listOfNotNull(
+                        targetWr?.let { "胜率≥${"%.0f".format(it)}%" },
+                        targetTrades?.let { "笔数≥$it" },
+                    ).joinToString("，"))
+                    if (!meets(st.winRate, st.trades)) {
+                        appendLine("未达标：请调整 algoParams 或规则，优先 ALGO 顺势/皮尔逊。")
+                    }
+                } else {
+                    appendLine("请继续提高胜率，避免交易过少；优先 kind=ALGO。")
+                }
+            }.trimIndent()
+            if (metTarget) break
         }
 
         if (bestTrades < 1 && createNew) {

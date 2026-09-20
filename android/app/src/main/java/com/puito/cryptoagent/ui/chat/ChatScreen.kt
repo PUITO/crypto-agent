@@ -108,34 +108,58 @@ fun ChatScreen(repo: Repository) {
             try {
                 val trimmed = body.trim()
                 val reply = when {
-                    trimmed == "LLM优化策略" || trimmed == "优化策略" || trimmed == "优化策略：" ||
-                        trimmed.startsWith("优化策略：") || trimmed.startsWith("优化策略:") ||
-                        trimmed.startsWith("LLM优化策略") -> {
-                        val goal = extractStrategyGoal(trimmed, listOf("优化策略：", "优化策略:", "优化策略", "LLM优化策略"))
-                        if (isBlankStrategyGoal(goal)) {
-                            "请先写清优化需求再发送。\n在「需求：」后面直接写，例如：\n优化策略：\n需求：减少假突破，加入均线趋势过滤"
+                    isOptimizeStrategyCmd(trimmed) -> {
+                        val hints = parseOptimizeHints(
+                            stripStrategyPrefix(trimmed, listOf("优化策略：", "优化策略:", "优化策略", "LLM优化策略")),
+                        )
+                        if (hints.goal.isBlank()) {
+                            "直接写优化说明即可，例如：\n优化策略：减少假突破，轮次3，目标胜率55%，最少20笔"
                         } else {
                             val en = repo.strategies().find { it.enabled } ?: repo.strategies().firstOrNull()
                             if (en == null) {
                                 "没有可优化的策略，请先在策略页新建。"
                             } else {
-                                msgs.add(Msg("assistant", "按需求优化「${en.title}」…\n需求：$goal"))
-                                repo.optimizeStrategyWithLlm(baseId = en.id, rounds = 2, userGoal = goal).fold(
+                                val head = buildString {
+                                    append("优化「${en.title}」· 轮次${hints.rounds}")
+                                    hints.minWinRatePct?.let { append(" · 目标胜率≥${"%.0f".format(it)}%") }
+                                    hints.minTrades?.let { append(" · 最少${it}笔") }
+                                    append("\n${hints.goal}")
+                                }
+                                msgs.add(Msg("assistant", head))
+                                repo.optimizeStrategyWithLlm(
+                                    baseId = en.id,
+                                    rounds = hints.rounds,
+                                    userGoal = hints.goal,
+                                    minWinRatePct = hints.minWinRatePct,
+                                    minTrades = hints.minTrades,
+                                ).fold(
                                     onSuccess = { "【策略优化完成】\n${it.report}" },
                                     onFailure = { "优化失败: ${it.message}" },
                                 )
                             }
                         }
                     }
-                    trimmed == "LLM生成策略" || trimmed == "生成策略" || trimmed == "生成策略：" ||
-                        trimmed.startsWith("生成策略：") || trimmed.startsWith("生成策略:") ||
-                        trimmed.startsWith("LLM生成策略") -> {
-                        val goal = extractStrategyGoal(trimmed, listOf("生成策略：", "生成策略:", "生成策略", "LLM生成策略"))
-                        if (isBlankStrategyGoal(goal)) {
-                            "请先写清策略需求再发送。\n在「需求：」后面直接写，例如：\n生成策略：\n需求：震荡市布林带+RSI，减少假突破"
+                    isGenerateStrategyCmd(trimmed) -> {
+                        val hints = parseOptimizeHints(
+                            stripStrategyPrefix(trimmed, listOf("生成策略：", "生成策略:", "生成策略", "LLM生成策略")),
+                        )
+                        if (hints.goal.isBlank()) {
+                            "直接写生成说明即可，例如：\n生成策略：皮尔逊三曲线，轮次3，目标胜率55%，最少15笔"
                         } else {
-                            msgs.add(Msg("assistant", "按需求生成策略…\n需求：$goal"))
-                            repo.optimizeStrategyWithLlm(baseId = null, rounds = 2, userGoal = goal).fold(
+                            val head = buildString {
+                                append("生成策略 · 轮次${hints.rounds}")
+                                hints.minWinRatePct?.let { append(" · 目标胜率≥${"%.0f".format(it)}%") }
+                                hints.minTrades?.let { append(" · 最少${it}笔") }
+                                append("\n${hints.goal}")
+                            }
+                            msgs.add(Msg("assistant", head))
+                            repo.optimizeStrategyWithLlm(
+                                baseId = null,
+                                rounds = hints.rounds,
+                                userGoal = hints.goal,
+                                minWinRatePct = hints.minWinRatePct,
+                                minTrades = hints.minTrades,
+                            ).fold(
                                 onSuccess = { "【新策略已创建】\n${it.report}" },
                                 onFailure = { "生成失败: ${it.message}" },
                             )
@@ -286,69 +310,81 @@ fun ChatScreen(repo: Repository) {
 }
 
 
-private fun extractStrategyGoal(body: String, prefixes: List<String>): String {
+
+private fun isOptimizeStrategyCmd(t: String): Boolean {
+    val s = t.trim()
+    return s == "LLM优化策略" || s == "优化策略" || s == "优化策略：" || s == "优化策略:" ||
+        s.startsWith("优化策略：") || s.startsWith("优化策略:") || s.startsWith("LLM优化策略")
+}
+
+private fun isGenerateStrategyCmd(t: String): Boolean {
+    val s = t.trim()
+    return s == "LLM生成策略" || s == "生成策略" || s == "生成策略：" || s == "生成策略:" ||
+        s.startsWith("生成策略：") || s.startsWith("生成策略:") || s.startsWith("LLM生成策略")
+}
+
+private fun stripStrategyPrefix(body: String, prefixes: List<String>): String {
     var t = body.trim()
-    // 去掉命令前缀（最长优先）
     for (p in prefixes.sortedByDescending { it.length }) {
         if (t.startsWith(p)) {
             t = t.removePrefix(p).trim()
             break
         }
     }
-    // 优先取「需求：」后的全部内容（可多行）
-    val markers = listOf("需求：", "需求:")
-    var goal: String? = null
-    for (m in markers) {
-        val i = t.indexOf(m)
-        if (i >= 0) {
-            goal = t.substring(i + m.length).trim()
+    for (m in listOf("需求：", "需求:")) {
+        if (t.startsWith(m)) {
+            t = t.removePrefix(m).trim()
             break
         }
+        val i = t.indexOf("\n" + m)
+        if (i >= 0) {
+            t = (t.substring(0, i) + "\n" + t.substring(i + 1 + m.length)).trim()
+        } else {
+            val j = t.indexOf(m)
+            if (j >= 0) t = (t.substring(0, j) + " " + t.substring(j + m.length)).trim()
+        }
     }
-    if (goal == null) {
-        goal = t.lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
-    }
-    return normalizeStrategyGoal(goal)
+    return t.trim()
 }
 
-/** 去掉外壳括号与纯占位「例如」前缀，保留用户真实文字 */
-private fun normalizeStrategyGoal(raw: String): String {
-    var g = raw.trim()
-    // 整段被全角/半角括号包住 → 剥开
-    if ((g.startsWith("（") && g.endsWith("）")) || (g.startsWith("(") && g.endsWith(")"))) {
-        g = g.substring(1, g.length - 1).trim()
-    }
-    // 「例如：xxx」若用户只改了后半段，去掉「例如」标签
-    for (p in listOf("例如：", "例如:", "例如 ")) {
-        if (g.startsWith(p)) {
-            g = g.removePrefix(p).trim()
-            break
-        }
-    }
-    // 若仍含「例如：」在中间，取例如之后的部分（用户常在模板后追加）
-    for (p in listOf("例如：", "例如:")) {
-        val i = g.indexOf(p)
-        if (i >= 0) {
-            val after = g.substring(i + p.length).trim()
-            val before = g.substring(0, i).trim()
-            // 优先用更长、更像需求的一段
-            g = listOf(before, after).maxByOrNull { it.length } ?: after
-            break
-        }
-    }
-    return g.trim()
-}
+data class OptimizeHints(
+    val goal: String,
+    val rounds: Int = 2,
+    val minWinRatePct: Double? = null,
+    val minTrades: Int? = null,
+)
 
-private fun isBlankStrategyGoal(goal: String): Boolean {
-    val g = normalizeStrategyGoal(goal)
-    if (g.isBlank()) return true
-    // 纯模板残留
-    val boilerplate = listOf(
-        "请填写", "在此输入", "写需求", "输入需求",
-        "更少假信号、加强趋势过滤、保留现有RSI思路",
-        "震荡市布林带+RSI；或趋势市MA金叉死叉；不要默认只做RSI+KDJ",
-    )
-    if (boilerplate.any { g == it || g.replace(" ", "") == it.replace(" ", "") }) return true
-    // 至少 2 个有效字符（中文一字也算）
-    return g.length < 2
+private fun parseOptimizeHints(raw: String): OptimizeHints {
+    var text = raw.trim()
+    var rounds = 2
+    var minWr: Double? = null
+    var minTrades: Int? = null
+
+    fun take(pattern: String, ignoreCase: Boolean = true, on: (MatchResult) -> Unit) {
+        val opts = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
+        val re = Regex(pattern, opts)
+        re.find(text)?.let {
+            on(it)
+            text = text.replace(it.value, " ")
+        }
+    }
+
+    take("""(?:轮次|迭代|rounds?)\s*[:=：]?\s*(\d+)""") {
+        rounds = it.groupValues[1].toIntOrNull()?.coerceIn(1, 6) ?: 2
+    }
+    take("""(?:目标胜率|胜率|minWinRate|winrate)\s*[≥>=:：]?\s*(\d+(?:\.\d+)?)\s*%?""") {
+        minWr = it.groupValues[1].toDoubleOrNull()?.coerceIn(1.0, 99.0)
+    }
+    take("""最少\s*(\d+)\s*笔""") {
+        minTrades = it.groupValues[1].toIntOrNull()?.coerceIn(1, 500)
+    }
+    take("""(?:最少|最低)?(?:交易)?笔数\s*[≥>=:：]?\s*(\d+)""") {
+        minTrades = it.groupValues[1].toIntOrNull()?.coerceIn(1, 500)
+    }
+    take("""minTrades\s*[:=]?\s*(\d+)""") {
+        minTrades = it.groupValues[1].toIntOrNull()?.coerceIn(1, 500)
+    }
+
+    val goal = text.split(Regex("""\s+""")).filter { it.isNotEmpty() }.joinToString(" ")
+    return OptimizeHints(goal = goal, rounds = rounds, minWinRatePct = minWr, minTrades = minTrades)
 }
