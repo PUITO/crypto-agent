@@ -44,12 +44,50 @@ data class Rule(
     val period: Int = 14, // MA/EMA/RSI 周期，可手机编辑
 )
 
+enum class StrategyKind(val label: String) {
+    /** 指标规则 OR 组合 */
+    RULES("指标规则"),
+    /** 内置/可参数化算法（可由 LLM 写参数与说明） */
+    ALGO("算法配置"),
+}
+
+/**
+ * 算法 ID（引擎内实现；LLM 只改 params / 说明，不直接跑任意代码）。
+ * TREND_FOLLOW  单边/顺势
+ * PEARSON_TRIPLE 皮尔逊三曲线共振
+ * BREAKOUT      近端高低突破
+ */
+object AlgoIds {
+    const val TREND_FOLLOW = "TREND_FOLLOW"
+    const val PEARSON_TRIPLE = "PEARSON_TRIPLE"
+    const val BREAKOUT = "BREAKOUT"
+    val all = listOf(TREND_FOLLOW, PEARSON_TRIPLE, BREAKOUT)
+    fun label(id: String) = when (id) {
+        TREND_FOLLOW -> "顺势/单边"
+        PEARSON_TRIPLE -> "皮尔逊三曲线"
+        BREAKOUT -> "突破"
+        else -> id
+    }
+}
+
 data class StrategyConfig(
     val id: String,
     val title: String,
     val enabled: Boolean = false,
+    val kind: StrategyKind = StrategyKind.RULES,
     val buyRules: List<Rule> = listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)),
     val sellRules: List<Rule> = listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)),
+    /** 算法 ID，见 AlgoIds */
+    val algoId: String = AlgoIds.TREND_FOLLOW,
+    /**
+     * 算法参数（LLM 可写）。常用键：
+     * TREND_FOLLOW: fast=12 slow=26 consecutive=3 cooldown=3
+     * PEARSON_TRIPLE: p1=5 p2=10 p3=20 window=30 minCorr=0.6 cooldown=2
+     * BREAKOUT: lookback=20 cooldown=5
+     */
+    val algoParams: Map<String, Double> = emptyMap(),
+    /** 给人看/给 LLM 的算法意图说明（可中文） */
+    val algoNote: String = "",
 )
 
 data class StrategyOptimizeResult(

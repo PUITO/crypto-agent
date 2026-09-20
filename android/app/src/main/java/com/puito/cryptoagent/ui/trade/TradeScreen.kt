@@ -214,6 +214,10 @@ fun TradeScreen(repo: Repository) {
 
 
 private fun summarizeRules(cfg: StrategyConfig): String {
+    if (cfg.kind == StrategyKind.ALGO) {
+        val p = cfg.algoParams.entries.take(6).joinToString(" ") { "${it.key}=${fmtNum(it.value)}" }
+        return "算法:${AlgoIds.label(cfg.algoId)} $p\n${cfg.algoNote.take(60)}"
+    }
     fun one(r: Rule) = "${r.indicator.label}${r.op.label}${fmtNum(r.value)}(p${r.period})"
     val b = cfg.buyRules.take(3).joinToString(" | ") { one(it) }
     val s = cfg.sellRules.take(3).joinToString(" | ") { one(it) }
@@ -229,84 +233,138 @@ private fun EditStrategy(
     onLlmTune: (StrategyConfig, String) -> Unit,
 ) {
     var title by remember { mutableStateOf(cfg.title) }
+    var kind by remember { mutableStateOf(cfg.kind) }
+    var algoId by remember { mutableStateOf(cfg.algoId) }
+    var algoNote by remember { mutableStateOf(cfg.algoNote) }
+    var paramsText by remember {
+        mutableStateOf(cfg.algoParams.entries.joinToString("\n") { "${it.key}=${it.value}" })
+    }
     var buy by remember { mutableStateOf(cfg.buyRules) }
     var sell by remember { mutableStateOf(cfg.sellRules) }
     var tuneGoal by remember { mutableStateOf("") }
-    LaunchedEffect(cfg.id, cfg.title, cfg.buyRules, cfg.sellRules) {
+    LaunchedEffect(cfg.id, cfg.title, cfg.kind, cfg.algoId, cfg.algoNote, cfg.algoParams, cfg.buyRules, cfg.sellRules) {
         title = cfg.title
+        kind = cfg.kind
+        algoId = cfg.algoId
+        algoNote = cfg.algoNote
+        paramsText = cfg.algoParams.entries.joinToString("\n") { "${it.key}=${it.value}" }
         buy = cfg.buyRules
         sell = cfg.sellRules
     }
+    fun parseParams(text: String): Map<String, Double> {
+        val m = linkedMapOf<String, Double>()
+        text.lines().forEach { line ->
+            val t = line.trim()
+            if (t.isEmpty() || !t.contains("=")) return@forEach
+            val i = t.indexOf("=")
+            val k = t.substring(0, i).trim()
+            val v = t.substring(i + 1).trim().toDoubleOrNull() ?: return@forEach
+            if (k.isNotEmpty()) m[k] = v
+        }
+        return m
+    }
+    fun currentCfg() = cfg.copy(
+        title = title.ifBlank { cfg.title },
+        kind = kind,
+        algoId = algoId,
+        algoNote = algoNote,
+        algoParams = parseParams(paramsText),
+        buyRules = buy.ifEmpty { listOf(Rule()) },
+        sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
+    )
     Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState())) {
         TextButton(onBack) { Text("← 返回") }
         OutlinedTextField(
-            title,
-            { title = it },
+            title, { title = it },
             label = { Text("策略标题") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
+        Text("类型", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = kind == StrategyKind.ALGO, onClick = { kind = StrategyKind.ALGO }, label = { Text("算法配置") })
+            FilterChip(selected = kind == StrategyKind.RULES, onClick = { kind = StrategyKind.RULES }, label = { Text("指标规则") })
+        }
+        if (kind == StrategyKind.ALGO) {
+            Text(
+                "算法由引擎实现；可手改参数，或让 LLM 按需求选算法并调参（顺势/皮尔逊三曲线/突破）。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                AlgoIds.all.forEach { id ->
+                    FilterChip(
+                        selected = algoId == id,
+                        onClick = { algoId = id },
+                        label = { Text(AlgoIds.label(id), fontSize = 11.sp) },
+                    )
+                }
+            }
+            OutlinedTextField(
+                algoNote, { algoNote = it },
+                label = { Text("算法说明") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+            )
+            OutlinedTextField(
+                paramsText, { paramsText = it },
+                label = { Text("参数 每行 key=value") },
+                placeholder = {
+                    Text(
+                        when (algoId) {
+                            AlgoIds.PEARSON_TRIPLE -> "p1=5\np2=10\np3=20\nwindow=30\nminCorr=0.55\ncooldown=2"
+                            AlgoIds.BREAKOUT -> "lookback=20\ncooldown=5"
+                            else -> "fast=12\nslow=26\nconsecutive=3\ncooldown=3"
+                        },
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 4,
+            )
+        } else {
+            Text(
+                "指标规则：同侧多条件 OR。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+            Text("买入（OR）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+            buy.forEachIndexed { i, rule ->
+                RuleEditor(
+                    index = i + 1,
+                    rule = rule,
+                    onChange = { nr -> buy = buy.toMutableList().also { it[i] = nr } },
+                    onDelete = { buy = buy.toMutableList().also { it.removeAt(i) } },
+                )
+            }
+            TextButton({ buy = buy + Rule() }) { Text("+ 买入条件") }
+            Text("卖出（OR）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+            sell.forEachIndexed { i, rule ->
+                RuleEditor(
+                    index = i + 1,
+                    rule = rule,
+                    onChange = { nr -> sell = sell.toMutableList().also { it[i] = nr } },
+                    onDelete = { sell = sell.toMutableList().also { it.removeAt(i) } },
+                )
+            }
+            TextButton({ sell = sell + Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14) }) { Text("+ 卖出条件") }
+        }
         OutlinedTextField(
             value = tuneGoal,
             onValueChange = { tuneGoal = it },
-            label = { Text("调优需求（必填）") },
-            placeholder = { Text("例：加强趋势过滤，少假信号…") },
-            modifier = Modifier.fillMaxWidth(),
+            label = { Text("LLM 调优需求（必填）") },
+            placeholder = { Text("例：单边行情顺势；或皮尔逊三曲线提高相关阈值") },
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             minLines = 2,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(
-                onClick = {
-                    if (tuneGoal.trim().length >= 4) {
-                        onLlmTune(cfg.copy(title = title, buyRules = buy, sellRules = sell), tuneGoal.trim())
-                    }
-                },
-                enabled = tuneGoal.trim().length >= 4,
-                modifier = Modifier.weight(1f),
-            ) { Text("LLM调优本策略") }
-        }
-        Text(
-            "规则参数均可改：指标 / 比较 / 阈值 / 周期(period)。同侧多条为 OR。",
-            color = MaterialTheme.colorScheme.secondary,
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 8.dp),
-        )
-
-        Text("买入条件（满足任一即买）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
-        buy.forEachIndexed { i, rule ->
-            RuleEditor(
-                index = i + 1,
-                rule = rule,
-                onChange = { nr -> buy = buy.toMutableList().also { it[i] = nr } },
-                onDelete = { buy = buy.toMutableList().also { it.removeAt(i) } },
-            )
-        }
-        TextButton({ buy = buy + Rule() }) { Text("+ 买入条件") }
-
-        Text("卖出条件（满足任一即卖）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
-        sell.forEachIndexed { i, rule ->
-            RuleEditor(
-                index = i + 1,
-                rule = rule,
-                onChange = { nr -> sell = sell.toMutableList().also { it[i] = nr } },
-                onDelete = { sell = sell.toMutableList().also { it.removeAt(i) } },
-            )
-        }
-        TextButton({ sell = sell + Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14) }) { Text("+ 卖出条件") }
-
-        Spacer(Modifier.height(16.dp))
-        Button(
+        OutlinedButton(
             onClick = {
-                onSave(
-                    cfg.copy(
-                        title = title.ifBlank { cfg.title },
-                        buyRules = buy.ifEmpty { listOf(Rule()) },
-                        sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
-                    ),
-                )
+                if (tuneGoal.trim().length >= 4) onLlmTune(currentCfg(), tuneGoal.trim())
             },
+            enabled = tuneGoal.trim().length >= 4,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("保存策略") }
+        ) { Text("LLM 编写/优化本策略") }
+        Spacer(Modifier.height(12.dp))
+        Button(onClick = { onSave(currentCfg()) }, modifier = Modifier.fillMaxWidth()) { Text("保存策略") }
     }
 }
 

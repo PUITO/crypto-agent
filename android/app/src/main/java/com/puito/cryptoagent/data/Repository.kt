@@ -102,10 +102,36 @@ class Repository(ctx: Context) {
         if (j == null) {
             val d = listOf(
                 StrategyConfig(
-                    UUID.randomUUID().toString(), "默认 RSI", true,
-                    listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)),
-                    listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)),
-                )
+                    id = UUID.randomUUID().toString(),
+                    title = "默认 RSI",
+                    enabled = true,
+                    kind = StrategyKind.RULES,
+                    buyRules = listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)),
+                    sellRules = listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)),
+                ),
+                StrategyConfig(
+                    id = UUID.randomUUID().toString(),
+                    title = "顺势单边",
+                    enabled = false,
+                    kind = StrategyKind.ALGO,
+                    algoId = AlgoIds.TREND_FOLLOW,
+                    algoParams = mapOf(
+                        "fast" to 12.0, "slow" to 26.0, "consecutive" to 3.0, "cooldown" to 3.0,
+                    ),
+                    algoNote = "EMA快慢线顺势，连续确认后开单",
+                ),
+                StrategyConfig(
+                    id = UUID.randomUUID().toString(),
+                    title = "皮尔逊三曲线",
+                    enabled = false,
+                    kind = StrategyKind.ALGO,
+                    algoId = AlgoIds.PEARSON_TRIPLE,
+                    algoParams = mapOf(
+                        "p1" to 5.0, "p2" to 10.0, "p3" to 20.0,
+                        "window" to 30.0, "minCorr" to 0.55, "cooldown" to 2.0,
+                    ),
+                    algoNote = "三EMA皮尔逊相关+同向斜率共振",
+                ),
             )
             saveStrategies(d)
             return d
@@ -1106,18 +1132,25 @@ class Repository(ctx: Context) {
         }
 
         val schema = """
-支持指标 indicator（优先用相对指标，禁止用绝对价格当阈值）:
-- RSI: 0-100
-- MACD: MACD柱
-- KDJ_J: J值
-- BOLL_PCT: 收盘在布林带位置，0=下轨 50=中轨 100=上轨（震荡市必用这个，不要用BOLL绝对值）
-- MA_BIAS / EMA_BIAS: (价/均线-1)*100，如 -1 表示低1%
-- MA/EMA/BOLL/CLOSE: 仅特殊情况，value不要填绝对币价
-比较 op: GT, GTE, LT, LTE
-period: 2-200
-同侧多条规则为 OR，可组合例如 买: BOLL_PCT LT 15 OR RSI LT 30
-必须只输出一个 JSON，不要 markdown:
-{"title":"名称","buyRules":[{"indicator":"BOLL_PCT","op":"LT","value":15,"period":20}],"sellRules":[{"indicator":"BOLL_PCT","op":"GT","value":85,"period":20}]}
+两种策略 kind（优先 ALGO，纯指标效果差时必用算法）:
+
+1) kind=ALGO  算法配置（推荐）
+algoId 只能是:
+- TREND_FOLLOW 顺势/单边: params fast,slow,consecutive,cooldown
+- PEARSON_TRIPLE 皮尔逊三曲线: params p1,p2,p3,window,minCorr,cooldown
+- BREAKOUT 突破: params lookback,cooldown
+algoNote 用中文写意图；algoParams 全是数字。
+例:
+{"title":"顺势","kind":"ALGO","algoId":"TREND_FOLLOW","algoParams":{"fast":12,"slow":26,"consecutive":3,"cooldown":3},"algoNote":"单边顺势","buyRules":[],"sellRules":[]}
+{"title":"三曲线","kind":"ALGO","algoId":"PEARSON_TRIPLE","algoParams":{"p1":5,"p2":10,"p3":20,"window":30,"minCorr":0.55,"cooldown":2},"algoNote":"皮尔逊共振","buyRules":[],"sellRules":[]}
+
+2) kind=RULES  指标规则（备用）
+indicator: RSI,MACD,KDJ_J,BOLL_PCT,MA_BIAS,EMA_BIAS （禁止绝对币价）
+op: GT,GTE,LT,LTE  period:2-200  同侧OR
+例:
+{"title":"布林","kind":"RULES","buyRules":[{"indicator":"BOLL_PCT","op":"LT","value":15,"period":20}],"sellRules":[{"indicator":"BOLL_PCT","op":"GT","value":85,"period":20}]}
+
+只输出一个 JSON，不要 markdown。用户要顺势/单边/皮尔逊时必须 kind=ALGO。
 """.trimIndent()
 
         val marketBrief = buildSignalMarketBrief(
@@ -1215,7 +1248,9 @@ ${strategyToJson(parsed)}
         fun rules(rs: List<Rule>) = rs.joinToString(",") { r ->
             """{"indicator":"${r.indicator.name}","op":"${r.op.name}","value":${r.value},"period":${r.period}}"""
         }
-        return """{"title":"${cfg.title.replace("\"", "")}","buyRules":[${rules(cfg.buyRules)}],"sellRules":[${rules(cfg.sellRules)}]}"""
+        val params = cfg.algoParams.entries.joinToString(",") { (k, v) -> "\"$k\":$v" }
+        val note = cfg.algoNote.replace("\"", "").replace("\n", " ")
+        return """{"title":"${cfg.title.replace("\"", "")}","kind":"${cfg.kind.name}","algoId":"${cfg.algoId}","algoParams":{$params},"algoNote":"$note","buyRules":[${rules(cfg.buyRules)}],"sellRules":[${rules(cfg.sellRules)}]}"""
     }
 
     private fun parseStrategyFromLlm(
@@ -1227,6 +1262,27 @@ ${strategyToJson(parsed)}
         return try {
             val o = JsonParser.parseString(jsonStr).asJsonObject
             val title = o.get("title")?.asString?.take(40) ?: "LLM策略"
+            val kindRaw = o.get("kind")?.asString?.uppercase() ?: "RULES"
+            val kind = when {
+                kindRaw.contains("ALGO") || kindRaw.contains("算法") -> StrategyKind.ALGO
+                else -> StrategyKind.RULES
+            }
+            val algoIdRaw = o.get("algoId")?.asString?.uppercase()?.replace("-", "_") ?: AlgoIds.TREND_FOLLOW
+            val algoId = when {
+                algoIdRaw.contains("PEARSON") || algoIdRaw.contains("皮尔逊") || algoIdRaw.contains("三曲线") ->
+                    AlgoIds.PEARSON_TRIPLE
+                algoIdRaw.contains("BREAK") || algoIdRaw.contains("突破") -> AlgoIds.BREAKOUT
+                algoIdRaw.contains("TREND") || algoIdRaw.contains("顺势") || algoIdRaw.contains("单边") ->
+                    AlgoIds.TREND_FOLLOW
+                algoIdRaw in AlgoIds.all -> algoIdRaw
+                else -> AlgoIds.TREND_FOLLOW
+            }
+            val algoParams = linkedMapOf<String, Double>()
+            o.getAsJsonObject("algoParams")?.entrySet()?.forEach { e ->
+                val v = runCatching { e.value.asDouble }.getOrNull()
+                if (v != null) algoParams[e.key] = v
+            }
+            val algoNote = o.get("algoNote")?.asString?.take(200) ?: ""
             fun parseRules(key: String): List<Rule> {
                 val arr = o.getAsJsonArray(key) ?: return emptyList()
                 return arr.mapNotNull { el ->
@@ -1237,7 +1293,7 @@ ${strategyToJson(parsed)}
                             it.label == r.get("indicator")?.asString
                     } ?: when {
                         ind.contains("BOLL_PCT") || ind.contains("BOLLPTC") ||
-                            ind.contains("布林位置") || ind.contains("PERCENT") && ind.contains("BOLL") ->
+                            ind.contains("布林位置") || (ind.contains("PERCENT") && ind.contains("BOLL")) ->
                             IndicatorType.BOLL_PCT
                         ind.contains("MA_BIAS") || ind.contains("MABIAS") || ind.contains("MA偏离") ->
                             IndicatorType.MA_BIAS
@@ -1248,7 +1304,7 @@ ${strategyToJson(parsed)}
                         ind.contains("KDJ") -> IndicatorType.KDJ_J
                         ind.contains("EMA") -> IndicatorType.EMA
                         ind.contains("MA") -> IndicatorType.MA
-                        ind.contains("BOLL") -> IndicatorType.BOLL_PCT // 旧名BOLL默认改为相对位置
+                        ind.contains("BOLL") -> IndicatorType.BOLL_PCT
                         ind.contains("CLOSE") || ind.contains("收盘") -> IndicatorType.CLOSE
                         else -> return@mapNotNull null
                     }
@@ -1265,9 +1321,26 @@ ${strategyToJson(parsed)}
                     Rule(indicator, op, value, period)
                 }
             }
-            val buy = parseRules("buyRules").ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)) }
-            val sell = parseRules("sellRules").ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) }
-            StrategyConfig(id = id, title = title, enabled = keepEnabled, buyRules = buy, sellRules = sell)
+            val buy = parseRules("buyRules")
+            val sell = parseRules("sellRules")
+            val finalKind = when {
+                kind == StrategyKind.ALGO -> StrategyKind.ALGO
+                buy.isEmpty() && sell.isEmpty() && algoParams.isNotEmpty() -> StrategyKind.ALGO
+                else -> kind
+            }
+            StrategyConfig(
+                id = id,
+                title = title,
+                enabled = keepEnabled,
+                kind = finalKind,
+                buyRules = if (finalKind == StrategyKind.RULES && buy.isEmpty())
+                    listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)) else buy,
+                sellRules = if (finalKind == StrategyKind.RULES && sell.isEmpty())
+                    listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) else sell,
+                algoId = algoId,
+                algoParams = algoParams,
+                algoNote = algoNote,
+            )
         } catch (_: Exception) {
             null
         }
