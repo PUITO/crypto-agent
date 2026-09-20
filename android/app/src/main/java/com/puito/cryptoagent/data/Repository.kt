@@ -526,11 +526,22 @@ class Repository(ctx: Context) {
         }
         val out = filterCrossInterval(dedup.values.toList())
 
-        if (s.hibt.autoTrade) {
-            val selected = s.hibt.autoIntervals
+        // 自动下单：遍历本轮所有及时信号（含 AI 结果），按配置过滤
+        run {
+            val h = s.hibt
+            val selected = h.autoIntervals
                 .map { it.trim().lowercase() }
                 .filter { it in setOf("5m", "10m", "30m", "1h") }
-                .ifEmpty { listOf(s.interval) }
+                .ifEmpty { listOf("5m", "10m", "30m", "1h") }
+            val passedAi = timely.filter { it.ai?.passThreshold == true }
+            if (!h.autoTrade) {
+                if (passedAi.isNotEmpty()) {
+                    HibtWebSession.appendLog(
+                        "有${passedAi.size}条AI达阈值但【自动化下单未开启】，仅通知不落单",
+                    )
+                }
+                return@run
+            }
             val barsForChase = bars1m.ifEmpty {
                 try {
                     binance.fetch(s.symbol, Interval.M1, 80)
@@ -539,10 +550,23 @@ class Repository(ctx: Context) {
                 }
             }
             val orderList = timely.filter { it.interval.lowercase() in selected }
+            if (orderList.isEmpty() && timely.isNotEmpty()) {
+                HibtWebSession.appendLog(
+                    "自动下单：本轮信号周期${timely.map { it.interval }.distinct()} 不在勾选周期$selected 内，跳过",
+                )
+            }
+            if (h.dryRun && passedAi.any { it.interval.lowercase() in selected }) {
+                HibtWebSession.appendLog(
+                    "注意：Dry-Run 仍开启 → 达阈值也只会模拟，不会真实下单。请在下单页关闭 Dry-Run",
+                )
+            }
             for (p in orderList) {
-                if (s.hibt.antiChaseEnabled && barsForChase.isNotEmpty() &&
-                    isOneSidedChase(barsForChase, p.mark.side, s.hibt.antiChaseBars)
+                if (h.antiChaseEnabled && barsForChase.isNotEmpty() &&
+                    isOneSidedChase(barsForChase, p.mark.side, h.antiChaseBars)
                 ) {
+                    HibtWebSession.appendLog(
+                        "防追单跳过 ${p.mark.side} ${p.interval} ai=${p.ai?.winRatePct}",
+                    )
                     continue
                 }
                 maybeAutoOrder(s, p.mark, p.ai, p.interval)
@@ -746,19 +770,24 @@ class Repository(ctx: Context) {
         intervalCode: String,
     ) {
         val h = s.hibt
-        // 自动下单三条件：开自动 + 开 AI 评估 +（由 place 路径尊重 dryRun）
-        // AI 关：只通知、手动下单，绝不自动下单
+        // 真实自动下单：autoTrade + aiEvaluate + passThreshold + !dryRun + WebView
         if (!h.autoTrade) return
         if (!h.aiEvaluate) {
             HibtWebSession.appendLog(
-                "信号仅通知(AI评估未开)，不自动下单 ${s.symbol} ${m.side} iv=$intervalCode"
+                "跳过下单: AI评估未开 ${s.symbol} ${m.side} $intervalCode",
             )
             return
         }
-        if (ai?.winRatePct == null || ai.passThreshold != true) {
+        if (ai == null) {
             HibtWebSession.appendLog(
-                "AI未过阈值，跳过自动下单 ${s.symbol} ${m.side} iv=$intervalCode " +
-                    "ai=${ai?.winRatePct} 阈=${ai?.thresholdPct ?: h.aiMinWinRate}"
+                "跳过下单: 无AI结果(超时/失败) ${s.symbol} ${m.side} $intervalCode",
+            )
+            return
+        }
+        if (ai.winRatePct == null || ai.passThreshold != true) {
+            HibtWebSession.appendLog(
+                "跳过下单: 未达阈值 ai=${ai.winRatePct} 阈=${ai.thresholdPct} " +
+                    "pass=${ai.passThreshold} ${m.side} $intervalCode",
             )
             return
         }
@@ -766,10 +795,26 @@ class Repository(ctx: Context) {
         val key = "${s.symbol}|${m.side}|${m.openTime}|${unit}"
         synchronized(placeLock) {
             if (!placedOrderKeys.add(key)) {
+                HibtWebSession.appendLog("跳过下单: 同信号已处理过 $key")
                 return
             }
         }
-        HibtWebSession.appendLog("自动下单触发 ${s.symbol} ${m.side} tu=${unit}m iv=$intervalCode")
+        val mode = if (h.dryRun) "DRY-RUN模拟" else "真实下单"
+        HibtWebSession.appendLog(
+            ">>> 触发自动下单[$mode] ${s.symbol} ${m.side} tu=${unit}m iv=$intervalCode " +
+                "ai=${ai.winRatePct}%≥${ai.thresholdPct}% amt=${h.defaultAmount}",
+        )
+        if (h.dryRun) {
+            Notify.orderResult(
+                appCtx,
+                ok = true,
+                dryRun = true,
+                message = "AI已达阈值(${"%.1f".format(ai.winRatePct)}%≥${"%.0f".format(ai.thresholdPct)}%)，但 Dry-Run 开启，未真实下单。请关闭 Dry-Run 后才会实盘。",
+                sideLabel = if (m.side == "B") "买涨 B" else "买跌 S",
+                amount = h.defaultAmount,
+                timeUnit = unit,
+            )
+        }
         val result = placePreferWeb(
             directionUp = m.side == "B",
             amount = h.defaultAmount,
@@ -777,7 +822,10 @@ class Repository(ctx: Context) {
             timeUnit = unit,
             cfg = h,
         )
-        HibtWebSession.appendLog("自动下单结果 ok=${result.ok} dry=${result.dryRun} ${result.message.take(120)}")
+        HibtWebSession.appendLog(
+            "<<< 自动下单结果 ok=${result.ok} dry=${result.dryRun} ${result.message.take(160)}",
+        )
+        // dry 或失败允许同信号后续重试；真实成功则保持去重
         if (result.dryRun || !result.ok) {
             placedOrderKeys.remove(key)
         }

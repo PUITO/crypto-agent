@@ -149,7 +149,7 @@ data class HibtSettings(
      * 自动下单多选周期（与行情页全局 interval 解耦）。
      * 合法：5m / 10m / 30m / 1h
      */
-    val autoIntervals: List<String> = listOf("10m"),
+    val autoIntervals: List<String> = listOf("5m", "10m", "30m", "1h"),
     /** 大单边行情防追单：同向连续强势 K 线时跳过同向自动下单 */
     val antiChaseEnabled: Boolean = true,
     /** 检测窗口 K 线根数（1m 主源） */
