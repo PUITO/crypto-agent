@@ -109,61 +109,59 @@ fun ChatScreen(repo: Repository) {
                 val trimmed = body.trim()
                 val reply = when {
                     isOptimizeStrategyCmd(trimmed) -> {
-                        val hints = parseOptimizeHints(
-                            stripStrategyPrefix(trimmed, listOf("优化策略：", "优化策略:", "优化策略", "LLM优化策略")),
+                        val hints = withDefaults(
+                            parseOptimizeHints(
+                                stripStrategyPrefix(trimmed, listOf("优化策略：", "优化策略:", "优化策略", "LLM优化策略")),
+                            ),
+                            defaultGoal = "在现有策略上提高胜率与稳定性，优先 ALGO 顺势/皮尔逊，减少假信号",
                         )
-                        if (hints.goal.isBlank()) {
-                            "直接写优化说明即可，例如：\n优化策略：减少假突破，轮次3，目标胜率55%，最少20笔"
-                        } else {
-                            val en = repo.strategies().find { it.enabled } ?: repo.strategies().firstOrNull()
-                            if (en == null) {
-                                "没有可优化的策略，请先在策略页新建。"
-                            } else {
-                                val head = buildString {
-                                    append("优化「${en.title}」· 轮次${hints.rounds}")
-                                    hints.minWinRatePct?.let { append(" · 目标胜率≥${"%.0f".format(it)}%") }
-                                    hints.minTrades?.let { append(" · 最少${it}笔") }
-                                    append("\n${hints.goal}")
-                                }
-                                msgs.add(Msg("assistant", head))
-                                repo.optimizeStrategyWithLlm(
-                                    baseId = en.id,
-                                    rounds = hints.rounds,
-                                    userGoal = hints.goal,
-                                    minWinRatePct = hints.minWinRatePct,
-                                    minTrades = hints.minTrades,
-                                ).fold(
-                                    onSuccess = { "【策略优化完成】\n${it.report}" },
-                                    onFailure = { "优化失败: ${it.message}" },
-                                )
-                            }
-                        }
-                    }
-                    isGenerateStrategyCmd(trimmed) -> {
-                        val hints = parseOptimizeHints(
-                            stripStrategyPrefix(trimmed, listOf("生成策略：", "生成策略:", "生成策略", "LLM生成策略")),
-                        )
-                        if (hints.goal.isBlank()) {
-                            "直接写生成说明即可，例如：\n生成策略：皮尔逊三曲线，轮次3，目标胜率55%，最少15笔"
+                        val en = repo.strategies().find { it.enabled } ?: repo.strategies().firstOrNull()
+                        if (en == null) {
+                            "没有可优化的策略，请先在策略页新建。"
                         } else {
                             val head = buildString {
-                                append("生成策略 · 轮次${hints.rounds}")
+                                append("优化「${en.title}」· 轮次${hints.rounds}")
                                 hints.minWinRatePct?.let { append(" · 目标胜率≥${"%.0f".format(it)}%") }
                                 hints.minTrades?.let { append(" · 最少${it}笔") }
                                 append("\n${hints.goal}")
                             }
                             msgs.add(Msg("assistant", head))
                             repo.optimizeStrategyWithLlm(
-                                baseId = null,
+                                baseId = en.id,
                                 rounds = hints.rounds,
                                 userGoal = hints.goal,
                                 minWinRatePct = hints.minWinRatePct,
                                 minTrades = hints.minTrades,
                             ).fold(
-                                onSuccess = { "【新策略已创建】\n${it.report}" },
-                                onFailure = { "生成失败: ${it.message}" },
+                                onSuccess = { "【策略优化完成】\n${it.report}" },
+                                onFailure = { "优化失败: ${it.message}" },
                             )
                         }
+                    }
+                    isGenerateStrategyCmd(trimmed) -> {
+                        val hints = withDefaults(
+                            parseOptimizeHints(
+                                stripStrategyPrefix(trimmed, listOf("生成策略：", "生成策略:", "生成策略", "LLM生成策略")),
+                            ),
+                            defaultGoal = "设计事件合约策略，优先 ALGO 顺势单边或皮尔逊三曲线，兼顾胜率与笔数",
+                        )
+                        val head = buildString {
+                            append("生成策略 · 轮次${hints.rounds}")
+                            hints.minWinRatePct?.let { append(" · 目标胜率≥${"%.0f".format(it)}%") }
+                            hints.minTrades?.let { append(" · 最少${it}笔") }
+                            append("\n${hints.goal}")
+                        }
+                        msgs.add(Msg("assistant", head))
+                        repo.optimizeStrategyWithLlm(
+                            baseId = null,
+                            rounds = hints.rounds,
+                            userGoal = hints.goal,
+                            minWinRatePct = hints.minWinRatePct,
+                            minTrades = hints.minTrades,
+                        ).fold(
+                            onSuccess = { "【新策略已创建】\n${it.report}" },
+                            onFailure = { "生成失败: ${it.message}" },
+                        )
                     }
                     else -> {
                         val bars = if (attach) marketBars else 0
@@ -353,6 +351,17 @@ data class OptimizeHints(
     val minWinRatePct: Double? = null,
     val minTrades: Int? = null,
 )
+
+/** 芯片一点即跑：无额外说明时用默认目标与训练参数 */
+private fun withDefaults(h: OptimizeHints, defaultGoal: String): OptimizeHints {
+    val blank = h.goal.isBlank()
+    return OptimizeHints(
+        goal = if (blank) defaultGoal else h.goal,
+        rounds = if (blank && h.rounds == 2) 3 else h.rounds,
+        minWinRatePct = h.minWinRatePct ?: if (blank) 55.0 else null,
+        minTrades = h.minTrades ?: if (blank) 15 else null,
+    )
+}
 
 private fun parseOptimizeHints(raw: String): OptimizeHints {
     var text = raw.trim()
