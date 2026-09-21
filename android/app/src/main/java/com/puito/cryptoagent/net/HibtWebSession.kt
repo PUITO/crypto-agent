@@ -564,16 +564,31 @@ object HibtWebSession {
         timeoutSec: Int = 45,
     ): PlaceOutcome? {
         val wv = webView
-        if (wv == null) return null
+        if (wv == null) {
+            appendLog("placeOrder: WebView=null")
+            return null
+        }
+
+        // 打断未完成的上一笔等待，避免 deferred 永久挂起
+        placeWait?.let { prev ->
+            if (!prev.isCompleted) {
+                prev.complete(PlaceOutcome(false, "被新的下单请求打断", dryRun = false))
+            }
+        }
+        placeWait = null
 
         main.post { wakeWebView(wv) }
+        appendLog("placeOrder: 恢复合约页…")
 
-        // 隐藏后再下单：先恢复到已锁定的事件合约页（避免停在首页点不到买涨/买跌）
-        val onOrder = ensureOrderPage(10_000L)
+        // 隐藏后再下单：先恢复到已锁定的事件合约页
+        val onOrder = ensureOrderPage(8_000L)
         if (!onOrder) {
+            appendLog("placeOrder: 未确认在合约下单页（仍尝试下单）")
             _ui.value = _ui.value.copy(
                 status = "未在合约下单页：请打开 WebView 进入事件合约后点「锁定当前为下单页」",
             )
+        } else {
+            appendLog("placeOrder: 已在合约页")
         }
 
         // 同步页面 origin
@@ -713,9 +728,12 @@ object HibtWebSession {
                 webView?.evaluateJavascript(js, null)
             }, 450)
         }
-        val waitMs = (timeoutSec.coerceIn(10, 180) * 1000L).coerceAtMost(90_000L)
+        val waitMs = (timeoutSec.coerceIn(10, 45) * 1000L).coerceAtMost(40_000L)
+        appendLog("placeOrder: 等待 WebView 回调 ≤${waitMs / 1000}s")
         val webResult = withTimeoutOrNull(waitMs) { deferred.await() }
+        if (placeWait === deferred) placeWait = null
         if (webResult != null) {
+            appendLog("placeOrder: WebView回调 ok=${webResult.ok} ${webResult.message.take(100)}")
             if (webResult.ok) {
                 _ui.value = _ui.value.copy(lastPlaceMsg = webResult.message, status = webResult.message.take(100))
                 return webResult
@@ -733,6 +751,7 @@ object HibtWebSession {
             }
             _ui.value = _ui.value.copy(status = "WebView失败，降级原生… ${webResult.message.take(40)}")
         } else {
+            appendLog("placeOrder: WebView 回调超时，降级原生")
             _ui.value = _ui.value.copy(status = "WebView 超时，降级原生 POST…")
         }
 

@@ -953,32 +953,49 @@ class Repository(ctx: Context) {
             }
         }
         val mode = if (h.dryRun) "DRY-RUN模拟" else "真实下单"
-        HibtWebSession.appendLog(
+        val triggerMsg =
             ">>> 触发自动下单[$mode] ${s.symbol} ${m.side} tu=${unit}m iv=$intervalCode " +
-                "ai=${ai.winRatePct}%≥${ai.thresholdPct}% amt=${h.defaultAmount}",
-        )
-        if (h.dryRun) {
-            Notify.orderResult(
-                appCtx,
-                ok = true,
-                dryRun = true,
-                message = "AI已达阈值(${"%.1f".format(ai.winRatePct)}%≥${"%.0f".format(ai.thresholdPct)}%)，但 Dry-Run 开启，未真实下单。请关闭 Dry-Run 后才会实盘。",
-                sideLabel = if (m.side == "B") "买涨 B" else "买跌 S",
-                amount = h.defaultAmount,
-                timeUnit = unit,
-            )
-        }
-        val result = placePreferWeb(
-            directionUp = m.side == "B",
+                "ai=${ai.winRatePct}%≥${ai.thresholdPct}% amt=${h.defaultAmount}"
+        HibtWebSession.appendLog(triggerMsg)
+        // 触发即通知，避免 WebView 卡住时用户完全无感知
+        Notify.orderResult(
+            appCtx,
+            ok = true,
+            dryRun = h.dryRun,
+            message = if (h.dryRun) {
+                "AI达阈值，Dry-Run 模拟中（不会真实成交）"
+            } else {
+                "AI达阈值，正在提交下单… 请保持 WebView 已登录并锁定合约页"
+            },
+            sideLabel = if (m.side == "B") "买涨 B" else "买跌 S",
             amount = h.defaultAmount,
-            symbol = s.symbol,
             timeUnit = unit,
-            cfg = h,
         )
+        val result = try {
+            placePreferWeb(
+                directionUp = m.side == "B",
+                amount = h.defaultAmount,
+                symbol = s.symbol,
+                timeUnit = unit,
+                cfg = h,
+            )
+        } catch (e: Exception) {
+            HibtWebSession.appendLog("自动下单异常: ${e.message}")
+            HibtClient.OrderResult(false, "异常: ${e.message}", dryRun = h.dryRun, raw = e.message)
+        }
         HibtWebSession.appendLog(
-            "<<< 自动下单结果 ok=${result.ok} dry=${result.dryRun} ${result.message.take(160)}",
+            "<<< 自动下单结果 ok=${result.ok} dry=${result.dryRun} ${result.message.take(200)}",
         )
-        // dry 或失败允许同信号后续重试；真实成功则保持去重
+        // 结果再通知一次（覆盖“正在提交”）
+        Notify.orderResult(
+            appCtx,
+            ok = result.ok,
+            dryRun = result.dryRun,
+            message = result.message,
+            sideLabel = if (m.side == "B") "买涨 B" else "买跌 S",
+            amount = h.defaultAmount,
+            timeUnit = unit,
+        )
         if (result.dryRun || !result.ok) {
             placedOrderKeys.remove(key)
         }
@@ -1003,16 +1020,24 @@ class Repository(ctx: Context) {
             )
             return HibtClient.OrderResult(false, msg, dryRun = true, raw = msg)
         }
-        val outcome = HibtWebSession.placeOrder(
-            directionUp = directionUp,
-            amount = amount,
-            symbol = symbol,
-            timeUnit = timeUnit,
-            dryRun = cfg.dryRun,
-            timeoutSec = cfg.placeTimeoutSec,
-        ) ?: HibtWebSession.PlaceOutcome(
+        // 自动场景超时过长易“只见触发不见结果”；上限 35s，仍可用设置项但不超过 45
+        val to = cfg.placeTimeoutSec.coerceIn(12, 45).coerceAtMost(35)
+        HibtWebSession.appendLog("placePreferWeb 开始 dry=${cfg.dryRun} tu=$timeUnit to=${to}s peek=${HibtWebSession.peek()!=null}")
+        val outcome = try {
+            HibtWebSession.placeOrder(
+                directionUp = directionUp,
+                amount = amount,
+                symbol = symbol,
+                timeUnit = timeUnit,
+                dryRun = cfg.dryRun,
+                timeoutSec = to,
+            )
+        } catch (e: Exception) {
+            HibtWebSession.appendLog("placeOrder异常: ${e.message}")
+            null
+        } ?: HibtWebSession.PlaceOutcome(
             false,
-            "WebView 无响应，请重新打开 WebView 并进入合约/订单页",
+            "WebView 无响应/超时，请打开 WebView 登录并「锁定当前为下单页」后重试",
             cfg.dryRun,
         )
         val result = HibtClient.OrderResult(
