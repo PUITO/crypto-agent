@@ -1011,14 +1011,21 @@ class Repository(ctx: Context) {
         timeUnit: Int,
         cfg: HibtSettings,
     ): HibtClient.OrderResult {
+        // 勿把「无 WebView」误标成 dryRun=true（用户设置可能是实盘）
         if (HibtWebSession.peek() == null) {
-            val msg = "【必须 WebView】请先打开 WebView 登录并「隐藏保活」。已禁用原生接口下单（不再使用时间戳 v）。"
+            HibtWebSession.appendLog("placePreferWeb: WebView=null，尝试 ensureAlive 重建")
+            HibtWebSession.ensureAlive(appCtx)
+        }
+        if (HibtWebSession.peek() == null) {
+            val msg =
+                "【WebView 未启动】请先在下单页打开 WebView 登录，进入事件合约并「锁定下单页」，" +
+                    "再点「隐藏(保活)」。不要点「停止 WebView」。当前 dryRun=${cfg.dryRun}"
             Notify.orderResult(
-                appCtx, ok = false, dryRun = true, message = msg,
+                appCtx, ok = false, dryRun = cfg.dryRun, message = msg,
                 sideLabel = if (directionUp) "买涨" else "买跌",
                 amount = amount, timeUnit = timeUnit,
             )
-            return HibtClient.OrderResult(false, msg, dryRun = true, raw = msg)
+            return HibtClient.OrderResult(false, msg, dryRun = cfg.dryRun, raw = msg)
         }
         // 自动场景超时过长易“只见触发不见结果”；上限 35s，仍可用设置项但不超过 45
         val to = cfg.placeTimeoutSec.coerceIn(12, 45).coerceAtMost(35)

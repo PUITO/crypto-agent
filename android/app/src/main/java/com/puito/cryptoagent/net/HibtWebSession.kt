@@ -99,6 +99,34 @@ object HibtWebSession {
 
     fun peek(): WebView? = webView
 
+    /**
+     * 自动下单前确保 WebView 实例存在。
+     * 若被「停止」销毁，会按 Cookie 重建并尽量恢复锁定的合约页（需仍处于登录态）。
+     */
+    fun ensureAlive(context: Context? = null): WebView? {
+        webView?.let { return it }
+        val ctx = context ?: appCtx ?: return null
+        val wv = obtain(ctx)
+        val target = lastOrderPageUrl.ifBlank { "https://m.hibt.com/" }
+        main.post {
+            try {
+                wakeWebView(wv)
+                if (wv.url.isNullOrBlank() || wv.url == "about:blank") {
+                    wv.loadUrl(target)
+                }
+                injectHooks(wv, force = false)
+                _ui.value = _ui.value.copy(
+                    status = "自动下单：已重建 WebView，请确认登录态",
+                    ready = true,
+                )
+            } catch (e: Exception) {
+                appendLog("ensureAlive: ${e.message}")
+            }
+        }
+        appendLog("ensureAlive: WebView 已重建，恢复 $target")
+        return wv
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     fun obtain(context: Context): WebView {
         webView?.let { return it }
