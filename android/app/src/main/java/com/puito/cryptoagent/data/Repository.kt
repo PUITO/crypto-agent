@@ -100,44 +100,171 @@ class Repository(ctx: Context) {
     fun strategies(): List<StrategyConfig> {
         val j = sp.getString("strategies", null)
         if (j == null) {
-            val d = listOf(
-                StrategyConfig(
-                    id = UUID.randomUUID().toString(),
-                    title = "默认 RSI",
-                    enabled = true,
-                    kind = StrategyKind.RULES,
-                    buyRules = listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)),
-                    sellRules = listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)),
-                ),
-                StrategyConfig(
-                    id = UUID.randomUUID().toString(),
-                    title = "顺势单边",
-                    enabled = false,
-                    kind = StrategyKind.ALGO,
-                    algoId = AlgoIds.TREND_FOLLOW,
-                    algoParams = mapOf(
-                        "fast" to 12.0, "slow" to 26.0, "consecutive" to 3.0, "cooldown" to 3.0,
-                    ),
-                    algoNote = "EMA快慢线顺势，连续确认后开单",
-                ),
-                StrategyConfig(
-                    id = UUID.randomUUID().toString(),
-                    title = "皮尔逊三曲线",
-                    enabled = false,
-                    kind = StrategyKind.ALGO,
-                    algoId = AlgoIds.PEARSON_TRIPLE,
-                    algoParams = mapOf(
-                        "p1" to 5.0, "p2" to 10.0, "p3" to 20.0,
-                        "window" to 30.0, "minCorr" to 0.55, "cooldown" to 2.0,
-                    ),
-                    algoNote = "三EMA皮尔逊相关+同向斜率共振",
-                ),
-            )
+            val d = defaultStrategies()
             saveStrategies(d)
             return d
         }
-        val type = object : TypeToken<List<StrategyConfig>>() {}.type
-        return runCatching { gson.fromJson<List<StrategyConfig>>(j, type) }.getOrDefault(emptyList())
+        // 旧版 JSON 无 kind 字段时 Gson 会把 kind 置 null，访问 ordinal 即崩溃；手工兜底
+        val list = runCatching { parseStrategiesJson(j) }.getOrElse {
+            runCatching {
+                val type = object : TypeToken<List<StrategyConfig>>() {}.type
+                gson.fromJson<List<StrategyConfig>>(j, type)?.map { normalizeStrategy(it) } ?: emptyList()
+            }.getOrDefault(emptyList())
+        }
+        return list.ifEmpty { defaultStrategies() }
+    }
+
+    private fun defaultStrategies(): List<StrategyConfig> = listOf(
+        StrategyConfig(
+            id = UUID.randomUUID().toString(),
+            title = "默认 RSI",
+            enabled = true,
+            kind = StrategyKind.RULES,
+            buyRules = listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)),
+            sellRules = listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)),
+        ),
+        StrategyConfig(
+            id = UUID.randomUUID().toString(),
+            title = "顺势单边",
+            enabled = false,
+            kind = StrategyKind.ALGO,
+            algoId = AlgoIds.TREND_FOLLOW,
+            algoParams = mapOf(
+                "fast" to 12.0, "slow" to 26.0, "consecutive" to 3.0, "cooldown" to 3.0,
+            ),
+            algoNote = "EMA快慢线顺势，连续确认后开单",
+        ),
+        StrategyConfig(
+            id = UUID.randomUUID().toString(),
+            title = "皮尔逊三曲线",
+            enabled = false,
+            kind = StrategyKind.ALGO,
+            algoId = AlgoIds.PEARSON_TRIPLE,
+            algoParams = mapOf(
+                "p1" to 5.0, "p2" to 10.0, "p3" to 20.0,
+                "window" to 30.0, "minCorr" to 0.55, "cooldown" to 2.0,
+            ),
+            algoNote = "三EMA皮尔逊相关+同向斜率共振",
+        ),
+    )
+
+    /** 反射读取可能被 Gson 置空的枚举，避免 NPE */
+    private fun normalizeStrategy(c: StrategyConfig): StrategyConfig {
+        val kind = safeKind(c)
+        val algoId = try {
+            c.algoId.ifBlank { AlgoIds.TREND_FOLLOW }
+        } catch (_: Exception) {
+            AlgoIds.TREND_FOLLOW
+        }
+        val algoParams = try {
+            c.algoParams ?: emptyMap()
+        } catch (_: Exception) {
+            emptyMap()
+        }
+        val algoNote = try {
+            c.algoNote ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+        val buy = try {
+            c.buyRules ?: emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val sell = try {
+            c.sellRules ?: emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+        return StrategyConfig(
+            id = c.id,
+            title = c.title,
+            enabled = c.enabled,
+            kind = kind,
+            buyRules = buy.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)) },
+            sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
+            algoId = algoId,
+            algoParams = algoParams,
+            algoNote = algoNote,
+        )
+    }
+
+    private fun safeKind(c: StrategyConfig): StrategyKind {
+        return try {
+            val f = StrategyConfig::class.java.getDeclaredField("kind")
+            f.isAccessible = true
+            (f.get(c) as? StrategyKind) ?: StrategyKind.RULES
+        } catch (_: Exception) {
+            StrategyKind.RULES
+        }
+    }
+
+    private fun parseStrategiesJson(j: String): List<StrategyConfig> {
+        val root = JsonParser.parseString(j)
+        if (!root.isJsonArray) return emptyList()
+        return root.asJsonArray.mapNotNull { el ->
+            if (!el.isJsonObject) return@mapNotNull null
+            val o = el.asJsonObject
+            val id = o.get("id")?.asString ?: UUID.randomUUID().toString()
+            val title = o.get("title")?.asString ?: "策略"
+            val enabled = o.get("enabled")?.asBoolean ?: false
+            val kindRaw = o.get("kind")?.asString?.uppercase()
+            val kind = when {
+                kindRaw == null || kindRaw.isBlank() -> StrategyKind.RULES
+                kindRaw.contains("ALGO") || kindRaw.contains("算法") -> StrategyKind.ALGO
+                else -> StrategyKind.RULES
+            }
+            val algoIdRaw = o.get("algoId")?.asString?.uppercase()?.replace("-", "_") ?: AlgoIds.TREND_FOLLOW
+            val algoId = when {
+                algoIdRaw.contains("PEARSON") -> AlgoIds.PEARSON_TRIPLE
+                algoIdRaw.contains("BREAK") -> AlgoIds.BREAKOUT
+                algoIdRaw in AlgoIds.all -> algoIdRaw
+                else -> AlgoIds.TREND_FOLLOW
+            }
+            val algoParams = linkedMapOf<String, Double>()
+            o.getAsJsonObject("algoParams")?.entrySet()?.forEach { e ->
+                runCatching { e.value.asDouble }.getOrNull()?.let { algoParams[e.key] = it }
+            }
+            val algoNote = o.get("algoNote")?.asString ?: ""
+            fun rules(key: String): List<Rule> {
+                val arr = o.getAsJsonArray(key) ?: return emptyList()
+                return arr.mapNotNull { item ->
+                    val r = item.asJsonObject
+                    val indName = r.get("indicator")?.asString?.uppercase()?.replace("-", "_") ?: return@mapNotNull null
+                    val indicator = IndicatorType.entries.find { it.name == indName } ?: when {
+                        indName.contains("RSI") -> IndicatorType.RSI
+                        indName.contains("MACD") -> IndicatorType.MACD
+                        indName.contains("KDJ") -> IndicatorType.KDJ_J
+                        indName.contains("BOLL_PCT") || indName.contains("BOLL") -> IndicatorType.BOLL_PCT
+                        indName.contains("MA_BIAS") -> IndicatorType.MA_BIAS
+                        indName.contains("EMA_BIAS") -> IndicatorType.EMA_BIAS
+                        indName.contains("EMA") -> IndicatorType.EMA
+                        indName.contains("MA") -> IndicatorType.MA
+                        else -> IndicatorType.RSI
+                    }
+                    val opName = r.get("op")?.asString?.uppercase() ?: "LT"
+                    val op = CompareOp.entries.find { it.name == opName } ?: CompareOp.LT
+                    val value = r.get("value")?.asDouble ?: return@mapNotNull null
+                    val period = r.get("period")?.asInt?.coerceIn(2, 200) ?: 14
+                    Rule(indicator, op, value, period)
+                }
+            }
+            StrategyConfig(
+                id = id,
+                title = title,
+                enabled = enabled,
+                kind = kind,
+                buyRules = rules("buyRules").ifEmpty {
+                    listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14))
+                },
+                sellRules = rules("sellRules").ifEmpty {
+                    listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14))
+                },
+                algoId = algoId,
+                algoParams = algoParams,
+                algoNote = algoNote,
+            )
+        }
     }
 
     fun saveStrategies(list: List<StrategyConfig>) {

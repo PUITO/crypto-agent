@@ -6,7 +6,12 @@ import kotlin.math.sqrt
 
 object StrategyEngine {
     fun signals(candles: List<Candle>, cfg: StrategyConfig): List<SignalMark> {
-        return when (cfg.kind) {
+        val kind = try {
+            cfg.kind
+        } catch (_: Exception) {
+            StrategyKind.RULES
+        } ?: StrategyKind.RULES
+        return when (kind) {
             StrategyKind.ALGO -> AlgoEngine.signals(candles, cfg)
             StrategyKind.RULES -> ruleSignals(candles, cfg)
         }
