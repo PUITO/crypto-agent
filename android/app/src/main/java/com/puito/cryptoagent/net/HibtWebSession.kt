@@ -16,6 +16,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicLong
 
@@ -300,38 +302,45 @@ object HibtWebSession {
     /**
      * 下单前确保在合约页：若当前不是，则恢复 lastOrderPageUrl 并等待加载。
      */
+    /** 所有 WebView API 必须在主线程调用 */
+    private suspend fun <T> onMain(block: () -> T): T =
+        withContext(Dispatchers.Main.immediate) { block() }
+
+    private suspend fun currentUrl(): String? = onMain { webView?.url }
+
     suspend fun ensureOrderPage(timeoutMs: Long = 10_000L): Boolean {
         val wv = webView ?: return false
-        main.post { wakeWebView(wv) }
-        val cur = wv.url
+        onMain { wakeWebView(wv) }
+        val cur = currentUrl()
         if (looksLikeOrderPage(cur)) {
-            main.post { injectHooks(wv) }
+            onMain { injectHooks(wv) }
             return true
         }
         val target = lastOrderPageUrl
         if (target.isBlank()) {
-            main.post {
+            onMain {
                 wakeWebView(wv)
                 wv.evaluateJavascript(GO_EVENT_MENU_JS, null)
             }
             kotlinx.coroutines.delay(2_500)
-            return looksLikeOrderPage(webView?.url) || lastOrderPageUrl.isNotBlank()
+            return looksLikeOrderPage(currentUrl()) || lastOrderPageUrl.isNotBlank()
         }
-        main.post {
+        onMain {
             _ui.value = _ui.value.copy(status = "下单前恢复合约页…")
+            wakeWebView(wv)
             wv.loadUrl(target)
         }
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             kotlinx.coroutines.delay(400)
-            val u = webView?.url
+            val u = currentUrl()
             if (looksLikeOrderPage(u) || u == target) {
-                main.post { webView?.let { injectHooks(it) } }
+                onMain { webView?.let { injectHooks(it) } }
                 kotlinx.coroutines.delay(500)
                 return true
             }
         }
-        return looksLikeOrderPage(webView?.url)
+        return looksLikeOrderPage(currentUrl())
     }
 
     fun lockCurrentAsOrderPage() {
@@ -577,10 +586,10 @@ object HibtWebSession {
         }
         placeWait = null
 
-        main.post { wakeWebView(wv) }
+        onMain { wakeWebView(wv) }
         appendLog("placeOrder: 恢复合约页…")
 
-        // 隐藏后再下单：先恢复到已锁定的事件合约页
+        // 隐藏后再下单：先恢复到已锁定的事件合约页（ensure 内已切主线程）
         val onOrder = ensureOrderPage(8_000L)
         if (!onOrder) {
             appendLog("placeOrder: 未确认在合约下单页（仍尝试下单）")
