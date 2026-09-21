@@ -18,21 +18,20 @@ import kotlinx.coroutines.launch
 
 data class Msg(val role: String, val text: String)
 
-/** 模板行为：直接发送 / 仅填入输入框待用户编辑发送 */
+/** 模板行为 */
 private enum class TplAction {
-    /** 本地命令，立即发送，不带行情、不填输入框 */
     SEND_CMD,
-    /** 带行情立即发送固定问题，不填输入框 */
     SEND_MARKET,
-    /** 只写入输入框，打开附带行情，由用户改完再点发送 */
-    FILL_MARKET,
+    /** 选中后用户自写问题，发送时附带行情，不填输入框 */
+    ASK_MARKET,
+    /** 选中策略模式：输入框只写需求；发送时后台拼 prompt */
+    STRATEGY_MODE,
 }
 
 private data class ChipTpl(
     val label: String,
     val action: TplAction,
-    /** 真正发给后端/LLM 的文本；FILL 时作为输入框初值 */
-    val payload: String,
+    val payload: String = "",
 )
 
 private val templates = listOf(
@@ -51,25 +50,13 @@ private val templates = listOf(
         TplAction.SEND_MARKET,
         "根据附带K线指出可能的支撑与阻力区间，并说明理由。",
     ),
-    ChipTpl(
-        "自定义行情问",
-        TplAction.FILL_MARKET,
-        "请结合附带K线分析：",
-    ),
+    ChipTpl("自定义行情问", TplAction.ASK_MARKET, "market"),
     ChipTpl("斐波那契", TplAction.SEND_CMD, "斐波那契"),
     ChipTpl("清除绘图", TplAction.SEND_CMD, "清除绘图"),
     ChipTpl("打开MA20", TplAction.SEND_CMD, "打开MA20"),
     ChipTpl("列出策略", TplAction.SEND_CMD, "列出策略"),
-    ChipTpl(
-        "LLM优化当前策略",
-        TplAction.FILL_MARKET,
-        "优化策略：\n需求：",
-    ),
-    ChipTpl(
-        "LLM生成新策略",
-        TplAction.FILL_MARKET,
-        "生成策略：\n需求：",
-    ),
+    ChipTpl("LLM优化当前策略", TplAction.STRATEGY_MODE, "optimize"),
+    ChipTpl("LLM生成新策略", TplAction.STRATEGY_MODE, "generate"),
 )
 
 @Composable
@@ -80,6 +67,8 @@ fun ChatScreen(repo: Repository) {
     var withMarket by remember { mutableStateOf(false) }
     var marketBars by remember { mutableIntStateOf(30) }
     var sendJob by remember { mutableStateOf<Job?>(null) }
+    /** null | optimize | generate — 模板只选模式，不往输入框塞字 */
+    var strategyMode by remember { mutableStateOf<String?>(null) }
     val msgs = remember {
         mutableStateListOf(
             Msg(
@@ -101,14 +90,27 @@ fun ChatScreen(repo: Repository) {
         // 进行中直接忽略，避免双击/重组导致多次请求与 mutation interrupted
         if (busy) return
         busy = true
-        val show = if (attach) "📊[${marketBars}根K线] $body" else body
+        val modeSnapshot = strategyMode
+        val showLabel = when (modeSnapshot) {
+            "optimize" -> "[优化策略] "
+            "generate" -> "[生成策略] "
+            else -> ""
+        }
+        val show = if (attach) "📊[${marketBars}根K线] $showLabel$body" else "$showLabel$body"
         msgs.add(Msg("user", show))
         sendJob?.cancel()
         sendJob = scope.launch {
             try {
-                val trimmed = body.trim()
+                val composed = when (modeSnapshot) {
+                    "optimize" -> if (isOptimizeStrategyCmd(body.trim())) body.trim()
+                    else "优化策略：" + body.trim()
+                    "generate" -> if (isGenerateStrategyCmd(body.trim())) body.trim()
+                    else "生成策略：" + body.trim()
+                    else -> body.trim()
+                }
+                val trimmed = composed.trim()
                 val reply = when {
-                    isOptimizeStrategyCmd(trimmed) -> {
+                    isOptimizeStrategyCmd(trimmed) || modeSnapshot == "optimize" -> {
                         val hints = withDefaults(
                             parseOptimizeHints(
                                 stripStrategyPrefix(trimmed, listOf("优化策略：", "优化策略:", "优化策略", "LLM优化策略")),
@@ -138,7 +140,7 @@ fun ChatScreen(repo: Repository) {
                             )
                         }
                     }
-                    isGenerateStrategyCmd(trimmed) -> {
+                    isGenerateStrategyCmd(trimmed) || modeSnapshot == "generate" -> {
                         val hints = withDefaults(
                             parseOptimizeHints(
                                 stripStrategyPrefix(trimmed, listOf("生成策略：", "生成策略:", "生成策略", "LLM生成策略")),
@@ -182,6 +184,9 @@ fun ChatScreen(repo: Repository) {
                 }
             } finally {
                 busy = false
+                if (modeSnapshot != null) {
+                    strategyMode = null
+                }
             }
         }
     }
@@ -190,19 +195,23 @@ fun ChatScreen(repo: Repository) {
         if (busy) return
         when (tpl.action) {
             TplAction.SEND_CMD -> {
-                // 不填输入框、不带行情
+                strategyMode = null
                 sendOnce(tpl.payload, attach = false)
             }
             TplAction.SEND_MARKET -> {
-                // 不填输入框，直接带行情发送
+                strategyMode = null
                 withMarket = true
                 sendOnce(tpl.payload, attach = true)
             }
-            TplAction.FILL_MARKET -> {
-                // 只填充，不发送；策略需求类不强制附带行情（优化函数会自己拉K线）
-                val isStrategy = tpl.payload.startsWith("生成策略") || tpl.payload.startsWith("优化策略")
-                withMarket = !isStrategy
-                input = tpl.payload
+            TplAction.ASK_MARKET -> {
+                strategyMode = null
+                withMarket = true
+                // 不填充输入框，用户自己写问题
+            }
+            TplAction.STRATEGY_MODE -> {
+                withMarket = false
+                strategyMode = tpl.payload // optimize | generate
+                // 绝不往输入框塞模板文字
             }
         }
     }
@@ -246,15 +255,22 @@ fun ChatScreen(repo: Repository) {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             templates.forEach { tpl ->
+                val selected = when (tpl.action) {
+                    TplAction.STRATEGY_MODE -> strategyMode == tpl.payload
+                    TplAction.ASK_MARKET -> withMarket && strategyMode == null && tpl.payload == "market"
+                    else -> false
+                }
                 val suffix = when (tpl.action) {
                     TplAction.SEND_MARKET -> "·发"
-                    TplAction.FILL_MARKET -> "·填"
+                    TplAction.ASK_MARKET -> "·问"
+                    TplAction.STRATEGY_MODE -> if (selected) "·中" else "·选"
                     TplAction.SEND_CMD -> ""
                 }
-                AssistChip(
+                FilterChip(
+                    selected = selected,
                     onClick = { onTemplate(tpl) },
                     enabled = !busy,
-                    label = { Text(tpl.label + suffix) },
+                    label = { Text(tpl.label + suffix, fontSize = 12.sp) },
                 )
             }
         }
@@ -279,9 +295,10 @@ fun ChatScreen(repo: Repository) {
                 enabled = !busy,
                 placeholder = {
                     Text(
-                        when {
-                            withMarket -> "编辑后发送（附带${marketBars}根K线）…"
-                            else -> "输入消息…"
+                        when (strategyMode) {
+                            "optimize" -> "直接写优化要求，如：顺势过滤假信号，轮次3，目标胜率55%"
+                            "generate" -> "直接写生成要求，如：皮尔逊三曲线，轮次3，最少15笔"
+                            else -> if (withMarket) "输入问题（将附带K线）" else "输入消息"
                         },
                     )
                 },
