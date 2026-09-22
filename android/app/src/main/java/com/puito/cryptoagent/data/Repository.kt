@@ -1060,12 +1060,19 @@ class Repository(ctx: Context) {
         val posKey = "${s.symbol}|$intervalCode|$entryTime|${m.side}"
         if (posKey in liveSimKeys || pendingLiveSims.containsKey(posKey)) return
 
-        // 开仓价：数据服务在 entryTime 的价格
+        // 开仓价：仅 Binance GET klines startTime=entryTime
         val entryPrice = try {
             binance.priceAt(s.symbol, entryTime, preferClose = false)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            HibtWebSession.appendLog("模拟开仓取价失败(Binance): ${e.message}")
             null
-        } ?: barData[entryIdx].open
+        }
+        if (entryPrice == null) {
+            HibtWebSession.appendLog(
+                "模拟开仓暂缓 ${m.side} $intervalCode: Binance 无 t=$entryTime 价格，下轮重试",
+            )
+            return
+        }
 
         pendingLiveSims[posKey] = PendingLiveSim(
             key = posKey,
@@ -1078,7 +1085,7 @@ class Repository(ctx: Context) {
         )
         HibtWebSession.appendLog(
             "模拟开仓 ${m.side} $intervalCode @${"%.4f".format(entryPrice)} " +
-                "t=$entryTime 到期=$expiryTime（价来自数据服务）",
+                "t=$entryTime 到期=$expiryTime（Binance 1m open）",
         )
         settlePendingLiveSims(s, intervalCode)
     }
@@ -1089,7 +1096,6 @@ class Repository(ctx: Context) {
     private suspend fun settlePendingLiveSims(
         s: AppSettings,
         intervalCode: String,
-        barData: List<Candle>? = null,
     ) {
         val ivMs = intervalMs(intervalCode)
         val now = System.currentTimeMillis()
@@ -1102,19 +1108,14 @@ class Repository(ctx: Context) {
 
             val exitPrice = try {
                 binance.priceAt(s.symbol, expiry, preferClose = true)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                HibtWebSession.appendLog("模拟平仓取价失败(Binance): ${e.message}")
                 null
-            } ?: run {
-                // 兜底：用该周期 K 的 close
-                val bars = barData ?: try {
-                    binance.fetch(s.symbol, Interval.from(intervalCode), 50)
-                } catch (_: Exception) {
-                    emptyList()
-                }
-                bars.find { it.openTime == p.entryTime }?.close
             }
             if (exitPrice == null) {
-                HibtWebSession.appendLog("模拟平仓暂缓 ${p.side} ${p.interval}: 到期价获取失败")
+                HibtWebSession.appendLog(
+                    "模拟平仓暂缓 ${p.side} ${p.interval}: Binance 无到期 t=$expiry 价格",
+                )
                 continue
             }
             val long = p.side == "B"
@@ -1140,7 +1141,7 @@ class Repository(ctx: Context) {
             saveLiveSimToDisk()
             HibtWebSession.appendLog(
                 "模拟平仓 ${p.side} ${p.interval} entry=${"%.4f".format(p.entryPrice)} " +
-                    "expiry=${"%.4f".format(exitPrice)} @t=$expiry " +
+                    "expiry=${"%.4f".format(exitPrice)}(Binance) @t=$expiry " +
                     "pnl=${"%.3f".format(pnl)}% ${if (win) "盈" else "亏"} · " +
                     "累计${liveSimStats.trades}笔 胜率${"%.1f".format(liveSimStats.winRate * 100)}%",
             )
