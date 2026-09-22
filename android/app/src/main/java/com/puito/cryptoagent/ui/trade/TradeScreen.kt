@@ -380,8 +380,6 @@ private fun summarizeRules(cfg: StrategyConfig): String {
 
 
 @Composable
-
-@Composable
 private fun EditStrategy(
     cfg: StrategyConfig,
     onBack: () -> Unit,
