@@ -13,6 +13,7 @@ object StrategyEngine {
         } ?: StrategyKind.RULES
         return when (kind) {
             StrategyKind.ALGO -> AlgoEngine.signals(candles, cfg)
+            StrategyKind.MODEL -> ModelEngine.signals(candles, cfg)
             StrategyKind.RULES -> ruleSignals(candles, cfg)
         }
     }

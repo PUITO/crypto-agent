@@ -49,6 +49,8 @@ enum class StrategyKind(val label: String) {
     RULES("指标规则"),
     /** 内置/可参数化算法（可由 LLM 写参数与说明） */
     ALGO("算法配置"),
+    /** 可训练小模型（逻辑回归等，本地训练/推理） */
+    MODEL("模型"),
 }
 
 /**
@@ -57,6 +59,19 @@ enum class StrategyKind(val label: String) {
  * PEARSON_TRIPLE 皮尔逊三曲线共振
  * BREAKOUT      近端高低突破
  */
+/**
+ * 模型 ID（引擎内实现；可手动训练权重，LLM 可改阈值/说明）。
+ * LOGREG_V1  逻辑回归：特征=RSI/MACD/BOLL/动量等，标签=下一根涨跌
+ */
+object ModelIds {
+    const val LOGREG_V1 = "LOGREG_V1"
+    val all = listOf(LOGREG_V1)
+    fun label(id: String) = when (id) {
+        LOGREG_V1 -> "逻辑回归 V1"
+        else -> id
+    }
+}
+
 object AlgoIds {
     const val TREND_FOLLOW = "TREND_FOLLOW"
     const val PEARSON_TRIPLE = "PEARSON_TRIPLE"
@@ -88,6 +103,27 @@ data class StrategyConfig(
     val algoParams: Map<String, Double> = emptyMap(),
     /** 给人看/给 LLM 的算法意图说明（可中文） */
     val algoNote: String = "",
+    /** 模型 ID，见 ModelIds */
+    val modelId: String = ModelIds.LOGREG_V1,
+    /**
+     * 模型推理参数（非权重）：
+     * threshold=0.55  score≥阈值出多，≤1-阈值出空
+     * cooldown=3  信号冷却根数
+     * lookback=5  动量回看
+     */
+    val modelParams: Map<String, Double> = mapOf(
+        "threshold" to 0.55,
+        "cooldown" to 3.0,
+        "lookback" to 5.0,
+    ),
+    /**
+     * 训练得到的权重：键 bias / f0..fn，与 ModelEngine 特征顺序一致。
+     * 空 = 未训练，使用内置默认权重。
+     */
+    val modelWeights: Map<String, Double> = emptyMap(),
+    val modelNote: String = "",
+    /** 最近一次训练摘要（样本数、准确率等） */
+    val modelTrainReport: String = "",
 )
 
 data class StrategyOptimizeResult(

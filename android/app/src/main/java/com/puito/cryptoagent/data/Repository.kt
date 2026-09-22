@@ -5,6 +5,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
 import com.puito.cryptoagent.domain.EventSim
+import com.puito.cryptoagent.domain.ModelEngine
 import com.puito.cryptoagent.domain.StrategyEngine
 import com.puito.cryptoagent.net.BinanceClient
 import com.puito.cryptoagent.net.HibtClient
@@ -251,6 +252,18 @@ class Repository(ctx: Context) {
             ),
             algoNote = "三EMA皮尔逊相关+同向斜率共振",
         ),
+        StrategyConfig(
+            id = UUID.randomUUID().toString(),
+            title = "逻辑回归模型",
+            enabled = false,
+            kind = StrategyKind.MODEL,
+            modelId = ModelIds.LOGREG_V1,
+            modelParams = mapOf(
+                "threshold" to 0.55, "cooldown" to 3.0, "lookback" to 5.0,
+            ),
+            modelNote = "本地可训练小模型；先点训练再启用",
+            modelTrainReport = "未训练",
+        ),
     )
 
     /** 反射读取可能被 Gson 置空的枚举，避免 NPE */
@@ -281,6 +294,31 @@ class Repository(ctx: Context) {
         } catch (_: Exception) {
             emptyList()
         }
+        val modelId = try {
+            c.modelId.ifBlank { ModelIds.LOGREG_V1 }
+        } catch (_: Exception) {
+            ModelIds.LOGREG_V1
+        }
+        val modelParams = try {
+            c.modelParams ?: emptyMap()
+        } catch (_: Exception) {
+            emptyMap()
+        }
+        val modelWeights = try {
+            c.modelWeights ?: emptyMap()
+        } catch (_: Exception) {
+            emptyMap()
+        }
+        val modelNote = try {
+            c.modelNote ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+        val modelTrainReport = try {
+            c.modelTrainReport ?: ""
+        } catch (_: Exception) {
+            ""
+        }
         return StrategyConfig(
             id = c.id,
             title = c.title,
@@ -291,6 +329,11 @@ class Repository(ctx: Context) {
             algoId = algoId,
             algoParams = algoParams,
             algoNote = algoNote,
+            modelId = modelId,
+            modelParams = modelParams,
+            modelWeights = modelWeights,
+            modelNote = modelNote,
+            modelTrainReport = modelTrainReport,
         )
     }
 
@@ -316,6 +359,7 @@ class Repository(ctx: Context) {
             val kindRaw = o.get("kind")?.asString?.uppercase()
             val kind = when {
                 kindRaw == null || kindRaw.isBlank() -> StrategyKind.RULES
+                kindRaw.contains("MODEL") || kindRaw.contains("模型") -> StrategyKind.MODEL
                 kindRaw.contains("ALGO") || kindRaw.contains("算法") -> StrategyKind.ALGO
                 else -> StrategyKind.RULES
             }
@@ -331,6 +375,17 @@ class Repository(ctx: Context) {
                 runCatching { e.value.asDouble }.getOrNull()?.let { algoParams[e.key] = it }
             }
             val algoNote = o.get("algoNote")?.asString ?: ""
+            val modelId = o.get("modelId")?.asString?.ifBlank { ModelIds.LOGREG_V1 } ?: ModelIds.LOGREG_V1
+            val modelParams = linkedMapOf<String, Double>()
+            o.getAsJsonObject("modelParams")?.entrySet()?.forEach { e ->
+                runCatching { e.value.asDouble }.getOrNull()?.let { modelParams[e.key] = it }
+            }
+            val modelWeights = linkedMapOf<String, Double>()
+            o.getAsJsonObject("modelWeights")?.entrySet()?.forEach { e ->
+                runCatching { e.value.asDouble }.getOrNull()?.let { modelWeights[e.key] = it }
+            }
+            val modelNote = o.get("modelNote")?.asString ?: ""
+            val modelTrainReport = o.get("modelTrainReport")?.asString ?: ""
             fun rules(key: String): List<Rule> {
                 val arr = o.getAsJsonArray(key) ?: return emptyList()
                 return arr.mapNotNull { item ->
@@ -368,12 +423,67 @@ class Repository(ctx: Context) {
                 algoId = algoId,
                 algoParams = algoParams,
                 algoNote = algoNote,
+                modelId = modelId,
+                modelParams = modelParams,
+                modelWeights = modelWeights,
+                modelNote = modelNote,
+                modelTrainReport = modelTrainReport,
             )
         }
     }
 
     fun saveStrategies(list: List<StrategyConfig>) {
         sp.edit().putString("strategies", gson.toJson(list)).apply()
+    }
+
+    /**
+     * 手动训练模型策略：拉取当前标的/周期历史 K 线，SGD 逻辑回归，写回权重。
+     */
+    suspend fun trainModelStrategy(
+        strategyId: String,
+        epochs: Int = 40,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val list = strategies().toMutableList()
+        val idx = list.indexOfFirst { it.id == strategyId }
+        if (idx < 0) return@withContext Result.failure(IllegalStateException("策略不存在"))
+        var cfg = list[idx]
+        if (cfg.kind != StrategyKind.MODEL) {
+            cfg = cfg.copy(kind = StrategyKind.MODEL)
+        }
+        val s = settings()
+        binance.updateBase(s.binanceBaseUrl)
+        val bars = try {
+            binance.fetch(
+                s.symbol,
+                Interval.from(s.interval),
+                s.klineLimit.coerceIn(200, 1000),
+            )
+        } catch (e: Exception) {
+            return@withContext Result.failure(e)
+        }
+        val result = ModelEngine.train(bars, cfg.modelParams, epochs = epochs)
+        if (result.weights.isEmpty()) {
+            return@withContext Result.failure(IllegalStateException(result.report))
+        }
+        val updated = cfg.copy(
+            kind = StrategyKind.MODEL,
+            modelId = cfg.modelId.ifBlank { ModelIds.LOGREG_V1 },
+            modelWeights = result.weights,
+            modelTrainReport = result.report + " · ${s.symbol} ${s.interval}",
+        )
+        list[idx] = updated
+        saveStrategies(list)
+        Result.success(result.report)
+    }
+
+    /** 清除模型权重（回退默认弱权重） */
+    fun clearModelWeights(strategyId: String): Boolean {
+        val list = strategies().toMutableList()
+        val idx = list.indexOfFirst { it.id == strategyId }
+        if (idx < 0) return false
+        list[idx] = list[idx].copy(modelWeights = emptyMap(), modelTrainReport = "权重已清除")
+        saveStrategies(list)
+        return true
     }
 
     fun enabledStrategy(): StrategyConfig? = strategies().find { it.enabled }
@@ -1730,7 +1840,11 @@ class Repository(ctx: Context) {
         }
 
         val schema = """
-两种策略 kind（优先 ALGO，纯指标效果差时必用算法）:
+三种策略 kind（优先 ALGO；也可 MODEL 小模型）:
+
+0) kind=MODEL  可训练逻辑回归（只改 modelParams，权重由 App 训练）
+modelId 固定 LOGREG_V1；modelParams: threshold,cooldown,lookback
+例: {"title":"LR模型","kind":"MODEL","modelId":"LOGREG_V1","modelParams":{"threshold":0.55,"cooldown":3,"lookback":5},"modelNote":"本地训练","buyRules":[],"sellRules":[]}
 
 1) kind=ALGO  算法配置（推荐）
 algoId 只能是:
@@ -1892,6 +2006,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             val title = o.get("title")?.asString?.take(40) ?: "LLM策略"
             val kindRaw = o.get("kind")?.asString?.uppercase() ?: "RULES"
             val kind = when {
+                kindRaw.contains("MODEL") || kindRaw.contains("模型") -> StrategyKind.MODEL
                 kindRaw.contains("ALGO") || kindRaw.contains("算法") -> StrategyKind.ALGO
                 else -> StrategyKind.RULES
             }
@@ -1951,7 +2066,15 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             }
             val buy = parseRules("buyRules")
             val sell = parseRules("sellRules")
+            val modelParams = linkedMapOf<String, Double>()
+            o.getAsJsonObject("modelParams")?.entrySet()?.forEach { e ->
+                runCatching { e.value.asDouble }.getOrNull()?.let { modelParams[e.key] = it }
+            }
+            val modelNote = o.get("modelNote")?.asString?.take(200) ?: ""
+            val modelIdRaw = o.get("modelId")?.asString?.uppercase() ?: ModelIds.LOGREG_V1
+            val modelId = if (modelIdRaw.contains("LOGREG") || modelIdRaw.isBlank()) ModelIds.LOGREG_V1 else modelIdRaw
             val finalKind = when {
+                kind == StrategyKind.MODEL -> StrategyKind.MODEL
                 kind == StrategyKind.ALGO -> StrategyKind.ALGO
                 buy.isEmpty() && sell.isEmpty() && algoParams.isNotEmpty() -> StrategyKind.ALGO
                 else -> kind
@@ -1968,6 +2091,11 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 algoId = algoId,
                 algoParams = algoParams,
                 algoNote = algoNote,
+                modelId = modelId,
+                modelParams = modelParams.ifEmpty {
+                    mapOf("threshold" to 0.55, "cooldown" to 3.0, "lookback" to 5.0)
+                },
+                modelNote = modelNote,
             )
         } catch (_: Exception) {
             null

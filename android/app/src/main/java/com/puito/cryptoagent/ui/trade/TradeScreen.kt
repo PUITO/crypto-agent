@@ -66,6 +66,37 @@ fun TradeScreen(repo: Repository) {
                     progress = null
                 }
             },
+            onTrainModel = { cfg ->
+                scope.launch {
+                    busy = true
+                    progress = "训练模型「${cfg.title}」…"
+                    report = null
+                    // 先保存当前编辑参数
+                    val n0 = list.toMutableList()
+                    val i0 = n0.indexOfFirst { it.id == cfg.id }
+                    if (i0 >= 0) n0[i0] = cfg else n0.add(cfg)
+                    repo.saveStrategies(n0)
+                    repo.trainModelStrategy(cfg.id).fold(
+                        onSuccess = {
+                            list = repo.strategies()
+                            report = it
+                            editing = list.find { s -> s.id == cfg.id }
+                            progress = null
+                        },
+                        onFailure = {
+                            report = "训练失败: ${it.message}"
+                            progress = null
+                        },
+                    )
+                    busy = false
+                }
+            },
+            onClearModel = { cfg ->
+                repo.clearModelWeights(cfg.id)
+                list = repo.strategies()
+                editing = list.find { s -> s.id == cfg.id }
+                report = "已清除模型权重"
+            },
         )
         return
     }
@@ -245,7 +276,11 @@ fun TradeScreen(repo: Repository) {
                                     fontSize = 12.sp,
                                 )
                                 Text(
-                                    "买${cfg.buyRules.size} / 卖${cfg.sellRules.size}",
+                                    when (cfg.kind) {
+                                        StrategyKind.MODEL -> "模型 · ${ModelIds.label(cfg.modelId)}"
+                                        StrategyKind.ALGO -> "算法 · ${AlgoIds.label(cfg.algoId)}"
+                                        else -> "买${cfg.buyRules.size} / 卖${cfg.sellRules.size}"
+                                    },
                                     fontSize = 11.sp,
                                 )
                                 Text(
@@ -269,6 +304,26 @@ fun TradeScreen(repo: Repository) {
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             TextButton({ editing = cfg }) { Text("编辑") }
+                            if (cfg.kind == StrategyKind.MODEL) {
+                                TextButton(
+                                    onClick = {
+                                        scope.launch {
+                                            busy = true
+                                            progress = "训练「${cfg.title}」…"
+                                            repo.trainModelStrategy(cfg.id).fold(
+                                                onSuccess = {
+                                                    list = repo.strategies()
+                                                    report = it
+                                                },
+                                                onFailure = { report = "训练失败: ${it.message}" },
+                                            )
+                                            busy = false
+                                            progress = null
+                                        }
+                                    },
+                                    enabled = !busy,
+                                ) { Text("训练") }
+                            }
                             TextButton(
                                 onClick = {
                                     goalDraft = defaultTuneGoal(repo, cfg)
@@ -300,12 +355,15 @@ private fun defaultTuneGoal(repo: Repository, cfg: StrategyConfig?): String {
         return "生成事件合约策略，优先 ALGO 顺势/皮尔逊，轮次4，目标胜率55%，最少15笔。" + sim
     }
     return when (cfg.kind) {
+        StrategyKind.MODEL ->
+            "优化「${cfg.title}」模型参数 threshold/cooldown/lookback（kind=MODEL），" +
+                sim + "不要改权重；权重由 App 训练。轮次3，目标胜率55%。"
         StrategyKind.ALGO ->
             "优化「${cfg.title}」算法${cfg.algoId} 参数${cfg.algoParams} ${cfg.algoNote}。" +
                 sim + "直接调整 algoParams 数值，轮次4，目标胜率55%，最少15笔。"
         else ->
             "优化「${cfg.title}」指标规则（买${cfg.buyRules.size}/卖${cfg.sellRules.size}）。" +
-                sim + "可改为 ALGO 或改阈值，轮次4，目标胜率55%，最少15笔。"
+                sim + "可改为 ALGO/MODEL 或改阈值，轮次4，目标胜率55%，最少15笔。"
     }
 }
 
