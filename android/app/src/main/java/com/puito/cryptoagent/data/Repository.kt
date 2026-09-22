@@ -807,12 +807,15 @@ class Repository(ctx: Context) {
                 }
             }
             val barsCache = mutableMapOf<String, List<Candle>>()
-            fun barsOf(iv: String): List<Candle> = barsCache.getOrPut(iv) {
-                try {
+            suspend fun barsOf(iv: String): List<Candle> {
+                barsCache[iv]?.let { return it }
+                val b = try {
                     binance.fetch(s.symbol, Interval.from(iv), s.klineLimit.coerceIn(100, 500))
                 } catch (_: Exception) {
                     emptyList()
                 }
+                barsCache[iv] = b
+                return b
             }
             for (p in simTargets) {
                 val bars = barsOf(p.interval)
