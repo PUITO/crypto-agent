@@ -82,10 +82,44 @@ fun TradeScreen(repo: Repository) {
             color = MaterialTheme.colorScheme.secondary,
             fontSize = 12.sp,
         )
+        // 实时模拟（过 AI 阈值；AI 关则全信号）
+        val ls = repo.liveSimStats
+        val consec = repo.consecutiveLosses()
+        val app = repo.settings()
+        Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+            Column(Modifier.padding(10.dp)) {
+                Text("实时模拟（策略信号）", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (ls.trades == 0) "暂无模拟成交。AI评估开：仅过阈值；关：全部信号。"
+                    else "${ls.trades}笔 胜${ls.wins}负${ls.losses} 胜率${"%.1f".format(ls.winRate * 100)}% " +
+                        "收益${"%.2f".format(ls.totalReturnPct)}% 连亏$consec",
+                    fontSize = 12.sp,
+                )
+                Text(
+                    "调优阈值: 胜率<${"%.0f".format(app.liveSimMinWinRatePct)}% 或连亏≥${app.liveSimMaxConsecutiveLosses} " +
+                        (if (app.liveSimAutoRetune) "· 自动调优开" else "· 自动调优关"),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                if (repo.liveSimTrades.isNotEmpty()) {
+                    Text("最近模拟", fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                    repo.liveSimTrades.takeLast(5).asReversed().forEach { t ->
+                        Text(
+                            "${if (t.win) "✓" else "✗"} ${t.side} ${t.interval} ${"%.2f".format(t.pnlPct)}%",
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+                TextButton(
+                    onClick = { repo.clearLiveSim() },
+                    modifier = Modifier.padding(top = 4.dp),
+                ) { Text("清空模拟记录", fontSize = 12.sp) }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
-                    goalDraft = ""
+                    goalDraft = defaultTuneGoal(repo, null)
                     goalDialog = null to "生成新策略"
                 },
                 enabled = !busy,
@@ -194,7 +228,7 @@ fun TradeScreen(repo: Repository) {
                             TextButton({ editing = cfg }) { Text("编辑") }
                             TextButton(
                                 onClick = {
-                                    goalDraft = ""
+                                    goalDraft = defaultTuneGoal(repo, cfg)
                                     goalDialog = cfg.id to cfg.title
                                 },
                                 enabled = !busy,
@@ -212,6 +246,25 @@ fun TradeScreen(repo: Repository) {
     }
 }
 
+
+private fun defaultTuneGoal(repo: Repository, cfg: StrategyConfig?): String {
+    val st = repo.liveSimStats
+    val consec = repo.consecutiveLosses()
+    val sim = if (st.trades > 0)
+        "参考实时模拟${st.trades}笔胜率${"%.1f".format(st.winRate * 100)}%连亏$consec。"
+    else ""
+    if (cfg == null) {
+        return "生成事件合约策略，优先 ALGO 顺势/皮尔逊，轮次4，目标胜率55%，最少15笔。" + sim
+    }
+    return when (cfg.kind) {
+        StrategyKind.ALGO ->
+            "优化「${cfg.title}」算法${cfg.algoId} 参数${cfg.algoParams} ${cfg.algoNote}。" +
+                sim + "直接调整 algoParams 数值，轮次4，目标胜率55%，最少15笔。"
+        else ->
+            "优化「${cfg.title}」指标规则（买${cfg.buyRules.size}/卖${cfg.sellRules.size}）。" +
+                sim + "可改为 ALGO 或改阈值，轮次4，目标胜率55%，最少15笔。"
+    }
+}
 
 private fun summarizeRules(cfg: StrategyConfig): String {
     if (cfg.kind == StrategyKind.ALGO) {

@@ -33,6 +33,11 @@ fun ConfigScreen(repo: Repository) {
     var vibrate by remember { mutableStateOf(cur.notifyVibrate) }
     var mode1m by remember { mutableStateOf(cur.signalMode1mConfirm) }
     var modeHt by remember { mutableStateOf(cur.signalModeHtNative) }
+    var liveSim by remember { mutableStateOf(cur.liveSimEnabled) }
+    var liveSimAuto by remember { mutableStateOf(cur.liveSimAutoRetune) }
+    var liveSimWr by remember { mutableStateOf(cur.liveSimMinWinRatePct.toString()) }
+    var liveSimLoss by remember { mutableStateOf(cur.liveSimMaxConsecutiveLosses.toString()) }
+    var liveSimMinTrades by remember { mutableStateOf(cur.liveSimMinTradesBeforeRetune.toString()) }
     var msg by remember { mutableStateOf<String?>(null) }
 
     Column(
@@ -133,6 +138,41 @@ fun ConfigScreen(repo: Repository) {
             modifier = Modifier.fillMaxWidth(),
         ) { Text("清除WV缓存并退出登录") }
 
+        Text("实时模拟与自动调优", style = MaterialTheme.typography.titleSmall)
+        Row {
+            Text("启用实时模拟（策略信号）", modifier = Modifier.weight(1f))
+            Switch(liveSim, { liveSim = it })
+        }
+        Text(
+            "AI评估开：仅过阈值进模拟；AI评估关：全部信号模拟。结果在策略面板查看。",
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        Row {
+            Text("模拟不佳时自动 LLM 调优", modifier = Modifier.weight(1f))
+            Switch(liveSimAuto, { liveSimAuto = it })
+        }
+        OutlinedTextField(
+            value = liveSimWr,
+            onValueChange = { liveSimWr = it.filter { c -> c.isDigit() || c == '.' } },
+            label = { Text("调优触发：胜率低于(%)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = liveSimLoss,
+            onValueChange = { liveSimLoss = it.filter { c -> c.isDigit() } },
+            label = { Text("调优触发：连续亏损笔数") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = liveSimMinTrades,
+            onValueChange = { liveSimMinTrades = it.filter { c -> c.isDigit() } },
+            label = { Text("至少模拟几笔后才允许自动调优") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+
         Text("后台", style = MaterialTheme.typography.titleSmall)
         Row {
             Text("默认静默后台监控", modifier = Modifier.weight(1f))
@@ -163,6 +203,11 @@ fun ConfigScreen(repo: Repository) {
                 llmThinkingEnabled = llmThinking,
                 backgroundEnabled = bg,
                 notifyVibrate = vibrate,
+                liveSimEnabled = liveSim,
+                liveSimAutoRetune = liveSimAuto,
+                liveSimMinWinRatePct = liveSimWr.toDoubleOrNull()?.coerceIn(1.0, 99.0) ?: 48.0,
+                liveSimMaxConsecutiveLosses = liveSimLoss.toIntOrNull()?.coerceIn(2, 10) ?: 3,
+                liveSimMinTradesBeforeRetune = liveSimMinTrades.toIntOrNull()?.coerceIn(3, 50) ?: 5,
                 onboardingDone = true,
             )
             repo.saveSettings(s)

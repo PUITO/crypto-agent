@@ -211,7 +211,8 @@ fun ChatScreen(repo: Repository) {
             TplAction.STRATEGY_MODE -> {
                 withMarket = false
                 strategyMode = tpl.payload // optimize | generate
-                // 绝不往输入框塞模板文字
+                // 按当前策略动态填充可编辑需求（用户可改后发送）
+                input = buildStrategyTuneDraft(repo, tpl.payload)
             }
         }
     }
@@ -325,6 +326,29 @@ fun ChatScreen(repo: Repository) {
 }
 
 
+
+private fun buildStrategyTuneDraft(repo: Repository, mode: String): String {
+    val en = repo.strategies().find { it.enabled } ?: repo.strategies().firstOrNull()
+    val st = repo.liveSimStats
+    val consec = repo.consecutiveLosses()
+    val simHint = if (st.trades > 0) {
+        "参考实时模拟${st.trades}笔胜率${"%.1f".format(st.winRate * 100)}%连亏${consec}。"
+    } else ""
+    return if (mode == "generate") {
+        "生成事件合约策略，优先 ALGO 顺势或皮尔逊，轮次4，目标胜率55%，最少15笔。" +
+            simHint + "请输出可执行 algoParams 或指标规则。"
+    } else {
+        val base = en?.let { cfg ->
+            when (cfg.kind) {
+                com.puito.cryptoagent.data.StrategyKind.ALGO ->
+                    "优化策略「${cfg.title}」算法${cfg.algoId} 参数${cfg.algoParams} ${cfg.algoNote}。"
+                else ->
+                    "优化策略「${cfg.title}」指标规则 买${cfg.buyRules.size}卖${cfg.sellRules.size}。"
+            }
+        } ?: "优化当前策略。"
+        base + simHint + "直接改 algoParams/规则阈值，轮次4，目标胜率55%，最少15笔。"
+    }
+}
 
 private fun isOptimizeStrategyCmd(t: String): Boolean {
     val s = t.trim()

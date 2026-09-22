@@ -232,5 +232,14 @@ data class AppSettings(
         ChartIndicatorPref("boll20", "BOLL20", false, 20, 0xFF78909C),
         ChartIndicatorPref("rsi14", "RSI14", false, 14, 0xFFEC407A),
     ),
+    /** 活跃策略：过阈值（或 AI 关闭时全部）信号做本地模拟 */
+    val liveSimEnabled: Boolean = true,
+    /** 模拟综合胜率低于该值(%) 触发 LLM 自动调优 */
+    val liveSimMinWinRatePct: Double = 48.0,
+    /** 连续亏损笔数达到后触发调优 */
+    val liveSimMaxConsecutiveLosses: Int = 3,
+    /** 至少累计模拟笔数后才允许自动调优 */
+    val liveSimMinTradesBeforeRetune: Int = 5,
+    val liveSimAutoRetune: Boolean = true,
     val hibt: HibtSettings = HibtSettings(),
 )

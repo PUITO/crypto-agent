@@ -35,6 +35,16 @@ class Repository(ctx: Context) {
     var signals: List<SignalMark> = emptyList(); private set
     var trades: List<SimTrade> = emptyList(); private set
     var stats: Stats = Stats(); private set
+    /** 策略面板展示的实时模拟（过 AI 阈值 / AI 关则全信号） */
+    var liveSimTrades: List<SimTrade> = emptyList(); private set
+    var liveSimStats: Stats = Stats(); private set
+    private val liveSimKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var retuneInProgress = false
+    @Volatile private var lastAutoRetuneAt = 0L
+
+    init {
+        loadLiveSimFromDisk()
+    }
     var overlays: List<ChartOverlay> = emptyList(); private set
     private val notified = linkedSetOf<String>() // 保序，便于裁剪
     /** symbol|interval|side -> 上次通知时间戳 */
@@ -45,6 +55,47 @@ class Repository(ctx: Context) {
     fun settings(): AppSettings {
         val j = sp.getString("settings", null) ?: return AppSettings()
         return runCatching { gson.fromJson(j, AppSettings::class.java) }.getOrDefault(AppSettings())
+    }
+
+    private fun loadLiveSimFromDisk() {
+        val j = sp.getString("live_sim_trades", null) ?: return
+        val type = object : TypeToken<List<SimTrade>>() {}.type
+        val list = runCatching { gson.fromJson<List<SimTrade>>(j, type) }.getOrDefault(emptyList())
+        liveSimTrades = list.takeLast(200)
+        liveSimStats = statsOf(liveSimTrades)
+        liveSimKeys.clear()
+        liveSimTrades.forEach { liveSimKeys.add("${it.symbol}|${it.interval}|${it.entryTime}|${it.side}") }
+    }
+
+    private fun saveLiveSimToDisk() {
+        sp.edit().putString("live_sim_trades", gson.toJson(liveSimTrades.takeLast(200))).apply()
+    }
+
+    private fun statsOf(list: List<SimTrade>): Stats {
+        if (list.isEmpty()) return Stats()
+        val wins = list.count { it.win }
+        return Stats(
+            trades = list.size,
+            wins = wins,
+            losses = list.size - wins,
+            winRate = wins.toDouble() / list.size,
+            totalReturnPct = list.sumOf { it.pnlPct },
+        )
+    }
+
+    fun consecutiveLosses(list: List<SimTrade> = liveSimTrades): Int {
+        var n = 0
+        for (t in list.asReversed()) {
+            if (!t.win) n++ else break
+        }
+        return n
+    }
+
+    fun clearLiveSim() {
+        liveSimTrades = emptyList()
+        liveSimStats = Stats()
+        liveSimKeys.clear()
+        sp.edit().remove("live_sim_trades").apply()
     }
 
     fun saveSettings(s: AppSettings) {
@@ -75,6 +126,10 @@ class Repository(ctx: Context) {
         notified.clear()
         lastNotifyAt.clear()
         placedOrderKeys.clear()
+        liveSimKeys.clear()
+        liveSimTrades = emptyList()
+        liveSimStats = Stats()
+        sp.edit().remove("live_sim_trades").apply()
         val bytes = deleteDirContents(appCtx.cacheDir) +
             deleteDirContents(appCtx.codeCacheDir)
         val mb = bytes / (1024.0 * 1024.0)
@@ -725,6 +780,30 @@ class Repository(ctx: Context) {
                 maybeAutoOrder(s, p.mark, p.ai, p.interval)
             }
         }
+
+        // —— 实时模拟（策略面板）——
+        if (s.liveSimEnabled && timely.isNotEmpty()) {
+            for (p in timely) {
+                val bars = try {
+                    when {
+                        p.source == "1m_confirm" && bars1m.size >= 3 -> bars1m
+                        else -> binance.fetch(
+                            s.symbol,
+                            Interval.from(p.interval),
+                            s.klineLimit.coerceIn(100, 500),
+                        )
+                    }
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                maybeLiveSim(s, p.mark, p.ai, p.interval, bars)
+            }
+            try {
+                maybeAutoRetune(s)
+            } catch (e: Exception) {
+                HibtWebSession.appendLog("自动调优异常: ${e.message}")
+            }
+        }
         out
     }
 
@@ -913,6 +992,125 @@ class Repository(ctx: Context) {
             "B" -> strongUp   // 已大涨还买涨 = 追多
             "S" -> strongDown // 已大跌还买跌 = 追空
             else -> false
+        }
+    }
+
+
+    /**
+     * 实时模拟：AI 开启仅过阈值；AI 关闭则全部信号。
+     * 结算规则与 EventSim 一致（下一根开盘进、收盘出）。
+     */
+    private fun maybeLiveSim(
+        s: AppSettings,
+        m: SignalMark,
+        ai: AiEvalResult?,
+        intervalCode: String,
+        barData: List<Candle>,
+    ) {
+        if (!s.liveSimEnabled) return
+        if (s.hibt.aiEvaluate) {
+            if (ai?.passThreshold != true) return
+        }
+        // AI 关：全部信号模拟
+        val key = "${s.symbol}|$intervalCode|${m.openTime}|${m.side}"
+        if (!liveSimKeys.add(key)) return
+        if (barData.size < 3) return
+        val idx = barData.indexOfFirst { it.openTime == m.openTime }
+        if (idx < 0 || idx + 1 >= barData.size) {
+            // 尚未有下一根 K：记挂起键但不写成交（下一轮可再试）
+            liveSimKeys.remove(key)
+            return
+        }
+        val entry = barData[idx + 1]
+        val exit = entry // 事件合约同根结算
+        val long = m.side == "B"
+        val pnl = if (long) (exit.close - entry.open) / entry.open * 100
+        else (entry.open - exit.close) / entry.open * 100
+        val trade = SimTrade(
+            id = java.util.UUID.randomUUID().toString(),
+            symbol = s.symbol,
+            interval = intervalCode,
+            side = m.side,
+            entryTime = entry.openTime,
+            entryPrice = entry.open,
+            exitTime = exit.openTime,
+            exitPrice = exit.close,
+            pnlPct = pnl,
+            win = pnl > 0,
+        )
+        liveSimTrades = (liveSimTrades + trade).takeLast(200)
+        liveSimStats = statsOf(liveSimTrades)
+        saveLiveSimToDisk()
+        HibtWebSession.appendLog(
+            "模拟成交 ${m.side} $intervalCode pnl=${"%.2f".format(pnl)}% " +
+                "累计${liveSimStats.trades}笔 胜率${"%.1f".format(liveSimStats.winRate * 100)}% " +
+                "连亏${consecutiveLosses()}",
+        )
+    }
+
+    /** 胜率过低或连亏 → 自动 LLM 调优当前启用策略 */
+    private suspend fun maybeAutoRetune(s: AppSettings) {
+        if (!s.liveSimAutoRetune || !s.liveSimEnabled) return
+        if (s.llmApiKey.isBlank()) return
+        if (retuneInProgress) return
+        if (System.currentTimeMillis() - lastAutoRetuneAt < 15 * 60_000L) return // 15 分钟冷却
+        val st = liveSimStats
+        if (st.trades < s.liveSimMinTradesBeforeRetune.coerceAtLeast(3)) return
+        val consec = consecutiveLosses()
+        val wrPct = st.winRate * 100
+        val lowWr = wrPct < s.liveSimMinWinRatePct
+        val tooManyLoss = consec >= s.liveSimMaxConsecutiveLosses.coerceIn(2, 10)
+        if (!lowWr && !tooManyLoss) return
+        val en = enabledStrategy() ?: return
+        retuneInProgress = true
+        lastAutoRetuneAt = System.currentTimeMillis()
+        val reason = buildString {
+            if (lowWr) append("模拟胜率${"%.1f".format(wrPct)}%<${s.liveSimMinWinRatePct}% ")
+            if (tooManyLoss) append("连亏${consec}笔 ")
+        }
+        HibtWebSession.appendLog(">>> 自动调优触发: $reason · 策略「${en.title}」")
+        Notify.orderResult(
+            appCtx, ok = true, dryRun = true,
+            message = "策略自动调优中：$reason",
+            sideLabel = "LLM调优", amount = null, timeUnit = null,
+        )
+        val goal = buildString {
+            append("根据实时模拟表现自动调优。")
+            append("当前模拟${st.trades}笔 胜率${"%.1f".format(wrPct)}% 连亏$consec。")
+            append("必须优先调整 kind=ALGO 的 algoId/algoParams 或指标规则阈值，提高稳定性。")
+            append("轮次4，目标胜率${"%.0f".format(s.liveSimMinWinRatePct.coerceAtLeast(50.0))}%，最少15笔。")
+            if (en.kind == StrategyKind.ALGO) {
+                append("当前算法 ${en.algoId} 参数 ${en.algoParams} 说明:${en.algoNote}。请直接改参数数值。")
+            } else {
+                append("当前为指标规则，可改为 ALGO 或优化买卖阈值。")
+            }
+        }
+        try {
+            val r = optimizeStrategyWithLlm(
+                baseId = en.id,
+                rounds = 4,
+                userGoal = goal,
+                minWinRatePct = s.liveSimMinWinRatePct.coerceAtLeast(50.0),
+                minTrades = 15,
+            )
+            r.fold(
+                onSuccess = {
+                    HibtWebSession.appendLog(
+                        "<<< 自动调优完成 胜率${"%.1f".format(it.winRate * 100)}% ${it.trades}笔 ${it.report.take(120)}",
+                    )
+                    // 调优后清空连亏压力：可选保留历史；这里保留但记录
+                    Notify.orderResult(
+                        appCtx, ok = true, dryRun = true,
+                        message = "调优完成 回测胜率${"%.1f".format(it.winRate * 100)}% ${it.trades}笔",
+                        sideLabel = "LLM调优", amount = null, timeUnit = null,
+                    )
+                },
+                onFailure = {
+                    HibtWebSession.appendLog("<<< 自动调优失败: ${it.message}")
+                },
+            )
+        } finally {
+            retuneInProgress = false
         }
     }
 
@@ -1290,7 +1488,9 @@ class Repository(ctx: Context) {
             if (goal.isNotBlank()) {
                 appendLine("【用户明确需求——必须优先满足】")
                 appendLine(goal)
-                appendLine("可优先 kind=ALGO（TREND_FOLLOW/PEARSON_TRIPLE/BREAKOUT），不要无故退化成仅 RSI+KDJ。")
+                appendLine("可优先 kind=ALGO（TREND_FOLLOW/PEARSON_TRIPLE/BREAKOUT）。")
+                appendLine("必须在 JSON 里给出可执行的 algoParams 数值（或 buyRules/sellRules），禁止空参数。")
+                appendLine("不要无故退化成仅 RSI+KDJ；需求说明变更时以最新需求为准。")
             }
             if (targetWr != null || targetTrades != null) {
                 appendLine("【训练约束——回测必须尽量达到】")
@@ -1382,10 +1582,12 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             onProgress?.invoke(
                 "第${round}轮 回测 ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}%",
             )
+            // 未指定目标时禁止「提前结束」，必须跑满轮次；有目标才可提前达标退出
             fun meets(stWr: Double, stTrades: Int): Boolean {
+                if (targetWr == null && targetTrades == null) return false
                 val okWr = targetWr == null || stWr * 100 >= targetWr - 1e-6
                 val okTr = targetTrades == null || stTrades >= targetTrades
-                return okWr && okTr && stTrades >= 1
+                return okWr && okTr && stTrades >= 3
             }
             // 评分：达标优先，再比胜率与笔数
             fun scoreOf(stWr: Double, stTrades: Int): Double {
