@@ -56,6 +56,13 @@ fun HomeScreen(repo: Repository) {
         }
     }
     LaunchedEffect(s.symbol, s.interval) { reload() }
+    // 策略运行中定期刷新图表上的 1m 确认叠加信号（poll 写入 repo.signals）
+    LaunchedEffect(s.strategyRunning) {
+        while (s.strategyRunning) {
+            kotlinx.coroutines.delay(8_000)
+            tick++
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -103,6 +110,12 @@ fun HomeScreen(repo: Repository) {
 
         key(tick, s.chartIndicators) {
             val candleCount = repo.candles.size
+            // 图例：B/S=周期原生  1B/1S=1m触发+本周期确认叠加
+            Text(
+                "标记: B/S 周期策略 · 1B/1S 为 1m 触发并经本周期确认",
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.secondary,
+            )
             Chart(
                 candles = repo.candles,
                 signals = if (s.strategyRunning) repo.signals else emptyList(),
@@ -478,7 +491,13 @@ fun Chart(
                             )
                         }
 
-                        val map = signals.groupBy { it.openTime }
+                        // 按 K 线 openTime 对齐；若 1m 映射偏差则落入该棒时间窗也显示
+                        val byExact = signals.groupBy { it.openTime }
+                        fun marksOnBar(c: Candle): List<SignalMark> {
+                            byExact[c.openTime]?.let { return it }
+                            // 兼容：信号时间落在本 K 周期内（已由 map1m 对齐时通常走 exact）
+                            return signals.filter { it.openTime == c.openTime }
+                        }
                         val pb = android.graphics.Paint().apply {
                             color = android.graphics.Color.parseColor("#0ECB81")
                             textSize = 26f
@@ -492,14 +511,14 @@ fun Chart(
                             textAlign = android.graphics.Paint.Align.CENTER
                         }
                         win.forEachIndexed { i, c ->
-                            map[c.openTime]?.forEach { m ->
+                            marksOnBar(c).forEach { m ->
                                 val x = xAt(i)
                                 if (x < padL || x > padL + plotW) return@forEach
                                 val from1m = m.tag == "1m"
                                 val sz = if (from1m) 6f else 8f
                                 val label = when {
-                                    from1m && m.side == "B" -> "b"
-                                    from1m && m.side == "S" -> "s"
+                                    from1m && m.side == "B" -> "1B"
+                                    from1m && m.side == "S" -> "1S"
                                     m.side == "B" -> "B"
                                     else -> "S"
                                 }

@@ -430,7 +430,9 @@ class Repository(ctx: Context) {
                             val bars1m = binance.fetch(s.symbol, Interval.M1, s.klineLimit.coerceIn(200, 500))
                             if (bars1m.size >= minBarsForSignal("1m")) {
                                 val m1 = StrategyEngine.signals(bars1m, cfg)
-                                val mapped = map1mMarksToInterval(m1, bars, s.interval)
+                                val mapped = map1mMarksToInterval(
+                                    m1, bars, s.interval, onlyHtConfirmed = true,
+                                )
                                 chartMarks = mergeChartSignals(mapped, htMarks)
                             }
                         } catch (_: Exception) {
@@ -562,23 +564,38 @@ class Repository(ctx: Context) {
         return out.values.sortedBy { it.openTime }
     }
 
+    /**
+     * 将 1m 策略信号叠加到目标周期 K 线：
+     * openTime → 该 1m 时刻所落在的目标周期棒的 openTime
+     * price → 该棒收盘价（便于画在图上）
+     * tag=1m 与周期原生 ht 区分
+     * @param onlyHtConfirmed 为 true 时仅保留高周期软确认通过的信号（与通知逻辑一致）
+     */
     private fun map1mMarksToInterval(
         marks1m: List<SignalMark>,
         barsHt: List<Candle>,
         interval: String,
+        onlyHtConfirmed: Boolean = false,
     ): List<SignalMark> {
         if (marks1m.isEmpty() || barsHt.isEmpty()) return emptyList()
         val ivMs = intervalMs(interval)
-        return marks1m.map { m ->
-            val bar = barsHt.lastOrNull { it.openTime <= m.openTime && m.openTime < it.openTime + ivMs }
-                ?: barsHt.minByOrNull { kotlin.math.abs(it.openTime - m.openTime) }
-            SignalMark(
-                openTime = bar?.openTime ?: m.openTime,
+        val out = LinkedHashMap<String, SignalMark>()
+        for (m in marks1m) {
+            if (onlyHtConfirmed && !higherTfAgrees(barsHt, m.side)) continue
+            val bar = barsHt.lastOrNull {
+                it.openTime <= m.openTime && m.openTime < it.openTime + ivMs
+            } ?: barsHt.minByOrNull { kotlin.math.abs(it.openTime - m.openTime) }
+            if (bar == null) continue
+            val mark = SignalMark(
+                openTime = bar.openTime,
                 side = m.side,
-                price = m.price,
+                price = bar.close,
                 tag = "1m",
             )
-        }.distinctBy { "${it.openTime}|${it.side}|${it.tag}" }
+            // 同一根目标 K 同向只保留一根（后出现的覆盖）
+            out["${mark.openTime}|${mark.side}"] = mark
+        }
+        return out.values.sortedBy { it.openTime }
     }
 
     /**
@@ -730,9 +747,8 @@ class Repository(ctx: Context) {
                                         .putString("trades_$iv", gson.toJson(tlist))
                                         .putString("stats_$iv", gson.toJson(st))
                                         .apply()
+                                    // 图表信号统一在 poll 末尾 merge，避免此处覆盖丢 1m 叠加
                                     if (iv == s.interval) {
-                                        candles = barsHt
-                                        signals = mapped
                                         trades = tlist
                                         stats = st
                                     }
@@ -820,7 +836,8 @@ class Repository(ctx: Context) {
                     } else emptyList()
                     val mapped1m = if (use1m && bars1m.size >= minBarsForSignal("1m")) {
                         val m1 = StrategyEngine.signals(bars1m, cfg)
-                        map1mMarksToInterval(m1, barsChart, s.interval)
+                        // 叠加到当前行情周期图：1m 信号 + 高周期确认
+                        map1mMarksToInterval(m1, barsChart, s.interval, onlyHtConfirmed = true)
                     } else emptyList()
                     candles = barsChart
                     signals = mergeChartSignals(mapped1m, htMarks)
