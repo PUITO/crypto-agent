@@ -824,7 +824,7 @@ class Repository(ctx: Context) {
             // 对有挂单的周期统一尝试平仓（即使本轮无新信号）
             val pendingIvs = pendingLiveSims.values.map { it.interval }.distinct()
             for (iv in pendingIvs) {
-                settlePendingLiveSims(s, iv, barsOf(iv))
+                settlePendingLiveSims(s, iv)
             }
             try {
                 maybeAutoRetune(s)
@@ -1025,13 +1025,13 @@ class Repository(ctx: Context) {
 
 
 
+
     /**
      * 实时模拟开仓：
-     * - 必须用「信号所在周期」的 K 线结算（30m 信号只用 30m 棒）
-     * - 事件合约：信号棒之后的下一根开盘开仓，该根完全收盘后再平仓
-     * - 未收盘不算盈亏，进入 pending，下轮 poll 再结算
+     * - 周期对齐仅用于确定 entryTime / expiryTime
+     * - 开仓价、平仓价一律走数据服务 priceAt(时刻)
      */
-    private fun maybeLiveSim(
+    private suspend fun maybeLiveSim(
         s: AppSettings,
         m: SignalMark,
         ai: AiEvalResult?,
@@ -1045,7 +1045,6 @@ class Repository(ctx: Context) {
         if (barData.size < 2) return
 
         val ivMs = intervalMs(intervalCode)
-        // 将信号时间对齐到本周期 K：取 openTime <= signal 的最后一根
         val signalIdx = barData.indexOfLast { it.openTime <= m.openTime }
         if (signalIdx < 0) {
             HibtWebSession.appendLog(
@@ -1054,59 +1053,73 @@ class Repository(ctx: Context) {
             return
         }
         val entryIdx = signalIdx + 1
-        if (entryIdx >= barData.size) {
-            // 下一根尚未生成：等下一轮
-            return
-        }
-        val entry = barData[entryIdx]
-        val posKey = "${s.symbol}|$intervalCode|${entry.openTime}|${m.side}"
+        if (entryIdx >= barData.size) return
+
+        val entryTime = barData[entryIdx].openTime
+        val expiryTime = entryTime + ivMs
+        val posKey = "${s.symbol}|$intervalCode|$entryTime|${m.side}"
         if (posKey in liveSimKeys || pendingLiveSims.containsKey(posKey)) return
 
-        // 开仓
+        // 开仓价：数据服务在 entryTime 的价格
+        val entryPrice = try {
+            binance.priceAt(s.symbol, entryTime, preferClose = false)
+        } catch (_: Exception) {
+            null
+        } ?: barData[entryIdx].open
+
         pendingLiveSims[posKey] = PendingLiveSim(
             key = posKey,
             symbol = s.symbol,
             interval = intervalCode,
             side = m.side,
             signalTime = m.openTime,
-            entryTime = entry.openTime,
-            entryPrice = entry.open,
+            entryTime = entryTime,
+            entryPrice = entryPrice,
         )
         HibtWebSession.appendLog(
-            "模拟开仓 ${m.side} $intervalCode @${entry.open} t=${entry.openTime}（待该${intervalCode}收盘平仓）",
+            "模拟开仓 ${m.side} $intervalCode @${"%.4f".format(entryPrice)} " +
+                "t=$entryTime 到期=$expiryTime（价来自数据服务）",
         )
-        // 若入场棒已收盘（后面还有更新的棒，或时间已过周期），立即尝试平仓
-        settlePendingLiveSims(s, intervalCode, barData)
+        settlePendingLiveSims(s, intervalCode)
     }
 
     /**
-     * 平仓：入场 K 必须已走完整个周期。
-     * 判定：存在 openTime > entryTime 的下一根，或 now >= entryTime + intervalMs（用入场棒 close）。
+     * 平仓：仅当 now >= 到期时间，用数据服务取「到期时刻」价格结算。
      */
-    private fun settlePendingLiveSims(
+    private suspend fun settlePendingLiveSims(
         s: AppSettings,
         intervalCode: String,
-        barData: List<Candle>,
+        barData: List<Candle>? = null,
     ) {
-        if (barData.isEmpty()) return
         val ivMs = intervalMs(intervalCode)
         val now = System.currentTimeMillis()
-        val byTime = barData.associateBy { it.openTime }
-        val toClose = pendingLiveSims.values.filter { it.interval == intervalCode && it.symbol == s.symbol }
+        val toClose = pendingLiveSims.values.filter {
+            it.interval == intervalCode && it.symbol == s.symbol
+        }
         for (p in toClose) {
-            val entryCandle = byTime[p.entryTime]
-            if (entryCandle == null) continue
-            val entryIdx = barData.indexOfFirst { it.openTime == p.entryTime }
-            val hasNext = entryIdx >= 0 && entryIdx + 1 < barData.size
-            val periodEnded = now >= p.entryTime + ivMs
-            if (!hasNext && !periodEnded) continue // 仍在当根未收盘
+            val expiry = p.entryTime + ivMs
+            if (now < expiry) continue // 未到期
 
-            val exitPrice = entryCandle.close
-            val exitTime = if (hasNext) barData[entryIdx + 1].openTime else (p.entryTime + ivMs)
+            val exitPrice = try {
+                binance.priceAt(s.symbol, expiry, preferClose = true)
+            } catch (_: Exception) {
+                null
+            } ?: run {
+                // 兜底：用该周期 K 的 close
+                val bars = barData ?: try {
+                    binance.fetch(s.symbol, Interval.from(intervalCode), 50)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                bars.find { it.openTime == p.entryTime }?.close
+            }
+            if (exitPrice == null) {
+                HibtWebSession.appendLog("模拟平仓暂缓 ${p.side} ${p.interval}: 到期价获取失败")
+                continue
+            }
             val long = p.side == "B"
             val pnl = if (long) (exitPrice - p.entryPrice) / p.entryPrice * 100
             else (p.entryPrice - exitPrice) / p.entryPrice * 100
-            // 持平不算赢
             val win = pnl > 1e-9
             val trade = SimTrade(
                 id = java.util.UUID.randomUUID().toString(),
@@ -1115,7 +1128,7 @@ class Repository(ctx: Context) {
                 side = p.side,
                 entryTime = p.entryTime,
                 entryPrice = p.entryPrice,
-                exitTime = exitTime,
+                exitTime = expiry,
                 exitPrice = exitPrice,
                 pnlPct = pnl,
                 win = win,
@@ -1126,9 +1139,10 @@ class Repository(ctx: Context) {
             liveSimStats = statsOf(liveSimTrades)
             saveLiveSimToDisk()
             HibtWebSession.appendLog(
-                "模拟平仓 ${p.side} ${p.interval} entry=${p.entryPrice} exit=$exitPrice " +
+                "模拟平仓 ${p.side} ${p.interval} entry=${"%.4f".format(p.entryPrice)} " +
+                    "expiry=${"%.4f".format(exitPrice)} @t=$expiry " +
                     "pnl=${"%.3f".format(pnl)}% ${if (win) "盈" else "亏"} · " +
-                    "累计${liveSimStats.trades}笔 胜率${"%.1f".format(liveSimStats.winRate * 100)}% 连亏${consecutiveLosses()}",
+                    "累计${liveSimStats.trades}笔 胜率${"%.1f".format(liveSimStats.winRate * 100)}%",
             )
         }
     }

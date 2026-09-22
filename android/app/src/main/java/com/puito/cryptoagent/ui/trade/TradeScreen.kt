@@ -96,7 +96,7 @@ fun TradeScreen(repo: Repository) {
                     fontSize = 12.sp,
                 )
                 Text(
-                    "规则: 信号周期独立结算 · 下一根开盘开仓 · 该根收盘平仓（未收盘不计盈亏）",
+                    "规则: 对齐信号周期确定开仓/到期时刻 · 开平仓价均由数据服务按时刻取价 · 未到期不结算",
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.secondary,
                 )
