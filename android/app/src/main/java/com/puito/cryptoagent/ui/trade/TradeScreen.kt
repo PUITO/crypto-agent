@@ -90,10 +90,15 @@ fun TradeScreen(repo: Repository) {
             Column(Modifier.padding(10.dp)) {
                 Text("实时模拟（策略信号）", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    if (ls.trades == 0) "暂无模拟成交。AI评估开：仅过阈值；关：全部信号。"
+                    if (ls.trades == 0) "暂无已平仓模拟。开仓后需等该周期 K 线收盘才结算。"
                     else "${ls.trades}笔 胜${ls.wins}负${ls.losses} 胜率${"%.1f".format(ls.winRate * 100)}% " +
                         "收益${"%.2f".format(ls.totalReturnPct)}% 连亏$consec",
                     fontSize = 12.sp,
+                )
+                Text(
+                    "规则: 信号周期独立结算 · 下一根开盘开仓 · 该根收盘平仓（未收盘不计盈亏）",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.secondary,
                 )
                 Text(
                     "调优阈值: 胜率<${"%.0f".format(app.liveSimMinWinRatePct)}% 或连亏≥${app.liveSimMaxConsecutiveLosses} " +
