@@ -128,7 +128,7 @@ fun HomeScreen(repo: Repository) {
                     .padding(top = 4.dp),
             )
         }
-        Text("单击K线看价格Tips · 拖动平移 · 双指缩放 · 双击回最新", color = MaterialTheme.colorScheme.secondary, fontSize = 10.sp)
+        Text("B/S=周期信号 · b/s=1m映射 · 单击Tips · 拖动平移 · 双指缩放 · 双击回最新", color = MaterialTheme.colorScheme.secondary, fontSize = 10.sp)
 
         val st = repo.stats
         Text(
@@ -495,24 +495,34 @@ fun Chart(
                             map[c.openTime]?.forEach { m ->
                                 val x = xAt(i)
                                 if (x < padL || x > padL + plotW) return@forEach
+                                val from1m = m.tag == "1m"
+                                val sz = if (from1m) 6f else 8f
+                                val label = when {
+                                    from1m && m.side == "B" -> "b"
+                                    from1m && m.side == "S" -> "s"
+                                    m.side == "B" -> "B"
+                                    else -> "S"
+                                }
                                 if (m.side == "B") {
                                     val y = yAt(c.low) + 2f
                                     drawPath(
                                         Path().apply {
-                                            moveTo(x, y); lineTo(x - 8f, y + 14f); lineTo(x + 8f, y + 14f); close()
+                                            moveTo(x, y); lineTo(x - sz, y + sz * 1.75f); lineTo(x + sz, y + sz * 1.75f); close()
                                         },
-                                        bull,
+                                        if (from1m) bull.copy(alpha = 0.75f) else bull,
                                     )
-                                    drawContext.canvas.nativeCanvas.drawText("B", x, y + 34f, pb)
+                                    pb.textSize = if (from1m) 20f else 26f
+                                    drawContext.canvas.nativeCanvas.drawText(label, x, y + 34f, pb)
                                 } else {
                                     val y = yAt(c.high) - 2f
                                     drawPath(
                                         Path().apply {
-                                            moveTo(x, y); lineTo(x - 8f, y - 14f); lineTo(x + 8f, y - 14f); close()
+                                            moveTo(x, y); lineTo(x - sz, y - sz * 1.75f); lineTo(x + sz, y - sz * 1.75f); close()
                                         },
-                                        bear,
+                                        if (from1m) bear.copy(alpha = 0.75f) else bear,
                                     )
-                                    drawContext.canvas.nativeCanvas.drawText("S", x, y - 18f, ps)
+                                    ps.textSize = if (from1m) 20f else 26f
+                                    drawContext.canvas.nativeCanvas.drawText(label, x, y - 18f, ps)
                                 }
                             }
                         }

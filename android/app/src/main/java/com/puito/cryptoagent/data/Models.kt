@@ -98,7 +98,7 @@ data class StrategyOptimizeResult(
     val created: Boolean,
 )
 
-data class SignalMark(val openTime: Long, val side: String, val price: Double)
+data class SignalMark(val openTime: Long, val side: String, val price: Double, val tag: String = "")
 
 /** AI 对单条信号的评估（可与真实下单解耦） */
 data class AiEvalResult(

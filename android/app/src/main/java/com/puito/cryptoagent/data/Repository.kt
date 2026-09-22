@@ -417,7 +417,30 @@ class Repository(ctx: Context) {
             if (s.strategyRunning) {
                 val cfg = enabledStrategy()
                 if (cfg != null && bars.size >= minBarsForSignal(s.interval)) {
-                    runStrategy(s.symbol, s.interval, cfg, bars, notifyNew = false, updateUiState = true)
+                    runStrategy(
+                        s.symbol, s.interval, cfg, bars,
+                        notifyNew = false, updateUiState = false,
+                    )
+                    val htMarks = StrategyEngine.signals(bars, cfg).map { it.copy(tag = "ht") }
+                    var chartMarks = htMarks
+                    // 1m 信号映射到当前行情周期，画在同一张图上
+                    val want1m = s.signalMode1mConfirm || (!s.signalMode1mConfirm && !s.signalModeHtNative)
+                    if (want1m) {
+                        try {
+                            val bars1m = binance.fetch(s.symbol, Interval.M1, s.klineLimit.coerceIn(200, 500))
+                            if (bars1m.size >= minBarsForSignal("1m")) {
+                                val m1 = StrategyEngine.signals(bars1m, cfg)
+                                val mapped = map1mMarksToInterval(m1, bars, s.interval)
+                                chartMarks = mergeChartSignals(mapped, htMarks)
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+                    candles = bars
+                    signals = chartMarks
+                    val (tlist, st) = EventSim.backtest(bars, chartMarks, s.symbol, s.interval)
+                    trades = tlist
+                    stats = st
                 } else {
                     candles = bars
                     if (cfg != null && bars.size < minBarsForSignal(s.interval)) {
@@ -447,7 +470,10 @@ class Repository(ctx: Context) {
         notifyNew: Boolean,
         updateUiState: Boolean = false,
     ): Pair<List<SignalMark>, Stats> {
-        val marks = StrategyEngine.signals(barData, cfg)
+        val rawMarks = StrategyEngine.signals(barData, cfg)
+        val marks = rawMarks.map { m ->
+            m.copy(tag = if (interval == "1m") "1m" else "ht")
+        }
         val (tlist, st) = EventSim.backtest(barData, marks, symbol, interval)
         sp.edit()
             .putString("trades_$interval", gson.toJson(tlist))
@@ -526,6 +552,16 @@ class Repository(ctx: Context) {
     }
 
     /** 将 1m 信号对齐到目标周期 K 线 openTime，供回测/图表展示 */
+    /** 图表用：1m 映射信号 + 周期原生信号合并，便于在对应周期图上观测 */
+    private fun mergeChartSignals(primary: List<SignalMark>, extra: List<SignalMark>): List<SignalMark> {
+        val out = LinkedHashMap<String, SignalMark>()
+        for (m in primary + extra) {
+            val k = "${m.openTime}|${m.side}|${m.tag.ifBlank { "x" }}"
+            out[k] = m
+        }
+        return out.values.sortedBy { it.openTime }
+    }
+
     private fun map1mMarksToInterval(
         marks1m: List<SignalMark>,
         barsHt: List<Candle>,
@@ -540,8 +576,9 @@ class Repository(ctx: Context) {
                 openTime = bar?.openTime ?: m.openTime,
                 side = m.side,
                 price = m.price,
+                tag = "1m",
             )
-        }.distinctBy { it.openTime to it.side }
+        }.distinctBy { "${it.openTime}|${it.side}|${it.tag}" }
     }
 
     /**
@@ -766,6 +803,33 @@ class Repository(ctx: Context) {
                 }.awaitAll().flatten()
             }
             batch += fromHt
+        }
+
+
+        // —— 行情图：当前选中周期合并 1m 映射信号 + 周期原生信号 ——
+        run {
+            try {
+                val barsChart = binance.fetch(
+                    s.symbol,
+                    Interval.from(s.interval),
+                    limitHt,
+                )
+                if (barsChart.size >= minBarsForSignal(s.interval)) {
+                    val htMarks = if (useHt) {
+                        StrategyEngine.signals(barsChart, cfg).map { it.copy(tag = "ht") }
+                    } else emptyList()
+                    val mapped1m = if (use1m && bars1m.size >= minBarsForSignal("1m")) {
+                        val m1 = StrategyEngine.signals(bars1m, cfg)
+                        map1mMarksToInterval(m1, barsChart, s.interval)
+                    } else emptyList()
+                    candles = barsChart
+                    signals = mergeChartSignals(mapped1m, htMarks)
+                    val (tlist, st) = EventSim.backtest(barsChart, signals, s.symbol, s.interval)
+                    trades = tlist
+                    stats = st
+                }
+            } catch (_: Exception) {
+            }
         }
 
         val timely = batch.filter {
