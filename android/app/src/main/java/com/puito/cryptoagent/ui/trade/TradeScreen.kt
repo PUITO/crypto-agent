@@ -9,6 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
@@ -82,35 +83,72 @@ fun TradeScreen(repo: Repository) {
             color = MaterialTheme.colorScheme.secondary,
             fontSize = 12.sp,
         )
-        // 实时模拟（过 AI 阈值；AI 关则全信号）
-        val ls = repo.liveSimStats
-        val consec = repo.consecutiveLosses()
+        // 实时模拟：开仓显示持仓，平仓更新已平列表（collect tick 刷新）
+        val simTick by repo.liveSimTick.collectAsState()
+        val pending = remember(simTick) { repo.pendingLivePositions() }
+        val closed = remember(simTick) { repo.liveSimTrades }
+        val ls = remember(simTick) { repo.liveSimStats }
+        val consec = remember(simTick) { repo.consecutiveLosses() }
         val app = repo.settings()
+        val timeFmt = remember {
+            java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+        }
         Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
             Column(Modifier.padding(10.dp)) {
                 Text("实时模拟（策略信号）", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    if (ls.trades == 0) "暂无已平仓模拟。开仓后需等该周期 K 线收盘才结算。"
-                    else "${ls.trades}笔 胜${ls.wins}负${ls.losses} 胜率${"%.1f".format(ls.winRate * 100)}% " +
-                        "收益${"%.2f".format(ls.totalReturnPct)}% 连亏$consec",
+                    "持仓 ${pending.size} · 已平 ${ls.trades}笔 " +
+                        (if (ls.trades > 0)
+                            "胜${ls.wins}负${ls.losses} 胜率${"%.1f".format(ls.winRate * 100)}% 连亏$consec"
+                        else "—"),
                     fontSize = 12.sp,
                 )
                 Text(
-                    "规则: 对齐信号周期确定开仓/到期时刻 · 开平仓价均由数据服务按时刻取价 · 未到期不结算",
+                    "开仓即显示仓位；到期后 Binance 取价平仓并移入已平",
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.secondary,
                 )
                 Text(
-                    "调优阈值: 胜率<${"%.0f".format(app.liveSimMinWinRatePct)}% 或连亏≥${app.liveSimMaxConsecutiveLosses} " +
-                        (if (app.liveSimAutoRetune) "· 自动调优开" else "· 自动调优关"),
+                    "调优: 胜率<${"%.0f".format(app.liveSimMinWinRatePct)}% 或连亏≥${app.liveSimMaxConsecutiveLosses} " +
+                        (if (app.liveSimAutoRetune) "·自动开" else "·自动关"),
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.secondary,
                 )
-                if (repo.liveSimTrades.isNotEmpty()) {
-                    Text("最近模拟", fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-                    repo.liveSimTrades.takeLast(5).asReversed().forEach { t ->
+                if (pending.isNotEmpty()) {
+                    Text("持仓中", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                    pending.forEach { p ->
+                        val ivMs = when (p.interval.lowercase()) {
+                            "1m" -> 60_000L
+                            "5m" -> 300_000L
+                            "10m" -> 600_000L
+                            "30m" -> 1_800_000L
+                            "1h" -> 3_600_000L
+                            else -> 600_000L
+                        }
+                        val exp = p.entryTime + ivMs
                         Text(
-                            "${if (t.win) "✓" else "✗"} ${t.side} ${t.interval} ${"%.2f".format(t.pnlPct)}%",
+                            "● ${p.side} ${p.interval} @${"%.2f".format(p.entryPrice)} " +
+                                "开${timeFmt.format(java.util.Date(p.entryTime))} " +
+                                "到期${timeFmt.format(java.util.Date(exp))}",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                } else {
+                    Text(
+                        "暂无持仓（有信号且满足条件时会开仓显示）",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                if (closed.isNotEmpty()) {
+                    Text("已平仓（最近）", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                    closed.takeLast(8).asReversed().forEach { t ->
+                        Text(
+                            "${if (t.win) "✓" else "✗"} ${t.side} ${t.interval} " +
+                                "@${"%.2f".format(t.entryPrice)}→${"%.2f".format(t.exitPrice)} " +
+                                "${"%.2f".format(t.pnlPct)}%",
                             fontSize = 11.sp,
                         )
                     }

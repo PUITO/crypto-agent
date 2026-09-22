@@ -13,6 +13,9 @@ import com.puito.cryptoagent.notify.Notify
 import com.puito.cryptoagent.net.LlmClient
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -52,6 +55,9 @@ class Repository(ctx: Context) {
     private val liveSimKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     /** 已开仓未平仓的模拟单：key = symbol|interval|entryTime|side */
     private val pendingLiveSims = java.util.concurrent.ConcurrentHashMap<String, PendingLiveSim>()
+    private val _liveSimTick = MutableStateFlow(0)
+    /** UI 收集此 tick 以刷新持仓/平仓列表 */
+    val liveSimTick: StateFlow<Int> = _liveSimTick.asStateFlow()
     @Volatile private var retuneInProgress = false
     @Volatile private var lastAutoRetuneAt = 0L
 
@@ -71,13 +77,17 @@ class Repository(ctx: Context) {
     }
 
     private fun loadLiveSimFromDisk() {
-        val j = sp.getString("live_sim_trades", null) ?: return
-        val type = object : TypeToken<List<SimTrade>>() {}.type
-        val list = runCatching { gson.fromJson<List<SimTrade>>(j, type) }.getOrDefault(emptyList())
-        liveSimTrades = list.takeLast(200)
-        liveSimStats = statsOf(liveSimTrades)
-        liveSimKeys.clear()
-        liveSimTrades.forEach { liveSimKeys.add("${it.symbol}|${it.interval}|${it.entryTime}|${it.side}") }
+        val j = sp.getString("live_sim_trades", null)
+        if (j != null) {
+            val type = object : TypeToken<List<SimTrade>>() {}.type
+            val list = runCatching { gson.fromJson<List<SimTrade>>(j, type) }.getOrDefault(emptyList())
+            liveSimTrades = list.takeLast(200)
+            liveSimStats = statsOf(liveSimTrades)
+            liveSimKeys.clear()
+            liveSimTrades.forEach { liveSimKeys.add("${it.symbol}|${it.interval}|${it.entryTime}|${it.side}") }
+        }
+        loadPendingFromDisk()
+        bumpLiveSim()
     }
 
     private fun saveLiveSimToDisk() {
@@ -110,6 +120,31 @@ class Repository(ctx: Context) {
         liveSimKeys.clear()
         pendingLiveSims.clear()
         sp.edit().remove("live_sim_trades").apply()
+        sp.edit().remove("live_sim_pending").apply()
+        bumpLiveSim()
+    }
+
+    /** 当前未平仓模拟持仓（开仓即可见） */
+    fun pendingLivePositions(): List<PendingLiveSim> =
+        pendingLiveSims.values.sortedByDescending { it.entryTime }
+
+    private fun bumpLiveSim() {
+        _liveSimTick.value = _liveSimTick.value + 1
+    }
+
+    private fun savePendingToDisk() {
+        sp.edit().putString(
+            "live_sim_pending",
+            gson.toJson(pendingLiveSims.values.toList()),
+        ).apply()
+    }
+
+    private fun loadPendingFromDisk() {
+        val j = sp.getString("live_sim_pending", null) ?: return
+        val type = object : TypeToken<List<PendingLiveSim>>() {}.type
+        val list = runCatching { gson.fromJson<List<PendingLiveSim>>(j, type) }.getOrDefault(emptyList())
+        pendingLiveSims.clear()
+        list.forEach { pendingLiveSims[it.key] = it }
     }
 
     fun saveSettings(s: AppSettings) {
@@ -1083,9 +1118,11 @@ class Repository(ctx: Context) {
             entryTime = entryTime,
             entryPrice = entryPrice,
         )
+        savePendingToDisk()
+        bumpLiveSim()
         HibtWebSession.appendLog(
             "模拟开仓 ${m.side} $intervalCode @${"%.4f".format(entryPrice)} " +
-                "t=$entryTime 到期=$expiryTime（Binance 1m open）",
+                "t=$entryTime 到期=$expiryTime（Binance 1m open）· 持仓数=${pendingLiveSims.size}",
         )
         settlePendingLiveSims(s, intervalCode)
     }
@@ -1139,11 +1176,13 @@ class Repository(ctx: Context) {
             liveSimTrades = (liveSimTrades + trade).takeLast(200)
             liveSimStats = statsOf(liveSimTrades)
             saveLiveSimToDisk()
+            savePendingToDisk()
+            bumpLiveSim()
             HibtWebSession.appendLog(
                 "模拟平仓 ${p.side} ${p.interval} entry=${"%.4f".format(p.entryPrice)} " +
                     "expiry=${"%.4f".format(exitPrice)}(Binance) @t=$expiry " +
                     "pnl=${"%.3f".format(pnl)}% ${if (win) "盈" else "亏"} · " +
-                    "累计${liveSimStats.trades}笔 胜率${"%.1f".format(liveSimStats.winRate * 100)}%",
+                    "持仓${pendingLiveSims.size} 累计${liveSimStats.trades}笔 胜率${"%.1f".format(liveSimStats.winRate * 100)}%",
             )
         }
     }
