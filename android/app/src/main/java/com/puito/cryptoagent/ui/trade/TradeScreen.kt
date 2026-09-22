@@ -380,11 +380,15 @@ private fun summarizeRules(cfg: StrategyConfig): String {
 
 
 @Composable
+
+@Composable
 private fun EditStrategy(
     cfg: StrategyConfig,
     onBack: () -> Unit,
     onSave: (StrategyConfig) -> Unit,
     onLlmTune: (StrategyConfig, String) -> Unit,
+    onTrainModel: ((StrategyConfig) -> Unit)? = null,
+    onClearModel: ((StrategyConfig) -> Unit)? = null,
 ) {
     var title by remember { mutableStateOf(cfg.title) }
     var kind by remember { mutableStateOf(cfg.kind) }
@@ -393,15 +397,34 @@ private fun EditStrategy(
     var paramsText by remember {
         mutableStateOf(cfg.algoParams.entries.joinToString("\n") { "${it.key}=${it.value}" })
     }
+    var modelId by remember { mutableStateOf(cfg.modelId.ifBlank { ModelIds.LOGREG_V1 }) }
+    var modelNote by remember { mutableStateOf(cfg.modelNote) }
+    var modelParamsText by remember {
+        mutableStateOf(
+            cfg.modelParams.ifEmpty {
+                mapOf("threshold" to 0.55, "cooldown" to 3.0, "lookback" to 5.0)
+            }.entries.joinToString("\n") { "${it.key}=${it.value}" },
+        )
+    }
+    var modelReport by remember { mutableStateOf(cfg.modelTrainReport) }
     var buy by remember { mutableStateOf(cfg.buyRules) }
     var sell by remember { mutableStateOf(cfg.sellRules) }
     var tuneGoal by remember { mutableStateOf("") }
-    LaunchedEffect(cfg.id, cfg.title, cfg.kind, cfg.algoId, cfg.algoNote, cfg.algoParams, cfg.buyRules, cfg.sellRules) {
+    LaunchedEffect(
+        cfg.id, cfg.title, cfg.kind, cfg.algoId, cfg.algoNote, cfg.algoParams,
+        cfg.buyRules, cfg.sellRules, cfg.modelId, cfg.modelParams, cfg.modelTrainReport, cfg.modelWeights,
+    ) {
         title = cfg.title
         kind = cfg.kind
         algoId = cfg.algoId
         algoNote = cfg.algoNote
         paramsText = cfg.algoParams.entries.joinToString("\n") { "${it.key}=${it.value}" }
+        modelId = cfg.modelId.ifBlank { ModelIds.LOGREG_V1 }
+        modelNote = cfg.modelNote
+        modelParamsText = cfg.modelParams.ifEmpty {
+            mapOf("threshold" to 0.55, "cooldown" to 3.0, "lookback" to 5.0)
+        }.entries.joinToString("\n") { "${it.key}=${it.value}" }
+        modelReport = cfg.modelTrainReport
         buy = cfg.buyRules
         sell = cfg.sellRules
     }
@@ -423,6 +446,13 @@ private fun EditStrategy(
         algoId = algoId,
         algoNote = algoNote,
         algoParams = parseParams(paramsText),
+        modelId = modelId.ifBlank { ModelIds.LOGREG_V1 },
+        modelNote = modelNote,
+        modelParams = parseParams(modelParamsText).ifEmpty {
+            mapOf("threshold" to 0.55, "cooldown" to 3.0, "lookback" to 5.0)
+        },
+        modelTrainReport = modelReport,
+        modelWeights = cfg.modelWeights,
         buyRules = buy.ifEmpty { listOf(Rule()) },
         sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
     )
@@ -438,75 +468,126 @@ private fun EditStrategy(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(selected = kind == StrategyKind.ALGO, onClick = { kind = StrategyKind.ALGO }, label = { Text("算法配置") })
             FilterChip(selected = kind == StrategyKind.RULES, onClick = { kind = StrategyKind.RULES }, label = { Text("指标规则") })
+            FilterChip(selected = kind == StrategyKind.MODEL, onClick = { kind = StrategyKind.MODEL }, label = { Text("模型") })
         }
-        if (kind == StrategyKind.ALGO) {
-            Text(
-                "算法由引擎实现；可手改参数，或让 LLM 按需求选算法并调参（顺势/皮尔逊三曲线/突破）。",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                AlgoIds.all.forEach { id ->
-                    FilterChip(
-                        selected = algoId == id,
-                        onClick = { algoId = id },
-                        label = { Text(AlgoIds.label(id), fontSize = 11.sp) },
-                    )
+        when (kind) {
+            StrategyKind.MODEL -> {
+                Text(
+                    "本地逻辑回归：特征复用 RSI/MACD/BOLL/动量。先「训练模型」写入权重，再启用策略。",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Text("模型", fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ModelIds.all.forEach { id ->
+                        FilterChip(
+                            selected = modelId == id,
+                            onClick = { modelId = id },
+                            label = { Text(ModelIds.label(id), fontSize = 11.sp) },
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    modelParamsText,
+                    { modelParamsText = it },
+                    label = { Text("参数 threshold/cooldown/lookback（每行 key=value）") },
+                    placeholder = { Text("threshold=0.55\ncooldown=3\nlookback=5") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                )
+                OutlinedTextField(
+                    modelNote,
+                    { modelNote = it },
+                    label = { Text("模型说明") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    if (cfg.modelWeights.isEmpty()) "权重：未训练"
+                    else "权重：已训练 ${cfg.modelWeights.size} 项",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                if (modelReport.isNotBlank()) {
+                    Text(modelReport, fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(vertical = 8.dp),
+                ) {
+                    Button(onClick = { onTrainModel?.invoke(currentCfg()) }) { Text("训练模型") }
+                    OutlinedButton(onClick = { onClearModel?.invoke(currentCfg()) }) { Text("清除权重") }
                 }
             }
-            OutlinedTextField(
-                algoNote, { algoNote = it },
-                label = { Text("算法说明") },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 2,
-            )
-            OutlinedTextField(
-                paramsText, { paramsText = it },
-                label = { Text("参数 每行 key=value") },
-                placeholder = {
-                    Text(
-                        when (algoId) {
-                            AlgoIds.PEARSON_TRIPLE -> "p1=5\np2=10\np3=20\nwindow=30\nminCorr=0.55\ncooldown=2"
-                            AlgoIds.BREAKOUT -> "lookback=20\ncooldown=5"
-                            else -> "fast=12\nslow=26\nconsecutive=3\ncooldown=3"
-                        },
+            StrategyKind.ALGO -> {
+                Text(
+                    "算法由引擎实现；可手改参数，或让 LLM 按需求选算法并调参。",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Text("算法", fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    AlgoIds.all.forEach { id ->
+                        FilterChip(
+                            selected = algoId == id,
+                            onClick = { algoId = id },
+                            label = { Text(AlgoIds.label(id), fontSize = 11.sp) },
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    algoNote, { algoNote = it },
+                    label = { Text("算法说明") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    paramsText, { paramsText = it },
+                    label = { Text("参数 每行 key=value") },
+                    placeholder = {
+                        Text(
+                            when (algoId) {
+                                AlgoIds.PEARSON_TRIPLE -> "p1=5\np2=10\np3=20\nwindow=30\nminCorr=0.55\ncooldown=2"
+                                AlgoIds.BREAKOUT -> "lookback=20\ncooldown=5"
+                                else -> "fast=12\nslow=26\nconsecutive=3\ncooldown=3"
+                            },
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 4,
+                )
+            }
+            StrategyKind.RULES -> {
+                Text(
+                    "指标规则：同侧多条件 OR。",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Text("买入（OR）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+                buy.forEachIndexed { i, rule ->
+                    RuleEditor(
+                        index = i + 1,
+                        rule = rule,
+                        onChange = { nr -> buy = buy.toMutableList().also { it[i] = nr } },
+                        onDelete = { buy = buy.toMutableList().also { it.removeAt(i) } },
                     )
-                },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 4,
-            )
-        } else {
-            Text(
-                "指标规则：同侧多条件 OR。",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-            Text("买入（OR）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
-            buy.forEachIndexed { i, rule ->
-                RuleEditor(
-                    index = i + 1,
-                    rule = rule,
-                    onChange = { nr -> buy = buy.toMutableList().also { it[i] = nr } },
-                    onDelete = { buy = buy.toMutableList().also { it.removeAt(i) } },
-                )
+                }
+                TextButton({ buy = buy + Rule() }) { Text("+ 买入条件") }
+                Text("卖出（OR）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+                sell.forEachIndexed { i, rule ->
+                    RuleEditor(
+                        index = i + 1,
+                        rule = rule,
+                        onChange = { nr -> sell = sell.toMutableList().also { it[i] = nr } },
+                        onDelete = { sell = sell.toMutableList().also { it.removeAt(i) } },
+                    )
+                }
+                TextButton({ sell = sell + Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14) }) { Text("+ 卖出条件") }
             }
-            TextButton({ buy = buy + Rule() }) { Text("+ 买入条件") }
-            Text("卖出（OR）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
-            sell.forEachIndexed { i, rule ->
-                RuleEditor(
-                    index = i + 1,
-                    rule = rule,
-                    onChange = { nr -> sell = sell.toMutableList().also { it[i] = nr } },
-                    onDelete = { sell = sell.toMutableList().also { it.removeAt(i) } },
-                )
-            }
-            TextButton({ sell = sell + Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14) }) { Text("+ 卖出条件") }
         }
         OutlinedTextField(
             value = tuneGoal,
             onValueChange = { tuneGoal = it },
             label = { Text("LLM 调优需求（必填）") },
-            placeholder = { Text("例：单边行情顺势；或皮尔逊三曲线提高相关阈值") },
+            placeholder = { Text("例：提高 threshold；或改为顺势算法") },
             modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             minLines = 2,
         )
@@ -521,6 +602,7 @@ private fun EditStrategy(
         Button(onClick = { onSave(currentCfg()) }, modifier = Modifier.fillMaxWidth()) { Text("保存策略") }
     }
 }
+
 
 @Composable
 private fun RuleEditor(
