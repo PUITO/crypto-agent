@@ -261,6 +261,11 @@ data class AppSettings(
     val llmThinkingEnabled: Boolean = false,
     /** AI 评估只取最近 N 根 K 线摘要 */
     val llmEvalMaxBars: Int = 40,
+    /**
+     * LLM 策略调优默认迭代轮次（chat/策略页未写「轮次N」时使用）。
+     * 过少（如固定2）易导致样本反馈不足、结果失真；建议 3～6。
+     */
+    val llmOptimizeRounds: Int = 4,
     val onboardingDone: Boolean = false,
     val chartIndicators: List<ChartIndicatorPref> = listOf(
         ChartIndicatorPref("ma7", "MA7", false, 7, 0xFF42A5F5),

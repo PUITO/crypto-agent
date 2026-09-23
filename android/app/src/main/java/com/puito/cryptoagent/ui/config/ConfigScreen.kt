@@ -28,6 +28,7 @@ fun ConfigScreen(repo: Repository) {
     var llmMaxTokens by remember { mutableStateOf(cur.llmMaxTokens.toString()) }
     var llmTemp by remember { mutableStateOf(cur.llmTemperature.toString()) }
     var llmEvalBars by remember { mutableStateOf(cur.llmEvalMaxBars.toString()) }
+    var llmOptRounds by remember { mutableStateOf(cur.llmOptimizeRounds.toString()) }
     var llmThinking by remember { mutableStateOf(cur.llmThinkingEnabled) }
     var bg by remember { mutableStateOf(cur.backgroundEnabled) }
     var vibrate by remember { mutableStateOf(cur.notifyVibrate) }
@@ -93,6 +94,12 @@ fun ConfigScreen(repo: Repository) {
             llmEvalBars,
             { llmEvalBars = it },
             label = { Text("评估K线条数(原版默认40，范围6～48)") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            llmOptRounds,
+            { llmOptRounds = it },
+            label = { Text("策略LLM调优默认轮次(默认4，范围1～8；过少易失真)") },
             modifier = Modifier.fillMaxWidth(),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -200,6 +207,7 @@ fun ConfigScreen(repo: Repository) {
                 llmMaxTokens = llmMaxTokens.toIntOrNull()?.coerceIn(64, 2048) ?: 512,
                 llmTemperature = llmTemp.toFloatOrNull()?.coerceIn(0f, 2f) ?: 0.3f,
                 llmEvalMaxBars = llmEvalBars.toIntOrNull()?.coerceIn(6, 48) ?: 40,
+                llmOptimizeRounds = llmOptRounds.toIntOrNull()?.coerceIn(1, 8) ?: 4,
                 llmThinkingEnabled = llmThinking,
                 backgroundEnabled = bg,
                 notifyVibrate = vibrate,

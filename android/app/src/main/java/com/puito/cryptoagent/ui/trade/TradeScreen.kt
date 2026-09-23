@@ -54,7 +54,9 @@ fun TradeScreen(repo: Repository) {
                     progress = "基于「${cfg.title}」LLM优化中…"
                     report = null
                     val r = repo.optimizeStrategyWithLlm(
-                        baseId = cfg.id, rounds = 2, userGoal = goal,
+                        baseId = cfg.id,
+                        rounds = null, // 使用设置 llmOptimizeRounds
+                        userGoal = goal,
                     ) { progress = it }
                     r.onSuccess {
                         list = repo.strategies()
@@ -271,7 +273,7 @@ fun TradeScreen(repo: Repository) {
                                 report = null
                                 val r = repo.optimizeStrategyWithLlm(
                                     baseId = id,
-                                    rounds = 2,
+                                    rounds = null,
                                     userGoal = goal,
                                 ) { progress = it }
                                 r.onSuccess {

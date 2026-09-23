@@ -1817,13 +1817,15 @@ class Repository(ctx: Context) {
      */
     suspend fun optimizeStrategyWithLlm(
         baseId: String? = null,
-        rounds: Int = 2,
+        rounds: Int? = null,
         userGoal: String? = null,
         minWinRatePct: Double? = null,
         minTrades: Int? = null,
         onProgress: ((String) -> Unit)? = null,
     ): Result<StrategyOptimizeResult> = withContext(Dispatchers.IO) {
         val s = settings()
+        val maxR = 8
+        val effectiveRounds = (rounds ?: s.llmOptimizeRounds.coerceIn(1, maxR)).coerceIn(1, maxR)
         if (s.llmApiKey.isBlank()) {
             return@withContext Result.failure(IllegalStateException("请先在设置中配置 LLM API Key"))
         }
@@ -1851,7 +1853,7 @@ class Repository(ctx: Context) {
         var bestWr = -1.0
         var bestTrades = 0
         val log = StringBuilder()
-        log.appendLine("标的 ${s.symbol} 周期 ${s.interval} K线 ${bars.size} 根 · 迭代 $rounds 轮")
+        log.appendLine("标的 ${s.symbol} 周期 ${s.interval} K线 ${bars.size} 根 · 迭代 $effectiveRounds 轮")
         if (base != null) {
             val (t0, st0) = EventSim.backtest(
                 bars, StrategyEngine.signals(bars, base), s.symbol, s.interval,
@@ -1873,7 +1875,7 @@ class Repository(ctx: Context) {
         if (targetTrades != null) log.appendLine("最少成交 ≥ $targetTrades 笔")
         onProgress?.invoke(
             buildString {
-                append("训练 ${rounds.coerceIn(1, 6)} 轮")
+                append("训练 $effectiveRounds 轮")
                 targetWr?.let { append(" · 胜率≥${"%.0f".format(it)}%") }
                 targetTrades?.let { append(" · ≥${it}笔") }
             },
@@ -1943,7 +1945,7 @@ op: GT,GTE,LT,LTE  period:2-200  同侧OR
             maxBars = minOf(32, bars.size),
         )
 
-        val maxRounds = rounds.coerceIn(1, 6)
+        val maxRounds = effectiveRounds
         var metTarget = false
         for (round in 1..maxRounds) {
             onProgress?.invoke("第${round}/${maxRounds}轮：请求 LLM…")

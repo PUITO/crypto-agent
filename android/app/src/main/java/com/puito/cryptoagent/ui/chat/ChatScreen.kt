@@ -118,6 +118,7 @@ fun ChatScreen(repo: Repository) {
                                 stripStrategyPrefix(trimmed, listOf("优化策略：", "优化策略:", "优化策略", "LLM优化策略")),
                             ),
                             defaultGoal = "在现有策略上提高胜率与稳定性，优先 ALGO 顺势/皮尔逊，减少假信号",
+                            defaultRounds = repo.settings().llmOptimizeRounds.coerceIn(1, 8),
                         )
                         val en = repo.strategies().find { it.enabled } ?: repo.strategies().firstOrNull()
                         if (en == null) {
@@ -132,7 +133,7 @@ fun ChatScreen(repo: Repository) {
                             msgs.add(Msg("assistant", head))
                             repo.optimizeStrategyWithLlm(
                                 baseId = en.id,
-                                rounds = hints.rounds,
+                                rounds = hints.rounds ?: repo.settings().llmOptimizeRounds,
                                 userGoal = hints.goal,
                                 minWinRatePct = hints.minWinRatePct,
                                 minTrades = hints.minTrades,
@@ -148,6 +149,7 @@ fun ChatScreen(repo: Repository) {
                                 stripStrategyPrefix(trimmed, listOf("生成策略：", "生成策略:", "生成策略", "LLM生成策略")),
                             ),
                             defaultGoal = "设计事件合约策略，优先 ALGO 顺势单边或皮尔逊三曲线，兼顾胜率与笔数",
+                            defaultRounds = repo.settings().llmOptimizeRounds.coerceIn(1, 8),
                         )
                         val head = buildString {
                             append("生成策略 · 轮次${hints.rounds}")
@@ -158,7 +160,7 @@ fun ChatScreen(repo: Repository) {
                         msgs.add(Msg("assistant", head))
                         repo.optimizeStrategyWithLlm(
                             baseId = null,
-                            rounds = hints.rounds,
+                            rounds = hints.rounds ?: repo.settings().llmOptimizeRounds,
                             userGoal = hints.goal,
                             minWinRatePct = hints.minWinRatePct,
                             minTrades = hints.minTrades,
@@ -320,8 +322,8 @@ fun ChatScreen(repo: Repository) {
                 placeholder = {
                     Text(
                         when (strategyMode) {
-                            "optimize" -> "直接写优化要求，如：顺势过滤假信号，轮次3，目标胜率55%"
-                            "generate" -> "直接写生成要求，如：皮尔逊三曲线，轮次3，最少15笔"
+                            "optimize" -> "直接写优化要求，如：顺势过滤假信号，轮次4，目标胜率55%"
+                            "generate" -> "直接写生成要求，如：皮尔逊三曲线，轮次4，最少15笔"
                             else -> if (withMarket) "输入问题（将附带K线）" else "输入消息"
                         },
                     )
@@ -412,17 +414,23 @@ private fun stripStrategyPrefix(body: String, prefixes: List<String>): String {
 
 data class OptimizeHints(
     val goal: String,
-    val rounds: Int = 2,
+    /** null 表示未在文本中指定，应使用设置里的 llmOptimizeRounds */
+    val rounds: Int? = null,
     val minWinRatePct: Double? = null,
     val minTrades: Int? = null,
 )
 
 /** 芯片一点即跑：无额外说明时用默认目标与训练参数 */
-private fun withDefaults(h: OptimizeHints, defaultGoal: String): OptimizeHints {
+private fun withDefaults(
+    h: OptimizeHints,
+    defaultGoal: String,
+    defaultRounds: Int,
+): OptimizeHints {
     val blank = h.goal.isBlank()
+    val rounds = (h.rounds ?: defaultRounds).coerceIn(1, 8)
     return OptimizeHints(
         goal = if (blank) defaultGoal else h.goal,
-        rounds = if (blank && h.rounds == 2) 3 else h.rounds,
+        rounds = rounds,
         minWinRatePct = h.minWinRatePct ?: if (blank) 55.0 else null,
         minTrades = h.minTrades ?: if (blank) 15 else null,
     )
@@ -430,21 +438,25 @@ private fun withDefaults(h: OptimizeHints, defaultGoal: String): OptimizeHints {
 
 private fun parseOptimizeHints(raw: String): OptimizeHints {
     var text = raw.trim()
-    var rounds = 2
+    var rounds: Int? = null
     var minWr: Double? = null
     var minTrades: Int? = null
 
     fun take(pattern: String, ignoreCase: Boolean = true, on: (MatchResult) -> Unit) {
         val opts = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
         val re = Regex(pattern, opts)
-        re.find(text)?.let {
-            on(it)
-            text = text.replace(it.value, " ")
+        // 支持多处匹配时取第一次；并清理所有匹配避免残留干扰
+        val all = re.findAll(text).toList()
+        if (all.isEmpty()) return
+        on(all.first())
+        all.asReversed().forEach { m ->
+            text = text.replaceRange(m.range, " ")
         }
     }
 
-    take("""(?:轮次|迭代|rounds?)\s*[:=：]?\s*(\d+)""") {
-        rounds = it.groupValues[1].toIntOrNull()?.coerceIn(1, 6) ?: 2
+    // 轮次4 / 迭代:4 / rounds=4 / 训练4轮 / 跑4轮
+    take("""(?:轮次|迭代|rounds?|训练|跑)\s*[:=：]?\s*(\d+)\s*轮?""") {
+        rounds = it.groupValues[1].toIntOrNull()?.coerceIn(1, 8)
     }
     take("""(?:目标胜率|胜率|minWinRate|winrate)\s*[≥>=:：]?\s*(\d+(?:\.\d+)?)\s*%?""") {
         minWr = it.groupValues[1].toDoubleOrNull()?.coerceIn(1.0, 99.0)
