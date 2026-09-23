@@ -239,6 +239,23 @@ object AlgoEngine {
 }
 
 object EventSim {
+    /** 周期毫秒：开仓在信号下一根 open，平仓在持有一个合约周期后 */
+    private fun intervalMs(code: String): Long = when (code.trim().lowercase()) {
+        "1m" -> 60_000L
+        "5m" -> 300_000L
+        "10m" -> 600_000L
+        "15m" -> 900_000L
+        "30m" -> 1_800_000L
+        "1h", "60m" -> 3_600_000L
+        else -> 600_000L
+    }
+
+    /**
+     * 事件合约回测：
+     * - 信号出现在 si 根 → 在 si+1 根 **开盘** 开仓
+     * - 持有 1 个 interval 后到期 → 在 entry.openTime+intervalMs **收盘/到期价** 平仓
+     * - 开平仓时间绝不相同
+     */
     fun backtest(
         candles: List<Candle>,
         signals: List<SignalMark>,
@@ -246,6 +263,7 @@ object EventSim {
         interval: String,
     ): Pair<List<SimTrade>, Stats> {
         if (candles.size < 2) return emptyList<SimTrade>() to Stats()
+        val ivMs = intervalMs(interval)
         val idx = candles.withIndex().associate { (i, c) -> c.openTime to i }
         val trades = mutableListOf<SimTrade>()
         var i = 0
@@ -255,24 +273,43 @@ object EventSim {
             if (si == null) {
                 i++; continue
             }
+            // 下一根 K 开盘开仓
             val entryI = si + 1
-            val exitI = entryI
-            if (entryI >= candles.size || exitI >= candles.size) {
+            if (entryI >= candles.size) {
                 i++; continue
             }
             val entry = candles[entryI]
-            val exit = candles[exitI]
+            val entryTime = entry.openTime
+            val exitTime = entryTime + ivMs
+            // 优先用到期时刻对应 K 线；否则用开仓那根的收盘（同一根周期的结束价）
+            val exitBar = candles.firstOrNull { it.openTime == exitTime }
+                ?: candles.getOrNull(entryI + 1)
+            val exitPrice = when {
+                exitBar != null && exitBar.openTime == exitTime -> exitBar.open // 下一根开盘≈本根收盘后
+                exitBar != null -> exitBar.open
+                else -> entry.close
+            }
+            // 若下一根存在且其 openTime > entryTime，平仓时间用 exitTime（合约到期），价格用下一根 open 或本根 close
             val long = sig.side == "B"
-            val pnl = if (long) (exit.close - entry.open) / entry.open * 100
-            else (entry.open - exit.close) / entry.open * 100
+            val entryPrice = entry.open
+            val pnl = if (long) (exitPrice - entryPrice) / entryPrice * 100
+            else (entryPrice - exitPrice) / entryPrice * 100
             trades.add(
                 SimTrade(
-                    UUID.randomUUID().toString(), symbol, interval, sig.side,
-                    entry.openTime, entry.open, exit.openTime, exit.close, pnl, pnl > 0,
+                    id = UUID.randomUUID().toString(),
+                    symbol = symbol,
+                    interval = interval,
+                    side = sig.side,
+                    entryTime = entryTime,
+                    entryPrice = entryPrice,
+                    exitTime = exitTime,
+                    exitPrice = exitPrice,
+                    pnlPct = pnl,
+                    win = pnl > 0,
                 ),
             )
-            val et = exit.openTime
-            while (i < signals.size && signals[i].openTime <= et) i++
+            // 跳过到期前的重复信号，避免重叠持仓
+            while (i < signals.size && signals[i].openTime < exitTime) i++
         }
         val wins = trades.count { it.win }
         return trades to Stats(
