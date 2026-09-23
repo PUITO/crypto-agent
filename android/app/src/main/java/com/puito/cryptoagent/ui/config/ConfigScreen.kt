@@ -9,6 +9,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.puito.cryptoagent.data.Repository
 import com.puito.cryptoagent.net.HibtWebSession
 import com.puito.cryptoagent.service.MonitorService
@@ -29,6 +30,7 @@ fun ConfigScreen(repo: Repository) {
     var llmTemp by remember { mutableStateOf(cur.llmTemperature.toString()) }
     var llmEvalBars by remember { mutableStateOf(cur.llmEvalMaxBars.toString()) }
     var llmOptRounds by remember { mutableStateOf(cur.llmOptimizeRounds.toString()) }
+    var llmTrainBars by remember { mutableStateOf(cur.llmTrainKlineLimit.toString()) }
     var llmThinking by remember { mutableStateOf(cur.llmThinkingEnabled) }
     var bg by remember { mutableStateOf(cur.backgroundEnabled) }
     var vibrate by remember { mutableStateOf(cur.notifyVibrate) }
@@ -101,6 +103,17 @@ fun ConfigScreen(repo: Repository) {
             { llmOptRounds = it },
             label = { Text("策略LLM调优默认轮次(默认4，范围1～8；过少易失真)") },
             modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            llmTrainBars,
+            { llmTrainBars = it },
+            label = { Text("训练/优化数据宽度(K线根数，默认800，300～1500)") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "宽度越大回测样本越多、调参更准，但更慢。自动调优看行情页「统一模拟」综合胜率。",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.secondary,
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("启用思考链thinking(默认关，开更贵)", modifier = Modifier.weight(1f))
@@ -208,6 +221,7 @@ fun ConfigScreen(repo: Repository) {
                 llmTemperature = llmTemp.toFloatOrNull()?.coerceIn(0f, 2f) ?: 0.3f,
                 llmEvalMaxBars = llmEvalBars.toIntOrNull()?.coerceIn(6, 48) ?: 40,
                 llmOptimizeRounds = llmOptRounds.toIntOrNull()?.coerceIn(1, 8) ?: 4,
+                llmTrainKlineLimit = llmTrainBars.toIntOrNull()?.coerceIn(300, 1500) ?: 800,
                 llmThinkingEnabled = llmThinking,
                 backgroundEnabled = bg,
                 notifyVibrate = vibrate,

@@ -109,6 +109,10 @@ class Repository(ctx: Context) {
         )
     }
 
+    /** LLM/模型训练用历史宽度（与行情展示 klineLimit 独立） */
+    private fun trainBarLimit(s: AppSettings = settings()): Int =
+        s.llmTrainKlineLimit.coerceIn(300, 1500)
+
     fun consecutiveLosses(list: List<SimTrade> = liveSimTrades): Int {
         var n = 0
         for (t in list.asReversed()) {
@@ -459,7 +463,7 @@ class Repository(ctx: Context) {
             binance.fetch(
                 s.symbol,
                 Interval.from(s.interval),
-                s.klineLimit.coerceIn(200, 1000),
+                trainBarLimit(s),
             )
         } catch (e: Exception) {
             return@withContext Result.failure(e)
@@ -507,7 +511,7 @@ class Repository(ctx: Context) {
         val s = settings()
         binance.updateBase(s.binanceBaseUrl)
         val bars = try {
-            binance.fetch(s.symbol, Interval.from(s.interval), s.klineLimit.coerceIn(200, 1000))
+            binance.fetch(s.symbol, Interval.from(s.interval), trainBarLimit(s))
         } catch (e: Exception) {
             return@withContext Result.failure(e)
         }
@@ -1439,8 +1443,8 @@ class Repository(ctx: Context) {
         retuneInProgress = true
         lastAutoRetuneAt = System.currentTimeMillis()
         val reason = buildString {
-            if (lowWr) append("模拟胜率${"%.1f".format(wrPct)}%<${s.liveSimMinWinRatePct}% ")
-            if (tooManyLoss) append("连亏${consec}笔 ")
+            if (lowWr) append("统一模拟胜率${"%.1f".format(wrPct)}%<${s.liveSimMinWinRatePct}% ")
+            if (tooManyLoss) append("统一模拟连亏${consec}笔 ")
         }
         HibtWebSession.appendLog(">>> 自动调优触发: $reason · 策略「${en.title}」 kind=${en.kind}")
         try {
@@ -1475,7 +1479,7 @@ class Repository(ctx: Context) {
                     sideLabel = "LLM调优", amount = null, timeUnit = null,
                 )
                 val goal = buildString {
-                    append("根据实时模拟表现自动调优。")
+                    append("根据行情页「统一模拟仓」综合表现自动调优（含1m确认+周期原生信号）。")
                     append("当前模拟${st.trades}笔 胜率${"%.1f".format(wrPct)}% 连亏$consec。")
                     append("目标：提高胜率、减少噪声信号，轮次4，目标胜率${"%.0f".format(s.liveSimMinWinRatePct.coerceAtLeast(50.0))}%，最少12笔。")
                     when (en.kind) {
@@ -1836,17 +1840,20 @@ class Repository(ctx: Context) {
             return@withContext Result.failure(IllegalStateException("请先在设置中配置 LLM API Key"))
         }
         binance.updateBase(s.binanceBaseUrl)
+        val barLimit = trainBarLimit(s)
         val bars = try {
             binance.fetch(
                 s.symbol,
                 Interval.from(s.interval),
-                s.klineLimit.coerceIn(200, 1000),
+                barLimit,
             )
         } catch (e: Exception) {
             return@withContext Result.failure(e)
         }
         if (bars.size < 80) {
-            return@withContext Result.failure(IllegalStateException("历史K线不足(${bars.size})，无法回测优化"))
+            return@withContext Result.failure(
+                IllegalStateException("历史K线不足(${bars.size})，请在设置提高「训练/优化数据宽度」后重试"),
+            )
         }
         val existing = strategies()
         val base = baseId?.let { id -> existing.find { it.id == id } }
@@ -1859,7 +1866,9 @@ class Repository(ctx: Context) {
         var bestWr = -1.0
         var bestTrades = 0
         val log = StringBuilder()
-        log.appendLine("标的 ${s.symbol} 周期 ${s.interval} K线 ${bars.size} 根 · 迭代 $effectiveRounds 轮")
+        log.appendLine(
+            "标的 ${s.symbol} 周期 ${s.interval} 训练宽度 ${bars.size}/${barLimit} 根 · 迭代 $effectiveRounds 轮",
+        )
         if (base != null) {
             val (t0, st0) = EventSim.backtest(
                 bars, StrategyEngine.signals(bars, base), s.symbol, s.interval,
@@ -1914,10 +1923,17 @@ class Repository(ctx: Context) {
                     appendLine("未达标时请调整 algoParams 或规则。")
                 }
             }
+            // 自动/手动调优都以统一模拟仓为实盘参考目标
+            if (liveSimStats.trades > 0) {
+                appendLine(
+                    "【统一模拟仓(行情页)】${liveSimStats.trades}笔 胜率${"%.1f".format(liveSimStats.winRate * 100)}% " +
+                        "连亏${consecutiveLosses()} —— 优化目标以提升该综合胜率为准。",
+                )
+            }
             if (base != null) {
                 appendLine("当前策略JSON:")
                 appendLine(strategyToJson(base))
-                appendLine("回测: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%。在锁定类型下提升表现。")
+                appendLine("历史回测样本: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%。在锁定类型下提升表现。")
             } else if (goal.isBlank()) {
                 appendLine("请从零设计事件合约策略；优先 ALGO 顺势/皮尔逊，高胜率且交易不宜过少。")
             } else {

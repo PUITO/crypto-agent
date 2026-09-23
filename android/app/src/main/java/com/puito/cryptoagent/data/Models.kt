@@ -268,6 +268,11 @@ data class AppSettings(
      * 过少（如固定2）易导致样本反馈不足、结果失真；建议 3～6。
      */
     val llmOptimizeRounds: Int = 4,
+    /**
+     * LLM 策略优化 / 模型训练 / 校准时拉取的历史 K 线宽度。
+     * 越大回测样本越多、调优更稳，但更慢更耗流量；建议 500～1500。
+     */
+    val llmTrainKlineLimit: Int = 800,
     val onboardingDone: Boolean = false,
     val chartIndicators: List<ChartIndicatorPref> = listOf(
         ChartIndicatorPref("ma7", "MA7", false, 7, 0xFF42A5F5),
