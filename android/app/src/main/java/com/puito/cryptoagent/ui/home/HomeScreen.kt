@@ -153,11 +153,11 @@ fun HomeScreen(repo: Repository) {
         val st = remember(simTick) { repo.liveSimStats }
         val consec = remember(simTick) { repo.consecutiveLosses() }
         val fmt = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
-        fun srcLabel(src: String) = when (src) {
+        fun srcLabel(src: String?) = when (src) {
             "1m_confirm" -> "1m确认"
             "ht_native" -> "周期"
             "model" -> "模型"
-            else -> src.ifBlank { "-" }
+            else -> src?.ifBlank { "-" } ?: "-"
         }
         Text(
             "统一模拟 持仓${pending.size} · 已平${st.trades} 胜${st.wins}负${st.losses} " +

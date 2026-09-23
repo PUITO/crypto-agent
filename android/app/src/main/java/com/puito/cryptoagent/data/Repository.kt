@@ -32,8 +32,8 @@ data class PendingLiveSim(
     val signalTime: Long,
     val entryTime: Long,
     val entryPrice: Double,
-    /** 1m_confirm | ht_native */
-    val source: String = "",
+    /** 1m_confirm | ht_native；旧数据可能缺字段 */
+    val source: String? = "",
 )
 
 class Repository(ctx: Context) {
@@ -76,18 +76,81 @@ class Repository(ctx: Context) {
 
     fun settings(): AppSettings {
         val j = sp.getString("settings", null) ?: return AppSettings()
-        return runCatching { gson.fromJson(j, AppSettings::class.java) }.getOrDefault(AppSettings())
+        return try {
+            val raw = gson.fromJson(j, AppSettings::class.java) ?: return AppSettings()
+            val def = AppSettings()
+            // Gson 可能把新增字段写成 0，或旧 JSON 缺字段；统一兜底避免启动崩溃
+            AppSettings(
+                binanceBaseUrl = raw.binanceBaseUrl.ifBlank { def.binanceBaseUrl },
+                symbol = raw.symbol.ifBlank { def.symbol },
+                interval = raw.interval.ifBlank { def.interval },
+                klineLimit = if (raw.klineLimit in 200..1000) raw.klineLimit else def.klineLimit,
+                strategyRunning = raw.strategyRunning,
+                signalMode1mConfirm = raw.signalMode1mConfirm,
+                signalModeHtNative = raw.signalModeHtNative,
+                backgroundEnabled = raw.backgroundEnabled,
+                notifyVibrate = raw.notifyVibrate,
+                llmBaseUrl = raw.llmBaseUrl.ifBlank { def.llmBaseUrl },
+                llmApiKey = raw.llmApiKey,
+                llmModel = raw.llmModel.ifBlank { def.llmModel },
+                llmTimeoutSec = if (raw.llmTimeoutSec in 10..300) raw.llmTimeoutSec else def.llmTimeoutSec,
+                llmMaxTokens = if (raw.llmMaxTokens in 32..4096) raw.llmMaxTokens else def.llmMaxTokens,
+                llmTemperature = raw.llmTemperature,
+                llmThinkingEnabled = raw.llmThinkingEnabled,
+                llmEvalMaxBars = if (raw.llmEvalMaxBars in 6..48) raw.llmEvalMaxBars else def.llmEvalMaxBars,
+                llmOptimizeRounds = if (raw.llmOptimizeRounds in 1..8) raw.llmOptimizeRounds else def.llmOptimizeRounds,
+                llmTrainKlineLimit = if (raw.llmTrainKlineLimit in 300..1500) raw.llmTrainKlineLimit else def.llmTrainKlineLimit,
+                onboardingDone = raw.onboardingDone,
+                chartIndicators = try { if (raw.chartIndicators.isEmpty()) def.chartIndicators else raw.chartIndicators } catch (_: Exception) { def.chartIndicators },
+                liveSimEnabled = raw.liveSimEnabled,
+                liveSimMinWinRatePct = raw.liveSimMinWinRatePct,
+                liveSimMaxConsecutiveLosses = raw.liveSimMaxConsecutiveLosses,
+                liveSimMinTradesBeforeRetune = raw.liveSimMinTradesBeforeRetune,
+                liveSimAutoRetune = raw.liveSimAutoRetune,
+                hibt = try { raw.hibt } catch (_: Exception) { def.hibt },
+            )
+        } catch (_: Exception) {
+            AppSettings()
+        }
     }
 
     private fun loadLiveSimFromDisk() {
-        val j = sp.getString("live_sim_trades", null)
-        if (j != null) {
-            val type = object : TypeToken<List<SimTrade>>() {}.type
-            val list = runCatching { gson.fromJson<List<SimTrade>>(j, type) }.getOrDefault(emptyList())
-            liveSimTrades = list.takeLast(200)
-            liveSimStats = statsOf(liveSimTrades)
+        runCatching {
+            val j = sp.getString("live_sim_trades", null)
+            if (j != null) {
+                val type = object : TypeToken<List<SimTrade>>() {}.type
+                val parsed = gson.fromJson<List<SimTrade>>(j, type).orEmpty()
+                val list = parsed.mapNotNull { t ->
+                    try {
+                        if (t.id.isBlank()) return@mapNotNull null
+                        SimTrade(
+                            id = t.id,
+                            symbol = t.symbol.ifBlank { "BTCUSDT" },
+                            interval = t.interval.ifBlank { "10m" },
+                            side = t.side.ifBlank { "B" },
+                            entryTime = t.entryTime,
+                            entryPrice = t.entryPrice,
+                            exitTime = t.exitTime,
+                            exitPrice = t.exitPrice,
+                            pnlPct = t.pnlPct,
+                            win = t.win,
+                            source = t.source ?: "",
+                        )
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                liveSimTrades = list.takeLast(200)
+                liveSimStats = statsOf(liveSimTrades)
+                liveSimKeys.clear()
+                liveSimTrades.forEach {
+                    liveSimKeys.add("${it.symbol}|${it.interval}|${it.entryTime}|${it.side}|${it.source ?: ""}")
+                }
+            }
+        }.onFailure {
+            liveSimTrades = emptyList()
+            liveSimStats = Stats()
             liveSimKeys.clear()
-            liveSimTrades.forEach { liveSimKeys.add("${it.symbol}|${it.interval}|${it.entryTime}|${it.side}") }
         }
         loadPendingFromDisk()
         bumpLiveSim()
@@ -147,11 +210,30 @@ class Repository(ctx: Context) {
     }
 
     private fun loadPendingFromDisk() {
-        val j = sp.getString("live_sim_pending", null) ?: return
-        val type = object : TypeToken<List<PendingLiveSim>>() {}.type
-        val list = runCatching { gson.fromJson<List<PendingLiveSim>>(j, type) }.getOrDefault(emptyList())
-        pendingLiveSims.clear()
-        list.forEach { pendingLiveSims[it.key] = it }
+        runCatching {
+            val j = sp.getString("live_sim_pending", null) ?: return
+            val type = object : TypeToken<List<PendingLiveSim>>() {}.type
+            val list = gson.fromJson<List<PendingLiveSim>>(j, type).orEmpty()
+            pendingLiveSims.clear()
+            list.forEach { p ->
+                try {
+                    val key = p.key ?: return@forEach
+                    if (key.isBlank()) return@forEach
+                    pendingLiveSims[key] = PendingLiveSim(
+                        key = key,
+                        symbol = p.symbol.ifBlank { "BTCUSDT" },
+                        interval = p.interval.ifBlank { "10m" },
+                        side = p.side.ifBlank { "B" },
+                        signalTime = p.signalTime,
+                        entryTime = p.entryTime,
+                        entryPrice = p.entryPrice,
+                        source = p.source ?: "",
+                    )
+                } catch (_: Exception) {
+                    // skip bad row
+                }
+            }
+        }.onFailure { pendingLiveSims.clear() }
     }
 
     fun saveSettings(s: AppSettings) {
