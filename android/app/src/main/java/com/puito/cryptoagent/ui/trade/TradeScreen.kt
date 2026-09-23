@@ -147,23 +147,30 @@ fun TradeScreen(repo: Repository) {
                 )
                 if (pending.isNotEmpty()) {
                     Text("持仓中", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
-                    pending.forEach { p ->
-                        val ivMs = when (p.interval.lowercase()) {
-                            "1m" -> 60_000L
-                            "5m" -> 300_000L
-                            "10m" -> 600_000L
-                            "30m" -> 1_800_000L
-                            "1h" -> 3_600_000L
-                            else -> 600_000L
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 120.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        pending.forEach { p ->
+                            val ivMs = when (p.interval.lowercase()) {
+                                "1m" -> 60_000L
+                                "5m" -> 300_000L
+                                "10m" -> 600_000L
+                                "30m" -> 1_800_000L
+                                "1h" -> 3_600_000L
+                                else -> 600_000L
+                            }
+                            val exp = p.entryTime + ivMs
+                            Text(
+                                "● ${p.side} ${p.interval} @${"%.2f".format(p.entryPrice)} " +
+                                    "开${timeFmt.format(java.util.Date(p.entryTime))} " +
+                                    "到期${timeFmt.format(java.util.Date(exp))}",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
                         }
-                        val exp = p.entryTime + ivMs
-                        Text(
-                            "● ${p.side} ${p.interval} @${"%.2f".format(p.entryPrice)} " +
-                                "开${timeFmt.format(java.util.Date(p.entryTime))} " +
-                                "到期${timeFmt.format(java.util.Date(exp))}",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
                     }
                 } else {
                     Text(
@@ -175,13 +182,20 @@ fun TradeScreen(repo: Repository) {
                 }
                 if (closed.isNotEmpty()) {
                     Text("已平仓（最近）", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
-                    closed.takeLast(8).asReversed().forEach { t ->
-                        Text(
-                            "${if (t.win) "✓" else "✗"} ${t.side} ${t.interval} " +
-                                "@${"%.2f".format(t.entryPrice)}→${"%.2f".format(t.exitPrice)} " +
-                                "${"%.2f".format(t.pnlPct)}%",
-                            fontSize = 11.sp,
-                        )
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 140.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        closed.takeLast(30).asReversed().forEach { t ->
+                            Text(
+                                "${if (t.win) "✓" else "✗"} ${t.side} ${t.interval} " +
+                                    "@${"%.2f".format(t.entryPrice)}→${"%.2f".format(t.exitPrice)} " +
+                                    "${"%.2f".format(t.pnlPct)}%",
+                                fontSize = 11.sp,
+                            )
+                        }
                     }
                 }
                 TextButton(

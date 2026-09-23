@@ -1,6 +1,8 @@
 package com.puito.cryptoagent.ui.chat
 
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -276,14 +278,35 @@ fun ChatScreen(repo: Repository) {
             }
         }
 
-        LazyColumn(Modifier.weight(1f), state = state) {
-            items(msgs, key = { it.hashCode().toString() + it.text.take(24) }) { m ->
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            state = state,
+        ) {
+            items(msgs, key = { "${it.role}_${it.text.hashCode()}_${it.text.length}" }) { m ->
                 val mine = m.role == "user"
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
                 ) {
-                    Card { Text(m.text, Modifier.padding(10.dp)) }
+                    Card(
+                        Modifier
+                            .fillMaxWidth(0.92f)
+                            .widthIn(max = 520.dp),
+                    ) {
+                        // 长文：自动换行 + 限高可滚动，避免只能看到头部
+                        Column(
+                            Modifier
+                                .padding(10.dp)
+                                .heightIn(max = 320.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            Text(
+                                text = m.text,
+                                softWrap = true,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -303,7 +326,8 @@ fun ChatScreen(repo: Repository) {
                         },
                     )
                 },
-                singleLine = true,
+                singleLine = false,
+                maxLines = 4,
             )
             Spacer(Modifier.width(8.dp))
             Button(
