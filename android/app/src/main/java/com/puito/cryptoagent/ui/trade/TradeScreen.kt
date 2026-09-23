@@ -29,6 +29,7 @@ fun TradeScreen(repo: Repository) {
     var report by remember { mutableStateOf<String?>(null) }
     var goalDialog by remember { mutableStateOf<Pair<String?, String>?>(null) } // baseId to title
     var goalDraft by remember { mutableStateOf("") }
+    var simExpanded by remember { mutableStateOf(false) } // 持仓/历史默认折叠
 
     if (editing != null) {
         EditStrategy(
@@ -126,82 +127,95 @@ fun TradeScreen(repo: Repository) {
         }
         Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
             Column(Modifier.padding(10.dp)) {
-                Text("实时模拟（策略信号）", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "持仓 ${pending.size} · 已平 ${ls.trades}笔 " +
-                        (if (ls.trades > 0)
-                            "胜${ls.wins}负${ls.losses} 胜率${"%.1f".format(ls.winRate * 100)}% 连亏$consec"
-                        else "—"),
-                    fontSize = 12.sp,
-                )
-                Text(
-                    "开仓即显示仓位；到期后 Binance 取价平仓并移入已平",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-                Text(
-                    "调优: 胜率<${"%.0f".format(app.liveSimMinWinRatePct)}% 或连亏≥${app.liveSimMaxConsecutiveLosses} " +
-                        (if (app.liveSimAutoRetune) "·自动开" else "·自动关"),
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-                if (pending.isNotEmpty()) {
-                    Text("持仓中", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 120.dp)
-                            .verticalScroll(rememberScrollState()),
-                    ) {
-                        pending.forEach { p ->
-                            val ivMs = when (p.interval.lowercase()) {
-                                "1m" -> 60_000L
-                                "5m" -> 300_000L
-                                "10m" -> 600_000L
-                                "30m" -> 1_800_000L
-                                "1h" -> 3_600_000L
-                                else -> 600_000L
-                            }
-                            val exp = p.entryTime + ivMs
-                            Text(
-                                "● ${p.side} ${p.interval} @${"%.2f".format(p.entryPrice)} " +
-                                    "开${timeFmt.format(java.util.Date(p.entryTime))} " +
-                                    "到期${timeFmt.format(java.util.Date(exp))}",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
+                // 默认折叠：只显示一行摘要，展开后才看持仓/历史
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("实时模拟（策略信号）", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "持仓 ${pending.size} · 已平 ${ls.trades}笔 " +
+                                (if (ls.trades > 0)
+                                    "胜${ls.wins}负${ls.losses} 胜率${"%.1f".format(ls.winRate * 100)}% 连亏$consec"
+                                else "—"),
+                            fontSize = 12.sp,
+                        )
                     }
-                } else {
+                    TextButton(onClick = { simExpanded = !simExpanded }) {
+                        Text(if (simExpanded) "收起" else "展开", fontSize = 12.sp)
+                    }
+                }
+                if (simExpanded) {
                     Text(
-                        "暂无持仓（有信号且满足条件时会开仓显示）",
+                        "开仓即显示仓位；到期后 Binance 取价平仓并移入已平",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    Text(
+                        "调优: 胜率<${"%.0f".format(app.liveSimMinWinRatePct)}% 或连亏≥${app.liveSimMaxConsecutiveLosses} " +
+                            (if (app.liveSimAutoRetune) "·自动开" else "·自动关"),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.padding(top = 4.dp),
                     )
-                }
-                if (closed.isNotEmpty()) {
-                    Text("已平仓（最近）", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 140.dp)
-                            .verticalScroll(rememberScrollState()),
-                    ) {
-                        closed.takeLast(30).asReversed().forEach { t ->
-                            Text(
-                                "${if (t.win) "✓" else "✗"} ${t.side} ${t.interval} " +
-                                    "@${"%.2f".format(t.entryPrice)}→${"%.2f".format(t.exitPrice)} " +
-                                    "${"%.2f".format(t.pnlPct)}%",
-                                fontSize = 11.sp,
-                            )
+                    if (pending.isNotEmpty()) {
+                        Text("持仓中", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 120.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            pending.forEach { p ->
+                                val ivMs = when (p.interval.lowercase()) {
+                                    "1m" -> 60_000L
+                                    "5m" -> 300_000L
+                                    "10m" -> 600_000L
+                                    "30m" -> 1_800_000L
+                                    "1h" -> 3_600_000L
+                                    else -> 600_000L
+                                }
+                                val exp = p.entryTime + ivMs
+                                Text(
+                                    "● ${p.side} ${p.interval} @${"%.2f".format(p.entryPrice)} " +
+                                        "开${timeFmt.format(java.util.Date(p.entryTime))} " +
+                                        "到期${timeFmt.format(java.util.Date(exp))}",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    } else {
+                        Text(
+                            "暂无持仓（有信号且满足条件时会开仓显示）",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    if (closed.isNotEmpty()) {
+                        Text("已平仓（最近）", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 140.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            closed.takeLast(30).asReversed().forEach { t ->
+                                Text(
+                                    "${if (t.win) "✓" else "✗"} ${t.side} ${t.interval} " +
+                                        "@${"%.2f".format(t.entryPrice)}→${"%.2f".format(t.exitPrice)} " +
+                                        "${"%.2f".format(t.pnlPct)}%",
+                                    fontSize = 11.sp,
+                                )
+                            }
                         }
                     }
+                    TextButton(
+                        onClick = { repo.clearLiveSim() },
+                        modifier = Modifier.padding(top = 4.dp),
+                    ) { Text("清空模拟记录", fontSize = 12.sp) }
                 }
-                TextButton(
-                    onClick = { repo.clearLiveSim() },
-                    modifier = Modifier.padding(top = 4.dp),
-                ) { Text("清空模拟记录", fontSize = 12.sp) }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
