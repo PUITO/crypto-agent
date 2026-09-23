@@ -202,9 +202,42 @@ class Repository(ctx: Context) {
         bumpLiveSim()
     }
 
-    private fun setHistoryBacktest(ht: List<SimTrade>, m1: List<SimTrade> = emptyList()) {
-        historySimTrades = (ht + m1).sortedBy { it.entryTime }
+    private suspend fun setHistoryBacktest(
+        symbol: String,
+        ht: List<SimTrade>,
+        m1: List<SimTrade> = emptyList(),
+    ) {
+        val merged = (ht + m1).sortedBy { it.entryTime }
+        // 用 1m（必要时 1s/成交）重定价，保证开平仓价与真实时刻一致
+        historySimTrades = repriceSimTrades(symbol, merged)
         publishUnifiedTrades()
+    }
+
+    /**
+     * 历史回测结构时间来自 K 线，价格改为数据服务按时刻取价：
+     * 批量 1m 打底；最近若干笔再尝试 1s/aggTrades 提高精度。
+     */
+    private suspend fun repriceSimTrades(symbol: String, trades: List<SimTrade>): List<SimTrade> {
+        if (trades.isEmpty()) return trades
+        return try {
+            val entryMap = binance.pricesAt1m(symbol, trades.map { it.entryTime }, preferClose = false)
+            val exitMap = binance.pricesAt1m(symbol, trades.map { it.exitTime }, preferClose = true)
+            val refineFrom = (trades.size - 30).coerceAtLeast(0)
+            trades.mapIndexed { idx, t ->
+                var ep = entryMap[t.entryTime] ?: t.entryPrice
+                var xp = exitMap[t.exitTime] ?: t.exitPrice
+                if (idx >= refineFrom) {
+                    binance.priceAt(symbol, t.entryTime, preferClose = false)?.let { ep = it }
+                    binance.priceAt(symbol, t.exitTime, preferClose = true)?.let { xp = it }
+                }
+                if (ep <= 0 || xp <= 0) return@mapIndexed t
+                val pnl = if (t.side == "B") (xp - ep) / ep * 100.0 else (ep - xp) / ep * 100.0
+                t.copy(entryPrice = ep, exitPrice = xp, pnlPct = pnl, win = pnl > 0)
+            }
+        } catch (e: Exception) {
+            HibtWebSession.appendLog("回测重定价失败，沿用K线价: ${e.message}")
+            trades
+        }
     }
 
     fun clearLiveSim() {
@@ -703,28 +736,14 @@ class Repository(ctx: Context) {
                     }
                     candles = bars
                     signals = chartMarks
-                    // 历史回测：周期原生 + 1m映射（若有）分开标记后合并
-                    val histHt = if (s.signalModeHtNative || (!s.signalMode1mConfirm && !s.signalModeHtNative)) {
-                        EventSim.backtest(bars, htMarks, s.symbol, s.interval).first
-                            .map { it.copy(source = "history_ht") }
+                    val marks1mOnly = chartMarks.filter { it.tag == "1m" }
+                    val histHt = EventSim.backtest(bars, htMarks, s.symbol, s.interval).first
+                        .map { it.copy(source = "history_ht") }
+                    val hist1m = if (marks1mOnly.isNotEmpty()) {
+                        EventSim.backtest(bars, marks1mOnly, s.symbol, s.interval).first
+                            .map { it.copy(source = "history_1m") }
                     } else emptyList()
-                    val hist1m = chartMarks.filter { it.tag == "1m" || it.tag == "m1" }.let { m1marks ->
-                        if (m1marks.isEmpty() && want1m) {
-                            // chartMarks 已是 merge，用 mapped 再回测一次
-                            EventSim.backtest(bars, chartMarks.filter { it.tag != "ht" }, s.symbol, s.interval).first
-                                .map { it.copy(source = "history_1m") }
-                        } else if (m1marks.isNotEmpty()) {
-                            EventSim.backtest(bars, m1marks, s.symbol, s.interval).first
-                                .map { it.copy(source = "history_1m") }
-                        } else emptyList()
-                    }
-                    // 若拆分后为空，整图合并回测记为 history_ht
-                    if (histHt.isEmpty() && hist1m.isEmpty()) {
-                        val (tlist, _) = EventSim.backtest(bars, chartMarks, s.symbol, s.interval)
-                        setHistoryBacktest(tlist.map { it.copy(source = "history_ht") })
-                    } else {
-                        setHistoryBacktest(histHt, hist1m)
-                    }
+                    setHistoryBacktest(s.symbol, histHt, hist1m)
                 } else {
                     candles = bars
                     if (cfg != null && bars.size < minBarsForSignal(s.interval)) {
@@ -1128,7 +1147,7 @@ class Repository(ctx: Context) {
                         .map { it.copy(source = "history_ht") }
                     val hist1m = EventSim.backtest(barsChart, mapped1m, s.symbol, s.interval).first
                         .map { it.copy(source = "history_1m") }
-                    setHistoryBacktest(histHt, hist1m)
+                    setHistoryBacktest(s.symbol, histHt, hist1m)
                 }
             } catch (_: Exception) {
             }
@@ -1463,7 +1482,7 @@ class Repository(ctx: Context) {
         val posKey = "${s.symbol}|$intervalCode|$entryTime|${m.side}|$srcTag"
         if (posKey in liveSimKeys || pendingLiveSims.containsKey(posKey)) return
 
-        // 开仓价：仅 Binance GET klines startTime=entryTime
+        // 开仓价：1s → aggTrades → 1m（Binance 数据服务）
         val entryPrice = try {
             binance.priceAt(s.symbol, entryTime, preferClose = false)
         } catch (e: Exception) {
@@ -1512,6 +1531,7 @@ class Repository(ctx: Context) {
             val expiry = p.entryTime + ivMs
             if (now < expiry) continue // 未到期
 
+            // 到期价：同上链路，保证与开仓同一套取价精度
             val exitPrice = try {
                 binance.priceAt(s.symbol, expiry, preferClose = true)
             } catch (e: Exception) {
