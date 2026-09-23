@@ -149,24 +149,26 @@ fun HomeScreen(repo: Repository) {
         // 统一模拟仓：1m确认 + 周期原生信号，行情页展示
         val simTick by repo.liveSimTick.collectAsState()
         val pending = remember(simTick) { repo.pendingLivePositions() }
-        val closed = remember(simTick) { repo.liveSimTrades }
-        val st = remember(simTick) { repo.liveSimStats }
+        val closed = remember(simTick) { repo.allClosedSimTrades() }
+        val st = remember(simTick) { repo.unifiedStats() }
         val consec = remember(simTick) { repo.consecutiveLosses() }
         val fmt = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
         fun srcLabel(src: String?) = when (src) {
-            "1m_confirm" -> "1m确认"
-            "ht_native" -> "周期"
+            "1m_confirm" -> "实时·1m确认"
+            "ht_native" -> "实时·周期"
+            "history_1m" -> "回测·1m"
+            "history_ht" -> "回测·周期"
             "model" -> "模型"
             else -> src?.ifBlank { "-" } ?: "-"
         }
         Text(
-            "统一模拟 持仓${pending.size} · 已平${st.trades} 胜${st.wins}负${st.losses} " +
+            "综合模拟 持仓${pending.size} · 已平${st.trades} 胜${st.wins}负${st.losses} " +
                 "胜率${"%.1f".format(st.winRate * 100)}% 收益${"%.2f".format(st.totalReturnPct)}% 连亏$consec",
             fontSize = 12.sp,
             modifier = Modifier.padding(vertical = 4.dp),
         )
         Text(
-            "信号源: 1m确认 / 周期原生 · 开平仓价来自 Binance 时刻取价",
+            "含：历史回测 + 实时1m确认 + 实时周期 · 自动调优看本综合胜率",
             fontSize = 10.sp,
             color = MaterialTheme.colorScheme.secondary,
         )
@@ -228,7 +230,7 @@ fun HomeScreen(repo: Repository) {
             if (pending.isEmpty() && closed.isEmpty()) {
                 item {
                     Text(
-                        "启动策略后，1m确认与周期信号将统一开模拟仓（需开启实时模拟）",
+                        "启动策略后生成历史回测；实时信号开仓后合并进综合胜率",
                         color = MaterialTheme.colorScheme.secondary,
                         fontSize = 12.sp,
                     )

@@ -55,6 +55,8 @@ class Repository(ctx: Context) {
     /** 策略面板展示的实时模拟（过 AI 阈值 / AI 关则全信号） */
     var liveSimTrades: List<SimTrade> = emptyList(); private set
     var liveSimStats: Stats = Stats(); private set
+    /** 历史回测仓（策略信号在整段K线上的回测），与实时仓合并为统一模拟 */
+    var historySimTrades: List<SimTrade> = emptyList(); private set
     private val liveSimKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     /** 已开仓未平仓的模拟单：key = symbol|interval|entryTime|side */
     private val pendingLiveSims = java.util.concurrent.ConcurrentHashMap<String, PendingLiveSim>()
@@ -153,7 +155,8 @@ class Repository(ctx: Context) {
             liveSimKeys.clear()
         }
         loadPendingFromDisk()
-        bumpLiveSim()
+        // 历史回测在 refresh/poll 时重建；启动时先用实时仓算综合
+        publishUnifiedTrades()
     }
 
     private fun saveLiveSimToDisk() {
@@ -176,7 +179,7 @@ class Repository(ctx: Context) {
     private fun trainBarLimit(s: AppSettings = settings()): Int =
         s.llmTrainKlineLimit.coerceIn(300, 1500)
 
-    fun consecutiveLosses(list: List<SimTrade> = liveSimTrades): Int {
+    fun consecutiveLosses(list: List<SimTrade> = allClosedSimTrades()): Int {
         var n = 0
         for (t in list.asReversed()) {
             if (!t.win) n++ else break
@@ -184,11 +187,34 @@ class Repository(ctx: Context) {
         return n
     }
 
+    /** 历史回测 + 实时已平仓（统一模拟仓） */
+    fun allClosedSimTrades(): List<SimTrade> =
+        (historySimTrades + liveSimTrades).sortedBy { it.entryTime }
+
+    /** 所有已平仓综合统计（自动调优 / 行情页胜率以此为准） */
+    fun unifiedStats(): Stats = statsOf(allClosedSimTrades())
+
+    private fun publishUnifiedTrades() {
+        val all = allClosedSimTrades()
+        trades = all
+        stats = statsOf(all)
+        liveSimStats = stats // 兼容旧 UI 读 liveSimStats 也看到综合
+        bumpLiveSim()
+    }
+
+    private fun setHistoryBacktest(ht: List<SimTrade>, m1: List<SimTrade> = emptyList()) {
+        historySimTrades = (ht + m1).sortedBy { it.entryTime }
+        publishUnifiedTrades()
+    }
+
     fun clearLiveSim() {
         liveSimTrades = emptyList()
         liveSimStats = Stats()
         liveSimKeys.clear()
         pendingLiveSims.clear()
+        historySimTrades = emptyList()
+        trades = emptyList()
+        stats = Stats()
         sp.edit().remove("live_sim_trades").apply()
         sp.edit().remove("live_sim_pending").apply()
         bumpLiveSim()
@@ -677,13 +703,33 @@ class Repository(ctx: Context) {
                     }
                     candles = bars
                     signals = chartMarks
-                    val (tlist, st) = EventSim.backtest(bars, chartMarks, s.symbol, s.interval)
-                    trades = tlist
-                    stats = st
+                    // 历史回测：周期原生 + 1m映射（若有）分开标记后合并
+                    val histHt = if (s.signalModeHtNative || (!s.signalMode1mConfirm && !s.signalModeHtNative)) {
+                        EventSim.backtest(bars, htMarks, s.symbol, s.interval).first
+                            .map { it.copy(source = "history_ht") }
+                    } else emptyList()
+                    val hist1m = chartMarks.filter { it.tag == "1m" || it.tag == "m1" }.let { m1marks ->
+                        if (m1marks.isEmpty() && want1m) {
+                            // chartMarks 已是 merge，用 mapped 再回测一次
+                            EventSim.backtest(bars, chartMarks.filter { it.tag != "ht" }, s.symbol, s.interval).first
+                                .map { it.copy(source = "history_1m") }
+                        } else if (m1marks.isNotEmpty()) {
+                            EventSim.backtest(bars, m1marks, s.symbol, s.interval).first
+                                .map { it.copy(source = "history_1m") }
+                        } else emptyList()
+                    }
+                    // 若拆分后为空，整图合并回测记为 history_ht
+                    if (histHt.isEmpty() && hist1m.isEmpty()) {
+                        val (tlist, _) = EventSim.backtest(bars, chartMarks, s.symbol, s.interval)
+                        setHistoryBacktest(tlist.map { it.copy(source = "history_ht") })
+                    } else {
+                        setHistoryBacktest(histHt, hist1m)
+                    }
                 } else {
                     candles = bars
                     if (cfg != null && bars.size < minBarsForSignal(s.interval)) {
                         signals = emptyList()
+                        historySimTrades = emptyList()
                         trades = emptyList()
                         stats = Stats()
                     }
@@ -1078,9 +1124,11 @@ class Repository(ctx: Context) {
                     } else emptyList()
                     candles = barsChart
                     signals = mergeChartSignals(mapped1m, htMarks)
-                    val (tlist, st) = EventSim.backtest(barsChart, signals, s.symbol, s.interval)
-                    trades = tlist
-                    stats = st
+                    val histHt = EventSim.backtest(barsChart, htMarks, s.symbol, s.interval).first
+                        .map { it.copy(source = "history_ht") }
+                    val hist1m = EventSim.backtest(barsChart, mapped1m, s.symbol, s.interval).first
+                        .map { it.copy(source = "history_1m") }
+                    setHistoryBacktest(histHt, hist1m)
                 }
             } catch (_: Exception) {
             }
@@ -1514,7 +1562,7 @@ class Repository(ctx: Context) {
         if (!s.liveSimAutoRetune || !s.liveSimEnabled) return
         if (retuneInProgress) return
         if (System.currentTimeMillis() - lastAutoRetuneAt < 15 * 60_000L) return
-        val st = liveSimStats
+        val st = unifiedStats()
         if (st.trades < s.liveSimMinTradesBeforeRetune.coerceAtLeast(3)) return
         val consec = consecutiveLosses()
         val wrPct = st.winRate * 100
@@ -1525,8 +1573,8 @@ class Repository(ctx: Context) {
         retuneInProgress = true
         lastAutoRetuneAt = System.currentTimeMillis()
         val reason = buildString {
-            if (lowWr) append("统一模拟胜率${"%.1f".format(wrPct)}%<${s.liveSimMinWinRatePct}% ")
-            if (tooManyLoss) append("统一模拟连亏${consec}笔 ")
+            if (lowWr) append("综合模拟胜率${"%.1f".format(wrPct)}%<${s.liveSimMinWinRatePct}% ")
+            if (tooManyLoss) append("综合模拟连亏${consec}笔 ")
         }
         HibtWebSession.appendLog(">>> 自动调优触发: $reason · 策略「${en.title}」 kind=${en.kind}")
         try {
@@ -1561,7 +1609,7 @@ class Repository(ctx: Context) {
                     sideLabel = "LLM调优", amount = null, timeUnit = null,
                 )
                 val goal = buildString {
-                    append("根据行情页「统一模拟仓」综合表现自动调优（含1m确认+周期原生信号）。")
+                    append("根据行情页综合模拟仓表现自动调优（历史回测+1m确认实时+周期原生实时）。")
                     append("当前模拟${st.trades}笔 胜率${"%.1f".format(wrPct)}% 连亏$consec。")
                     append("目标：提高胜率、减少噪声信号，轮次4，目标胜率${"%.0f".format(s.liveSimMinWinRatePct.coerceAtLeast(50.0))}%，最少12笔。")
                     when (en.kind) {
@@ -2006,9 +2054,10 @@ class Repository(ctx: Context) {
                 }
             }
             // 自动/手动调优都以统一模拟仓为实盘参考目标
-            if (liveSimStats.trades > 0) {
+            val us = unifiedStats()
+            if (us.trades > 0) {
                 appendLine(
-                    "【统一模拟仓(行情页)】${liveSimStats.trades}笔 胜率${"%.1f".format(liveSimStats.winRate * 100)}% " +
+                    "【综合模拟仓】历史+实时共${us.trades}笔 胜率${"%.1f".format(us.winRate * 100)}% " +
                         "连亏${consecutiveLosses()} —— 优化目标以提升该综合胜率为准。",
                 )
             }
