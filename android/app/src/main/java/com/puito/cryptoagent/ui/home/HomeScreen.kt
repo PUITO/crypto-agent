@@ -4,6 +4,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -11,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -143,25 +146,100 @@ fun HomeScreen(repo: Repository) {
         }
         Text("B/S=周期信号 · b/s=1m映射 · 单击Tips · 拖动平移 · 双指缩放 · 双击回最新", color = MaterialTheme.colorScheme.secondary, fontSize = 10.sp)
 
-        val st = repo.stats
-        Text(
-            "统计（全部 ${st.trades} 笔）：胜 ${st.wins} 负 ${st.losses} 胜率 ${"%.1f".format(st.winRate * 100)}% 收益 ${"%.2f".format(st.totalReturnPct)}%",
-            fontSize = 12.sp, modifier = Modifier.padding(vertical = 6.dp),
-        )
-        Text("模拟成交（最近 5 / 共 ${repo.trades.size}）", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-        val rows = repo.trades.takeLast(5).reversed()
+        // 统一模拟仓：1m确认 + 周期原生信号，行情页展示
+        val simTick by repo.liveSimTick.collectAsState()
+        val pending = remember(simTick) { repo.pendingLivePositions() }
+        val closed = remember(simTick) { repo.liveSimTrades }
+        val st = remember(simTick) { repo.liveSimStats }
+        val consec = remember(simTick) { repo.consecutiveLosses() }
         val fmt = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
+        fun srcLabel(src: String) = when (src) {
+            "1m_confirm" -> "1m确认"
+            "ht_native" -> "周期"
+            "model" -> "模型"
+            else -> src.ifBlank { "-" }
+        }
+        Text(
+            "统一模拟 持仓${pending.size} · 已平${st.trades} 胜${st.wins}负${st.losses} " +
+                "胜率${"%.1f".format(st.winRate * 100)}% 收益${"%.2f".format(st.totalReturnPct)}% 连亏$consec",
+            fontSize = 12.sp,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
+        Text(
+            "信号源: 1m确认 / 周期原生 · 开平仓价来自 Binance 时刻取价",
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.secondary,
+        )
         LazyColumn(Modifier.weight(1f)) {
-            items(rows, key = { it.id }) { t ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                    Text(fmt.format(Date(t.entryTime)), Modifier.weight(1.2f), fontSize = 11.sp)
-                    Text(t.side, Modifier.weight(0.4f), color = if (t.side == "B") Color(0xFF0ECB81) else Color(0xFFF6465D), fontSize = 11.sp)
-                    Text("%.1f".format(t.entryPrice), Modifier.weight(0.9f), fontSize = 11.sp)
-                    Text(if (t.win) "盈" else "亏", Modifier.weight(0.4f), color = if (t.win) Color(0xFF0ECB81) else Color(0xFFF6465D), fontSize = 11.sp)
+            if (pending.isNotEmpty()) {
+                item {
+                    Text("持仓中", fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                }
+                items(pending, key = { it.key }) { p ->
+                    val ivMs = when (p.interval.lowercase()) {
+                        "1m" -> 60_000L
+                        "5m" -> 300_000L
+                        "10m" -> 600_000L
+                        "30m" -> 1_800_000L
+                        "1h" -> 3_600_000L
+                        else -> 600_000L
+                    }
+                    val exp = p.entryTime + ivMs
+                    Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                        Text(
+                            "● ${srcLabel(p.source)} ${p.side} ${p.interval} @${"%.2f".format(p.entryPrice)}",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            "开${fmt.format(Date(p.entryTime))} → 到期${fmt.format(Date(exp))}",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                    HorizontalDivider()
+                }
+            }
+            item {
+                Text(
+                    "已平仓（最近）",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+            items(closed.takeLast(40).asReversed(), key = { it.id }) { t ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                    Text(
+                        "${if (t.win) "✓" else "✗"} ${srcLabel(t.source)} ${t.side} ${t.interval} " +
+                            "pnl ${"%.2f".format(t.pnlPct)}%",
+                        fontSize = 11.sp,
+                        color = if (t.win) Color(0xFF0ECB81) else Color(0xFFF6465D),
+                    )
+                    Text(
+                        "开${fmt.format(Date(t.entryTime))} @${"%.2f".format(t.entryPrice)} → " +
+                            "平${fmt.format(Date(t.exitTime))} @${"%.2f".format(t.exitPrice)}",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
                 }
                 HorizontalDivider()
             }
-            if (rows.isEmpty()) item { Text("启动策略后生成模拟成交", color = MaterialTheme.colorScheme.secondary) }
+            if (pending.isEmpty() && closed.isEmpty()) {
+                item {
+                    Text(
+                        "启动策略后，1m确认与周期信号将统一开模拟仓（需开启实时模拟）",
+                        color = MaterialTheme.colorScheme.secondary,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+            item {
+                TextButton(
+                    onClick = { repo.clearLiveSim() },
+                    modifier = Modifier.padding(top = 4.dp),
+                ) { Text("清空模拟仓", fontSize = 12.sp) }
+            }
         }
     }
 

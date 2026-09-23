@@ -32,6 +32,8 @@ data class PendingLiveSim(
     val signalTime: Long,
     val entryTime: Long,
     val entryPrice: Double,
+    /** 1m_confirm | ht_native */
+    val source: String = "",
 )
 
 class Repository(ctx: Context) {
@@ -1084,7 +1086,7 @@ class Repository(ctx: Context) {
             }
             for (p in simTargets) {
                 val bars = barsOf(p.interval)
-                maybeLiveSim(s, p.mark, p.ai, p.interval, bars)
+                maybeLiveSim(s, p.mark, p.ai, p.interval, bars, source = p.source)
             }
             // 对有挂单的周期统一尝试平仓（即使本轮无新信号）
             val pendingIvs = pendingLiveSims.values.map { it.interval }.distinct()
@@ -1302,6 +1304,7 @@ class Repository(ctx: Context) {
         ai: AiEvalResult?,
         intervalCode: String,
         barData: List<Candle>,
+        source: String = "",
     ) {
         if (!s.liveSimEnabled) return
         if (s.hibt.aiEvaluate) {
@@ -1322,7 +1325,8 @@ class Repository(ctx: Context) {
 
         val entryTime = barData[entryIdx].openTime
         val expiryTime = entryTime + ivMs
-        val posKey = "${s.symbol}|$intervalCode|$entryTime|${m.side}"
+        val srcTag = source.ifBlank { "sig" }
+        val posKey = "${s.symbol}|$intervalCode|$entryTime|${m.side}|$srcTag"
         if (posKey in liveSimKeys || pendingLiveSims.containsKey(posKey)) return
 
         // 开仓价：仅 Binance GET klines startTime=entryTime
@@ -1347,12 +1351,13 @@ class Repository(ctx: Context) {
             signalTime = m.openTime,
             entryTime = entryTime,
             entryPrice = entryPrice,
+            source = srcTag,
         )
         savePendingToDisk()
         bumpLiveSim()
         HibtWebSession.appendLog(
-            "模拟开仓 ${m.side} $intervalCode @${"%.4f".format(entryPrice)} " +
-                "t=$entryTime 到期=$expiryTime（Binance 1m open）· 持仓数=${pendingLiveSims.size}",
+            "模拟开仓 [${srcTag}] ${m.side} $intervalCode @${"%.4f".format(entryPrice)} " +
+                "t=$entryTime 到期=$expiryTime · 持仓${pendingLiveSims.size}",
         )
         settlePendingLiveSims(s, intervalCode)
     }
@@ -1400,6 +1405,7 @@ class Repository(ctx: Context) {
                 exitPrice = exitPrice,
                 pnlPct = pnl,
                 win = win,
+                source = p.source,
             )
             liveSimKeys.add(p.key)
             pendingLiveSims.remove(p.key)
@@ -1409,8 +1415,8 @@ class Repository(ctx: Context) {
             savePendingToDisk()
             bumpLiveSim()
             HibtWebSession.appendLog(
-                "模拟平仓 ${p.side} ${p.interval} entry=${"%.4f".format(p.entryPrice)} " +
-                    "expiry=${"%.4f".format(exitPrice)}(Binance) @t=$expiry " +
+                "模拟平仓 [${p.source}] ${p.side} ${p.interval} " +
+                    "entry=${"%.4f".format(p.entryPrice)} exit=${"%.4f".format(exitPrice)} @t=$expiry " +
                     "pnl=${"%.3f".format(pnl)}% ${if (win) "盈" else "亏"} · " +
                     "持仓${pendingLiveSims.size} 累计${liveSimStats.trades}笔 胜率${"%.1f".format(liveSimStats.winRate * 100)}%",
             )
@@ -1880,24 +1886,38 @@ class Repository(ctx: Context) {
                 targetTrades?.let { append(" · ≥${it}笔") }
             },
         )
+        val lockKind = base?.kind
         var lastFeedback = buildString {
             if (goal.isNotBlank()) {
                 appendLine("【用户明确需求——必须优先满足】")
                 appendLine(goal)
+            }
+            if (lockKind == StrategyKind.RULES) {
+                appendLine("【类型锁定】当前为 kind=RULES 指标规则策略，禁止改成 ALGO/MODEL。")
+                appendLine("只能调整 buyRules/sellRules 的 indicator/op/value/period，保持 kind=\"RULES\"。")
+                appendLine("JSON 必须含 buyRules 与 sellRules 非空数组。")
+            } else if (lockKind == StrategyKind.MODEL) {
+                appendLine("【类型锁定】当前为 kind=MODEL，禁止改成 RULES/ALGO；只改 modelParams。")
+            } else if (lockKind == StrategyKind.ALGO) {
+                appendLine("【类型锁定】当前为 kind=ALGO，禁止改成 RULES/MODEL；只改 algoId/algoParams。")
+            } else if (goal.isNotBlank()) {
                 appendLine("可优先 kind=ALGO（TREND_FOLLOW/PEARSON_TRIPLE/BREAKOUT）。")
-                appendLine("必须在 JSON 里给出可执行的 algoParams 数值（或 buyRules/sellRules），禁止空参数。")
-                appendLine("不要无故退化成仅 RSI+KDJ；需求说明变更时以最新需求为准。")
+                appendLine("必须在 JSON 里给出可执行的 algoParams 或 buyRules/sellRules，禁止空参数。")
             }
             if (targetWr != null || targetTrades != null) {
                 appendLine("【训练约束——回测必须尽量达到】")
                 targetWr?.let { appendLine("- 胜率 ≥ ${"%.1f".format(it)}%") }
                 targetTrades?.let { appendLine("- 成交笔数 ≥ $it") }
-                appendLine("未达标时请加大趋势过滤或调整 algoParams/规则。")
+                if (lockKind == StrategyKind.RULES) {
+                    appendLine("未达标时请收紧或放宽指标阈值/周期，禁止更换策略类型。")
+                } else {
+                    appendLine("未达标时请调整 algoParams 或规则。")
+                }
             }
             if (base != null) {
                 appendLine("当前策略JSON:")
                 appendLine(strategyToJson(base))
-                appendLine("回测: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%。在满足约束与需求下提升表现。")
+                appendLine("回测: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%。在锁定类型下提升表现。")
             } else if (goal.isBlank()) {
                 appendLine("请从零设计事件合约策略；优先 ALGO 顺势/皮尔逊，高胜率且交易不宜过少。")
             } else {
@@ -1930,7 +1950,9 @@ algoNote 用中文写意图；algoParams 全是数字。
 {"title":"顺势","kind":"ALGO","algoId":"TREND_FOLLOW","algoParams":{"fast":12,"slow":26,"consecutive":3,"cooldown":3},"algoNote":"单边顺势","buyRules":[],"sellRules":[]}
 {"title":"三曲线","kind":"ALGO","algoId":"PEARSON_TRIPLE","algoParams":{"p1":5,"p2":10,"p3":20,"window":30,"minCorr":0.55,"cooldown":2},"algoNote":"皮尔逊共振","buyRules":[],"sellRules":[]}
 
-2) kind=RULES  指标规则（备用）
+2) kind=RULES  指标规则（优化已有 RULES 时必须保持此类型）
+只输出 buyRules/sellRules；indicator 支持 RSI,MACD,KDJ_J,MA,EMA,BOLL,BOLL_PCT,MA_BIAS,EMA_BIAS,CLOSE
+op: GT,GTE,LT,LTE；value 与 period 为数字。
 indicator: RSI,MACD,KDJ_J,BOLL_PCT,MA_BIAS,EMA_BIAS （禁止绝对币价）
 op: GT,GTE,LT,LTE  period:2-200  同侧OR
 例:
@@ -1974,7 +1996,9 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 onProgress?.invoke("第${round}轮失败: ${e.message?.take(40)}")
                 continue
             }
-            val parsed = parseStrategyFromLlm(ans, bestCfg.id, keepEnabled = base?.enabled == true)
+            val parsed = parseStrategyFromLlm(
+                ans, bestCfg.id, keepEnabled = base?.enabled == true, lockKind = lockKind,
+            )
             if (parsed == null) {
                 log.appendLine("第${round}轮解析失败: ${ans.take(120)}")
                 onProgress?.invoke("第${round}轮JSON解析失败")
@@ -2073,6 +2097,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         text: String,
         id: String,
         keepEnabled: Boolean,
+        lockKind: StrategyKind? = null,
     ): StrategyConfig? {
         val jsonStr = extractJsonObject(text) ?: return null
         return try {
@@ -2147,12 +2172,14 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             val modelNote = o.get("modelNote")?.asString?.take(200) ?: ""
             val modelIdRaw = o.get("modelId")?.asString?.uppercase() ?: ModelIds.LOGREG_V1
             val modelId = if (modelIdRaw.contains("LOGREG") || modelIdRaw.isBlank()) ModelIds.LOGREG_V1 else modelIdRaw
-            val finalKind = when {
+            var finalKind = when {
                 kind == StrategyKind.MODEL -> StrategyKind.MODEL
                 kind == StrategyKind.ALGO -> StrategyKind.ALGO
                 buy.isEmpty() && sell.isEmpty() && algoParams.isNotEmpty() -> StrategyKind.ALGO
                 else -> kind
             }
+            // 优化已有策略时锁定类型，禁止 RSI 规则被改成 ALGO/MODEL
+            if (lockKind != null) finalKind = lockKind
             StrategyConfig(
                 id = id,
                 title = title,

@@ -117,7 +117,7 @@ fun ChatScreen(repo: Repository) {
                             parseOptimizeHints(
                                 stripStrategyPrefix(trimmed, listOf("优化策略：", "优化策略:", "优化策略", "LLM优化策略")),
                             ),
-                            defaultGoal = "在现有策略上提高胜率与稳定性，优先 ALGO 顺势/皮尔逊，减少假信号",
+                            defaultGoal = "在现有策略上提高胜率与稳定性；若当前是指标规则必须保持 RULES 只调阈值，若是算法则只调 algoParams",
                             defaultRounds = repo.settings().llmOptimizeRounds.coerceIn(1, 8),
                         )
                         val en = repo.strategies().find { it.enabled } ?: repo.strategies().firstOrNull()

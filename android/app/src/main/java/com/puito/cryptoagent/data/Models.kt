@@ -168,6 +168,8 @@ data class SimTrade(
     val exitPrice: Double,
     val pnlPct: Double,
     val win: Boolean,
+    /** 1m_confirm | ht_native | model | 空=回测 */
+    val source: String = "",
 )
 
 data class Stats(
