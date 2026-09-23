@@ -481,8 +481,7 @@ class Repository(ctx: Context) {
         )
         updated = updated.copy(
             modelParams = cal.params,
-            modelTrainReport = result.report + "
-" + cal.report + " · ${s.symbol} ${s.interval}",
+            modelTrainReport = result.report + "\n" + cal.report + " · ${s.symbol} ${s.interval}",
         )
         list[idx] = updated
         saveStrategies(list)
