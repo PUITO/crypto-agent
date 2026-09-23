@@ -259,9 +259,10 @@ class Repository(ctx: Context) {
             kind = StrategyKind.MODEL,
             modelId = ModelIds.LOGREG_V1,
             modelParams = mapOf(
-                "threshold" to 0.55, "cooldown" to 3.0, "lookback" to 5.0,
+                "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
+                "confirmBars" to 1.0, "lookback" to 5.0,
             ),
-            modelNote = "本地可训练小模型；先点训练再启用",
+            modelNote = "少而准：训练后自动校准阈值/冷却；勿追求每根K信号",
             modelTrainReport = "未训练",
         ),
     )
@@ -465,15 +466,54 @@ class Repository(ctx: Context) {
         if (result.weights.isEmpty()) {
             return@withContext Result.failure(IllegalStateException(result.report))
         }
-        val updated = cfg.copy(
+        var updated = cfg.copy(
             kind = StrategyKind.MODEL,
             modelId = cfg.modelId.ifBlank { ModelIds.LOGREG_V1 },
             modelWeights = result.weights,
             modelTrainReport = result.report + " · ${s.symbol} ${s.interval}",
         )
+        // 训练后自动校准 threshold/cooldown/minEdge，抑制「每根K都信号」
+        val cal = ModelEngine.calibrate(
+            bars, updated,
+            minTrades = 6,
+            maxTradesRatio = 0.10,
+            targetWinRate = 0.55,
+        )
+        updated = updated.copy(
+            modelParams = cal.params,
+            modelTrainReport = result.report + "
+" + cal.report + " · ${s.symbol} ${s.interval}",
+        )
         list[idx] = updated
         saveStrategies(list)
-        Result.success(result.report)
+        Result.success(updated.modelTrainReport)
+    }
+
+    /**
+     * 仅校准参数（不重训权重）：适合已有权重但信号过密/过稀时手动调用。
+     */
+    suspend fun calibrateModelStrategy(strategyId: String): Result<String> = withContext(Dispatchers.IO) {
+        val list = strategies().toMutableList()
+        val idx = list.indexOfFirst { it.id == strategyId }
+        if (idx < 0) return@withContext Result.failure(IllegalStateException("策略不存在"))
+        val cfg = list[idx]
+        if (cfg.kind != StrategyKind.MODEL) {
+            return@withContext Result.failure(IllegalStateException("非模型策略"))
+        }
+        if (cfg.modelWeights.isEmpty()) {
+            return@withContext Result.failure(IllegalStateException("请先训练权重"))
+        }
+        val s = settings()
+        binance.updateBase(s.binanceBaseUrl)
+        val bars = try {
+            binance.fetch(s.symbol, Interval.from(s.interval), s.klineLimit.coerceIn(200, 1000))
+        } catch (e: Exception) {
+            return@withContext Result.failure(e)
+        }
+        val cal = ModelEngine.calibrate(bars, cfg, minTrades = 6, maxTradesRatio = 0.10, targetWinRate = 0.55)
+        list[idx] = cfg.copy(modelParams = cal.params, modelTrainReport = cal.report + " · ${s.symbol} ${s.interval}")
+        saveStrategies(list)
+        Result.success(cal.report)
     }
 
     /** 清除模型权重（回退默认弱权重） */
@@ -1381,9 +1421,8 @@ class Repository(ctx: Context) {
     /** 胜率过低或连亏 → 自动 LLM 调优当前启用策略 */
     private suspend fun maybeAutoRetune(s: AppSettings) {
         if (!s.liveSimAutoRetune || !s.liveSimEnabled) return
-        if (s.llmApiKey.isBlank()) return
         if (retuneInProgress) return
-        if (System.currentTimeMillis() - lastAutoRetuneAt < 15 * 60_000L) return // 15 分钟冷却
+        if (System.currentTimeMillis() - lastAutoRetuneAt < 15 * 60_000L) return
         val st = liveSimStats
         if (st.trades < s.liveSimMinTradesBeforeRetune.coerceAtLeast(3)) return
         val consec = consecutiveLosses()
@@ -1398,47 +1437,73 @@ class Repository(ctx: Context) {
             if (lowWr) append("模拟胜率${"%.1f".format(wrPct)}%<${s.liveSimMinWinRatePct}% ")
             if (tooManyLoss) append("连亏${consec}笔 ")
         }
-        HibtWebSession.appendLog(">>> 自动调优触发: $reason · 策略「${en.title}」")
-        Notify.orderResult(
-            appCtx, ok = true, dryRun = true,
-            message = "策略自动调优中：$reason",
-            sideLabel = "LLM调优", amount = null, timeUnit = null,
-        )
-        val goal = buildString {
-            append("根据实时模拟表现自动调优。")
-            append("当前模拟${st.trades}笔 胜率${"%.1f".format(wrPct)}% 连亏$consec。")
-            append("必须优先调整 kind=ALGO 的 algoId/algoParams 或指标规则阈值，提高稳定性。")
-            append("轮次4，目标胜率${"%.0f".format(s.liveSimMinWinRatePct.coerceAtLeast(50.0))}%，最少15笔。")
-            if (en.kind == StrategyKind.ALGO) {
-                append("当前算法 ${en.algoId} 参数 ${en.algoParams} 说明:${en.algoNote}。请直接改参数数值。")
-            } else {
-                append("当前为指标规则，可改为 ALGO 或优化买卖阈值。")
-            }
-        }
+        HibtWebSession.appendLog(">>> 自动调优触发: $reason · 策略「${en.title}」 kind=${en.kind}")
         try {
-            val r = optimizeStrategyWithLlm(
-                baseId = en.id,
-                rounds = 4,
-                userGoal = goal,
-                minWinRatePct = s.liveSimMinWinRatePct.coerceAtLeast(50.0),
-                minTrades = 15,
-            )
-            r.fold(
-                onSuccess = {
-                    HibtWebSession.appendLog(
-                        "<<< 自动调优完成 胜率${"%.1f".format(it.winRate * 100)}% ${it.trades}笔 ${it.report.take(120)}",
-                    )
-                    // 调优后清空连亏压力：可选保留历史；这里保留但记录
-                    Notify.orderResult(
-                        appCtx, ok = true, dryRun = true,
-                        message = "调优完成 回测胜率${"%.1f".format(it.winRate * 100)}% ${it.trades}笔",
-                        sideLabel = "LLM调优", amount = null, timeUnit = null,
-                    )
-                },
-                onFailure = {
-                    HibtWebSession.appendLog("<<< 自动调优失败: ${it.message}")
-                },
-            )
+            if (en.kind == StrategyKind.MODEL) {
+                // 模型：本地重训权重 + 校准参数（不依赖 LLM）
+                Notify.orderResult(
+                    appCtx, ok = true, dryRun = true,
+                    message = "模型自动重训+校准中：$reason",
+                    sideLabel = "模型调优", amount = null, timeUnit = null,
+                )
+                trainModelStrategy(en.id, epochs = 45).fold(
+                    onSuccess = {
+                        HibtWebSession.appendLog("<<< 模型自动调优完成: ${it.take(160)}")
+                        Notify.orderResult(
+                            appCtx, ok = true, dryRun = true,
+                            message = "模型调优完成 ${it.take(80)}",
+                            sideLabel = "模型调优", amount = null, timeUnit = null,
+                        )
+                    },
+                    onFailure = {
+                        HibtWebSession.appendLog("<<< 模型自动调优失败: ${it.message}")
+                    },
+                )
+            } else {
+                if (s.llmApiKey.isBlank()) {
+                    HibtWebSession.appendLog("<<< 自动调优跳过: 非MODEL策略需要 LLM Key")
+                    return
+                }
+                Notify.orderResult(
+                    appCtx, ok = true, dryRun = true,
+                    message = "策略自动调优中：$reason",
+                    sideLabel = "LLM调优", amount = null, timeUnit = null,
+                )
+                val goal = buildString {
+                    append("根据实时模拟表现自动调优。")
+                    append("当前模拟${st.trades}笔 胜率${"%.1f".format(wrPct)}% 连亏$consec。")
+                    append("目标：提高胜率、减少噪声信号，轮次4，目标胜率${"%.0f".format(s.liveSimMinWinRatePct.coerceAtLeast(50.0))}%，最少12笔。")
+                    when (en.kind) {
+                        StrategyKind.ALGO ->
+                            append("当前算法 ${en.algoId} 参数 ${en.algoParams}。请直接改 algoParams。")
+                        StrategyKind.MODEL ->
+                            append("当前为 MODEL，请提高 threshold/cooldown/minEdge，禁止降低阈值导致信号过密。")
+                        else ->
+                            append("当前为指标规则，可改为 ALGO 或收紧买卖阈值。")
+                    }
+                }
+                optimizeStrategyWithLlm(
+                    baseId = en.id,
+                    rounds = 4,
+                    userGoal = goal,
+                    minWinRatePct = s.liveSimMinWinRatePct.coerceAtLeast(50.0),
+                    minTrades = 12,
+                ).fold(
+                    onSuccess = {
+                        HibtWebSession.appendLog(
+                            "<<< 自动调优完成 胜率${"%.1f".format(it.winRate * 100)}% ${it.trades}笔",
+                        )
+                        Notify.orderResult(
+                            appCtx, ok = true, dryRun = true,
+                            message = "调优完成 回测胜率${"%.1f".format(it.winRate * 100)}% ${it.trades}笔",
+                            sideLabel = "LLM调优", amount = null, timeUnit = null,
+                        )
+                    },
+                    onFailure = {
+                        HibtWebSession.appendLog("<<< 自动调优失败: ${it.message}")
+                    },
+                )
+            }
         } finally {
             retuneInProgress = false
         }
@@ -1842,9 +1907,17 @@ class Repository(ctx: Context) {
         val schema = """
 三种策略 kind（优先 ALGO；也可 MODEL 小模型）:
 
-0) kind=MODEL  可训练逻辑回归（只改 modelParams，权重由 App 训练）
-modelId 固定 LOGREG_V1；modelParams: threshold,cooldown,lookback
-例: {"title":"LR模型","kind":"MODEL","modelId":"LOGREG_V1","modelParams":{"threshold":0.55,"cooldown":3,"lookback":5},"modelNote":"本地训练","buyRules":[],"sellRules":[]}
+0) kind=MODEL  可训练逻辑回归（少而准，禁止每根K都出信号）
+modelId 固定 LOGREG_V1。
+modelParams 必须偏严格：
+- threshold: 0.62~0.72（越高信号越少越准，默认0.64）
+- cooldown: 8~24（两次信号最少间隔K线数）
+- minEdge: 0.03~0.08（额外边距，越大越稀）
+- confirmBars: 1~2
+- lookback: 3~8
+禁止把 threshold 降到 0.55 以下或 cooldown 小于 6（会导致信号过密、胜率差）。
+权重由 App 本地训练+校准，JSON 不要编造 modelWeights。
+例: {"title":"LR高胜率","kind":"MODEL","modelId":"LOGREG_V1","modelParams":{"threshold":0.66,"cooldown":14,"minEdge":0.05,"confirmBars":1,"lookback":5},"modelNote":"少而准","buyRules":[],"sellRules":[]}
 
 1) kind=ALGO  算法配置（推荐）
 algoId 只能是:
@@ -2093,7 +2166,10 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 algoNote = algoNote,
                 modelId = modelId,
                 modelParams = modelParams.ifEmpty {
-                    mapOf("threshold" to 0.55, "cooldown" to 3.0, "lookback" to 5.0)
+                    mapOf(
+                        "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
+                        "confirmBars" to 1.0, "lookback" to 5.0,
+                    )
                 },
                 modelNote = modelNote,
             )

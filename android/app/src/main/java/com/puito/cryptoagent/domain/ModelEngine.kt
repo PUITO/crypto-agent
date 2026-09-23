@@ -8,8 +8,12 @@ import kotlin.math.exp
 
 /**
  * 可训练小模型引擎（本地、无第三方依赖）。
- * LOGREG_V1：逻辑回归，特征复用 Indicators；标签=下一根收涨(1)/收跌(0)。
- * 信号：score≥threshold → B，score≤1-threshold → S。
+ * LOGREG_V1：逻辑回归；目标是「少而准」的事件合约方向信号，而非每根 K 都出信号。
+ *
+ * 信号条件（同时满足）：
+ * - score ≥ threshold+minEdge → B；score ≤ 1-(threshold+minEdge) → S
+ * - 与上一次信号至少间隔 cooldown 根
+ * - 可选 requireConfirm：连续 confirmBars 根同向偏置
  */
 object ModelEngine {
 
@@ -20,7 +24,13 @@ object ModelEngine {
         val report: String,
     )
 
-    /** 特征名顺序固定，训练/推理必须一致 */
+    data class CalibrateResult(
+        val params: Map<String, Double>,
+        val trades: Int,
+        val winRate: Double,
+        val report: String,
+    )
+
     val featureNames = listOf(
         "rsi14", "macd", "boll_pct", "ma_bias", "ema_bias",
         "ret1", "ret3", "ret5", "range", "vol_ratio",
@@ -31,25 +41,58 @@ object ModelEngine {
 
     fun signals(candles: List<Candle>, cfg: StrategyConfig): List<SignalMark> {
         if (candles.size < 40) return emptyList()
-        val threshold = p(cfg.modelParams, "threshold", 0.55).coerceIn(0.51, 0.85)
-        val cooldown = p(cfg.modelParams, "cooldown", 3.0).toInt().coerceIn(0, 30)
+        // 默认偏「少而准」：阈值 0.64、冷却 12、边距 0.04
+        val threshold = p(cfg.modelParams, "threshold", 0.64).coerceIn(0.55, 0.82)
+        val cooldown = p(cfg.modelParams, "cooldown", 12.0).toInt().coerceIn(3, 80)
+        val minEdge = p(cfg.modelParams, "minEdge", 0.04).coerceIn(0.0, 0.15)
+        val confirmBars = p(cfg.modelParams, "confirmBars", 1.0).toInt().coerceIn(1, 5)
         val lookback = p(cfg.modelParams, "lookback", 5.0).toInt().coerceIn(2, 20)
+        val hi = (threshold + minEdge).coerceAtMost(0.92)
+        val lo = (1.0 - hi).coerceAtLeast(0.08)
         val weights = resolveWeights(cfg)
         val feats = buildFeatureMatrix(candles, lookback)
+        val scores = DoubleArray(feats.size) { i ->
+            val f = feats[i] ?: return@DoubleArray Double.NaN
+            sigmoid(dot(weights, f))
+        }
         val out = mutableListOf<SignalMark>()
         var lastSig = -999
-        for (i in feats.indices) {
-            val f = feats[i] ?: continue
+        for (i in scores.indices) {
+            val score = scores[i]
+            if (score.isNaN()) continue
             if (i - lastSig < cooldown) continue
-            val score = sigmoid(dot(weights, f))
-            when {
-                score >= threshold -> {
-                    out.add(SignalMark(candles[i].openTime, "B", candles[i].close, tag = "model"))
-                    lastSig = i
+            // 连续确认：近 confirmBars 根均偏多/偏空
+            if (confirmBars > 1) {
+                var okB = true
+                var okS = true
+                for (k in 0 until confirmBars) {
+                    val j = i - k
+                    if (j < 0 || scores[j].isNaN()) {
+                        okB = false; okS = false; break
+                    }
+                    if (scores[j] < 0.52) okB = false
+                    if (scores[j] > 0.48) okS = false
                 }
-                score <= 1.0 - threshold -> {
-                    out.add(SignalMark(candles[i].openTime, "S", candles[i].close, tag = "model"))
-                    lastSig = i
+                when {
+                    score >= hi && okB -> {
+                        out.add(SignalMark(candles[i].openTime, "B", candles[i].close, tag = "model"))
+                        lastSig = i
+                    }
+                    score <= lo && okS -> {
+                        out.add(SignalMark(candles[i].openTime, "S", candles[i].close, tag = "model"))
+                        lastSig = i
+                    }
+                }
+            } else {
+                when {
+                    score >= hi -> {
+                        out.add(SignalMark(candles[i].openTime, "B", candles[i].close, tag = "model"))
+                        lastSig = i
+                    }
+                    score <= lo -> {
+                        out.add(SignalMark(candles[i].openTime, "S", candles[i].close, tag = "model"))
+                        lastSig = i
+                    }
                 }
             }
         }
@@ -57,8 +100,8 @@ object ModelEngine {
     }
 
     /**
-     * 在历史 K 线上训练逻辑回归（SGD）。
-     * 标签：下一根 close > 当前 close → 1 否则 0（事件合约同向简化）。
+     * 在历史 K 上训练逻辑回归。
+     * 标签优先「下一根涨跌」；训练后需再 calibrate 拉高阈值，避免信号过密。
      */
     fun train(
         candles: List<Candle>,
@@ -77,7 +120,8 @@ object ModelEngine {
         val ys = mutableListOf<Double>()
         for (i in 0 until candles.size - 1) {
             val f = feats[i] ?: continue
-            val y = if (candles[i + 1].close > candles[i].close) 1.0 else 0.0
+            // 事件合约简化：下一根收盘相对开盘方向（比单纯 close-close 更贴合约）
+            val y = if (candles[i + 1].close > candles[i + 1].open) 1.0 else 0.0
             xs.add(f)
             ys.add(y)
         }
@@ -85,12 +129,12 @@ object ModelEngine {
             return TrainResult(emptyMap(), xs.size, 0.0, "有效样本过少(${xs.size})")
         }
         val dim = featureNames.size
-        val w = DoubleArray(dim + 1) // [bias, f0..]
-        // 轻微初始化
+        val w = DoubleArray(dim + 1)
         for (j in w.indices) w[j] = 0.01 * (j % 3 - 1)
-        val lr = 0.08
+        val lr = 0.06
         val n = xs.size
-        repeat(epochs.coerceIn(10, 80)) {
+        val ep = epochs.coerceIn(15, 80)
+        repeat(ep) {
             for (i in 0 until n) {
                 val x = xs[i]
                 val y = ys[i]
@@ -98,9 +142,7 @@ object ModelEngine {
                 val pred = sigmoid(z)
                 val err = pred - y
                 w[0] -= lr * err
-                for (j in 0 until dim) {
-                    w[j + 1] -= lr * err * x[j]
-                }
+                for (j in 0 until dim) w[j + 1] -= lr * err * x[j]
             }
         }
         var correct = 0
@@ -113,17 +155,82 @@ object ModelEngine {
         weightMap["bias"] = w[0]
         featureNames.forEachIndexed { j, name -> weightMap[name] = w[j + 1] }
         val report =
-            "模型=${ModelIds.LOGREG_V1} 样本=$n 准确率=${"%.1f".format(acc * 100)}% " +
-                "epochs=$epochs lookback=$lookback\n" +
-                "权重: " + weightMap.entries.take(6).joinToString { "${it.key}=${"%.3f".format(it.value)}" } + "…"
+            "模型=${ModelIds.LOGREG_V1} 样本=$n 准确率=${"%.1f".format(acc * 100)}% epochs=$ep\n" +
+                "权重摘要: " + weightMap.entries.take(5).joinToString { "${it.key}=${"%.3f".format(it.value)}" } + "…"
         return TrainResult(weightMap, n, acc, report)
     }
 
-    fun scoreAt(
+    /**
+     * 网格搜索 threshold/cooldown/minEdge，在「最少成交 + 高胜率」下选参。
+     * 优先：胜率高且笔数不过少也不过多（避免每根 K 都信号）。
+     */
+    fun calibrate(
         candles: List<Candle>,
         cfg: StrategyConfig,
-        index: Int,
-    ): Double? {
+        minTrades: Int = 8,
+        maxTradesRatio: Double = 0.12, // 信号数 / K线 上限，抑制过密
+        targetWinRate: Double = 0.55,
+    ): CalibrateResult {
+        if (candles.size < 60 || cfg.modelWeights.isEmpty()) {
+            return CalibrateResult(
+                mapOf("threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04, "confirmBars" to 1.0, "lookback" to 5.0),
+                0, 0.0, "无法校准：需已训练权重且足够K线",
+            )
+        }
+        val lookback = p(cfg.modelParams, "lookback", 5.0)
+        val maxTrades = (candles.size * maxTradesRatio).toInt().coerceIn(minTrades, 80)
+        var bestParams = mapOf(
+            "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
+            "confirmBars" to 1.0, "lookback" to lookback,
+        )
+        var bestScore = -1e9
+        var bestTrades = 0
+        var bestWr = 0.0
+        val thresholds = listOf(0.58, 0.62, 0.64, 0.66, 0.68, 0.70, 0.72)
+        val cooldowns = listOf(8.0, 12.0, 16.0, 20.0, 24.0)
+        val edges = listOf(0.02, 0.04, 0.06, 0.08)
+        val confirms = listOf(1.0, 2.0)
+        for (th in thresholds) {
+            for (cd in cooldowns) {
+                for (ed in edges) {
+                    for (cf in confirms) {
+                        val trial = cfg.copy(
+                            modelParams = mapOf(
+                                "threshold" to th,
+                                "cooldown" to cd,
+                                "minEdge" to ed,
+                                "confirmBars" to cf,
+                                "lookback" to lookback,
+                            ),
+                        )
+                        val marks = signals(candles, trial)
+                        if (marks.size < minTrades) continue
+                        if (marks.size > maxTrades) continue
+                        val (_, st) = EventSim.backtest(candles, marks, "SYM", "iv")
+                        // 评分：达标胜率优先，其次胜率，惩罚过多信号
+                        val density = marks.size.toDouble() / candles.size
+                        val score = st.winRate * 100 +
+                            (if (st.winRate >= targetWinRate) 30.0 else 0.0) +
+                            minOf(st.trades, 40) * 0.15 -
+                            density * 80.0
+                        if (score > bestScore) {
+                            bestScore = score
+                            bestParams = trial.modelParams
+                            bestTrades = st.trades
+                            bestWr = st.winRate
+                        }
+                    }
+                }
+            }
+        }
+        val report =
+            "校准完成 最优 threshold=${bestParams["threshold"]} cooldown=${bestParams["cooldown"]} " +
+                "minEdge=${bestParams["minEdge"]} confirmBars=${bestParams["confirmBars"]} → " +
+                "${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%（目标≥少而准）"
+        return CalibrateResult(bestParams, bestTrades, bestWr, report)
+    }
+
+    fun scoreAt(candles: List<Candle>, cfg: StrategyConfig, index: Int): Double? {
         if (index < 0 || index >= candles.size) return null
         val lookback = p(cfg.modelParams, "lookback", 5.0).toInt().coerceIn(2, 20)
         val feats = buildFeatureMatrix(candles, lookback)
@@ -140,11 +247,11 @@ object ModelEngine {
             featureNames.forEachIndexed { j, name -> w[j + 1] = src[name] ?: 0.0 }
             return w
         }
-        // 未训练默认：偏中性，轻微跟随 RSI 超卖/超买
+        // 未训练默认：偏保守，不易每根都触发
         w[0] = 0.0
-        w[1] = -0.02 // rsi 高 → 空
-        w[2] = 0.05  // macd
-        w[3] = -0.015 // boll_pct
+        w[1] = -0.03
+        w[2] = 0.04
+        w[3] = -0.02
         return w
     }
 
@@ -157,8 +264,8 @@ object ModelEngine {
         val boll = Indicators.bollPct(closes, 20)
         val ma = Indicators.sma(closes, 20)
         val ema = Indicators.ema(closes, 12)
-        val out = arrayOfNulls<DoubleArray>(n)
         val volMa = Indicators.sma(vols, 20)
+        val out = arrayOfNulls<DoubleArray>(n)
         for (i in 0 until n) {
             if (i < 25) continue
             val r = rsi.getOrNull(i) ?: continue
@@ -175,7 +282,7 @@ object ModelEngine {
             } else 0.0
             val vr = volMa.getOrNull(i)?.takeIf { it > 0 }?.let { vols[i] / it } ?: 1.0
             out[i] = doubleArrayOf(
-                (r - 50.0) / 50.0,           // 归一 RSI
+                (r - 50.0) / 50.0,
                 m.coerceIn(-2.0, 2.0),
                 (b - 50.0) / 50.0,
                 (closes[i] / maV - 1.0) * 10,

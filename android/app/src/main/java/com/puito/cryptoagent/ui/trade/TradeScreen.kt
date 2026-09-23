@@ -70,7 +70,7 @@ fun TradeScreen(repo: Repository) {
             onTrainModel = { cfg ->
                 scope.launch {
                     busy = true
-                    progress = "训练模型「${cfg.title}」…"
+                    progress = "训练+校准模型「${cfg.title}」…"
                     report = null
                     // 先保存当前编辑参数
                     val n0 = list.toMutableList()
@@ -337,7 +337,7 @@ fun TradeScreen(repo: Repository) {
                                     onClick = {
                                         scope.launch {
                                             busy = true
-                                            progress = "训练「${cfg.title}」…"
+                                            progress = "训练+校准「${cfg.title}」…"
                                             repo.trainModelStrategy(cfg.id).fold(
                                                 onSuccess = {
                                                     list = repo.strategies()
@@ -351,6 +351,24 @@ fun TradeScreen(repo: Repository) {
                                     },
                                     enabled = !busy,
                                 ) { Text("训练") }
+                                TextButton(
+                                    onClick = {
+                                        scope.launch {
+                                            busy = true
+                                            progress = "校准参数「${cfg.title}」…"
+                                            repo.calibrateModelStrategy(cfg.id).fold(
+                                                onSuccess = {
+                                                    list = repo.strategies()
+                                                    report = it
+                                                },
+                                                onFailure = { report = "校准失败: ${it.message}" },
+                                            )
+                                            busy = false
+                                            progress = null
+                                        }
+                                    },
+                                    enabled = !busy,
+                                ) { Text("校准") }
                             }
                             TextButton(
                                 onClick = {
@@ -384,8 +402,11 @@ private fun defaultTuneGoal(repo: Repository, cfg: StrategyConfig?): String {
     }
     return when (cfg.kind) {
         StrategyKind.MODEL ->
-            "优化「${cfg.title}」模型参数 threshold/cooldown/lookback（kind=MODEL），" +
-                sim + "不要改权重；权重由 App 训练。轮次3，目标胜率55%。"
+            "优化「${cfg.title}」为高胜率少信号的 MODEL 策略。" +
+                "必须提高或保持严格参数：threshold 0.62~0.72、cooldown 10~24、minEdge 0.03~0.08。" +
+                "禁止 threshold<0.58 或 cooldown<8（会导致每根K都信号）。" +
+                "不要输出 modelWeights。权重由 App 本地训练+校准。" +
+                sim + "轮次3，目标胜率≥55%，笔数适中即可。"
         StrategyKind.ALGO ->
             "优化「${cfg.title}」算法${cfg.algoId} 参数${cfg.algoParams} ${cfg.algoNote}。" +
                 sim + "直接调整 algoParams 数值，轮次4，目标胜率55%，最少15笔。"
@@ -428,7 +449,10 @@ private fun EditStrategy(
     var modelParamsText by remember {
         mutableStateOf(
             cfg.modelParams.ifEmpty {
-                mapOf("threshold" to 0.55, "cooldown" to 3.0, "lookback" to 5.0)
+                mapOf(
+                    "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
+                    "confirmBars" to 1.0, "lookback" to 5.0,
+                )
             }.entries.joinToString("\n") { "${it.key}=${it.value}" },
         )
     }
@@ -448,7 +472,10 @@ private fun EditStrategy(
         modelId = cfg.modelId.ifBlank { ModelIds.LOGREG_V1 }
         modelNote = cfg.modelNote
         modelParamsText = cfg.modelParams.ifEmpty {
-            mapOf("threshold" to 0.55, "cooldown" to 3.0, "lookback" to 5.0)
+            mapOf(
+                "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
+                "confirmBars" to 1.0, "lookback" to 5.0,
+            )
         }.entries.joinToString("\n") { "${it.key}=${it.value}" }
         modelReport = cfg.modelTrainReport
         buy = cfg.buyRules
@@ -475,7 +502,10 @@ private fun EditStrategy(
         modelId = modelId.ifBlank { ModelIds.LOGREG_V1 },
         modelNote = modelNote,
         modelParams = parseParams(modelParamsText).ifEmpty {
-            mapOf("threshold" to 0.55, "cooldown" to 3.0, "lookback" to 5.0)
+            mapOf(
+                "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
+                "confirmBars" to 1.0, "lookback" to 5.0,
+            )
         },
         modelTrainReport = modelReport,
         modelWeights = cfg.modelWeights,
@@ -499,7 +529,7 @@ private fun EditStrategy(
         when (kind) {
             StrategyKind.MODEL -> {
                 Text(
-                    "本地逻辑回归：特征复用 RSI/MACD/BOLL/动量。先「训练模型」写入权重，再启用策略。",
+                    "本地逻辑回归（少而准）：训练会写权重并自动校准 threshold/cooldown，避免每根K都信号。",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.secondary,
                 )
@@ -517,7 +547,7 @@ private fun EditStrategy(
                     modelParamsText,
                     { modelParamsText = it },
                     label = { Text("参数 threshold/cooldown/lookback（每行 key=value）") },
-                    placeholder = { Text("threshold=0.55\ncooldown=3\nlookback=5") },
+                    placeholder = { Text("threshold=0.64\ncooldown=12\nminEdge=0.04\nconfirmBars=1\nlookback=5") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3,
                 )

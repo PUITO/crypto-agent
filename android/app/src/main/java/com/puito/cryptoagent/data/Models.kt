@@ -112,8 +112,10 @@ data class StrategyConfig(
      * lookback=5  动量回看
      */
     val modelParams: Map<String, Double> = mapOf(
-        "threshold" to 0.55,
-        "cooldown" to 3.0,
+        "threshold" to 0.64,
+        "cooldown" to 12.0,
+        "minEdge" to 0.04,
+        "confirmBars" to 1.0,
         "lookback" to 5.0,
     ),
     /**
