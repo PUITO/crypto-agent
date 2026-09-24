@@ -111,6 +111,61 @@ fun HomeScreen(repo: Repository) {
         }
         err?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
 
+        // 当前方向预测
+        val dir = remember(tick, s.strategyRunning, s.interval, s.symbol) {
+            repo.currentDirectionPreview()
+        }
+        val dirColor = when (dir.side) {
+            "B" -> Color(0xFF0ECB81)
+            "S" -> Color(0xFFF6465D)
+            else -> MaterialTheme.colorScheme.secondary
+        }
+        Card(
+            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = dirColor.copy(alpha = 0.12f),
+            ),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "当前方向 · ${s.interval}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    Text(
+                        dir.label,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = dirColor,
+                    )
+                    Text(dir.detail, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        when (dir.side) {
+                            "B" -> "LONG"
+                            "S" -> "SHORT"
+                            else -> "FLAT"
+                        },
+                        fontWeight = FontWeight.SemiBold,
+                        color = dirColor,
+                        fontSize = 14.sp,
+                    )
+                    if (dir.confidencePct > 0) {
+                        Text(
+                            "置信 ${"%.0f".format(dir.confidencePct)}%",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                }
+            }
+        }
+
         key(tick, s.chartIndicators) {
             val candleCount = repo.candles.size
             // 图例：B/S=周期原生  1B/1S=1m触发+本周期确认叠加

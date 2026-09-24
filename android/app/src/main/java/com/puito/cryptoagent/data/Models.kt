@@ -180,6 +180,17 @@ data class Stats(
     val totalReturnPct: Double = 0.0,
 )
 
+/** 行情页当前方向预测 */
+data class DirectionPreview(
+    /** B / S / NEUTRAL */
+    val side: String,
+    /** 看多 / 看空 / 观望 */
+    val label: String,
+    /** 0～100 粗略置信 */
+    val confidencePct: Double,
+    val detail: String,
+)
+
 /** 图表叠加指标（可运行时开关，无需重新打包） */
 data class ChartIndicatorPref(
     val id: String,

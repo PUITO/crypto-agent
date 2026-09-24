@@ -695,6 +695,90 @@ class Repository(ctx: Context) {
 
     fun enabledStrategy(): StrategyConfig? = strategies().find { it.enabled }
 
+    /**
+     * 当前方向预测（行情页）：基于启用策略在最新 K 上的信号 / 模型分 / 近端信号多数。
+     * 仅反映「现在偏多还是偏空」，不构成下单建议。
+     */
+    fun currentDirectionPreview(): DirectionPreview {
+        val bars = candles
+        if (bars.size < 30) {
+            return DirectionPreview("NEUTRAL", "观望", 0.0, "K线不足，无法判断")
+        }
+        val cfg = enabledStrategy()
+        val marks = signals.sortedBy { it.openTime }
+        val lastBar = bars.last()
+        // 1) 最新图上信号（含 1m 映射与周期）且落在近 3 根内
+        val recentCutoff = lastBar.openTime - intervalMs(settings().interval) * 3
+        val recent = marks.filter { it.openTime >= recentCutoff }
+        if (recent.isNotEmpty()) {
+            val last = recent.last()
+            val b = recent.count { it.side == "B" }
+            val sCnt = recent.count { it.side == "S" }
+            val side = when {
+                b > sCnt -> "B"
+                sCnt > b -> "S"
+                else -> last.side
+            }
+            val conf = (55.0 + kotlin.math.min(b, sCnt).let { kotlin.math.abs(b - sCnt) * 12.0 }).coerceIn(50.0, 92.0)
+            val tag = when (last.tag) {
+                "1m" -> "1m确认"
+                "ht" -> "周期策略"
+                else -> last.tag.ifBlank { "策略信号" }
+            }
+            return DirectionPreview(
+                side = side,
+                label = if (side == "B") "看多" else "看空",
+                confidencePct = conf,
+                detail = "近端${recent.size}信号 $tag 最新${last.side} @${"%.2f".format(last.price)}",
+            )
+        }
+        // 2) 模型策略：用最后一根 score
+        if (cfg != null && cfg.kind == StrategyKind.MODEL && cfg.modelWeights.isNotEmpty()) {
+            val score = ModelEngine.scoreAt(bars, cfg, bars.lastIndex)
+            if (score != null) {
+                val th = (cfg.modelParams["threshold"] ?: 0.64)
+                val edge = (cfg.modelParams["minEdge"] ?: 0.04)
+                val hi = (th + edge).coerceAtMost(0.92)
+                val lo = 1.0 - hi
+                return when {
+                    score >= hi -> DirectionPreview(
+                        "B", "看多", (score * 100).coerceIn(50.0, 95.0),
+                        "模型分 ${"%.1f".format(score * 100)}% ≥ 阈值",
+                    )
+                    score <= lo -> DirectionPreview(
+                        "S", "看空", ((1 - score) * 100).coerceIn(50.0, 95.0),
+                        "模型分 ${"%.1f".format(score * 100)}% ≤ 空头阈值",
+                    )
+                    else -> DirectionPreview(
+                        "NEUTRAL", "观望", (50.0 + kotlin.math.abs(score - 0.5) * 40).coerceIn(40.0, 60.0),
+                        "模型分 ${"%.1f".format(score * 100)}% 中性区",
+                    )
+                }
+            }
+        }
+        // 3) 无近端信号：用策略在完整历史上的最后一次信号方向（若存在）
+        if (marks.isNotEmpty()) {
+            val last = marks.last()
+            return DirectionPreview(
+                side = last.side,
+                label = if (last.side == "B") "看多" else "看空",
+                confidencePct = 48.0,
+                detail = "暂无近端新信号，沿用上一次 ${last.side}（偏弱参考）",
+            )
+        }
+        // 4) 兜底 RSI
+        val closes = bars.map { it.close }
+        val rsi = com.puito.cryptoagent.domain.Indicators.rsi(closes, 14).lastOrNull()
+        if (rsi != null) {
+            return when {
+                rsi >= 58 -> DirectionPreview("B", "看多", (rsi).coerceIn(50.0, 85.0), "无策略信号 · RSI${"%.0f".format(rsi)} 偏多")
+                rsi <= 42 -> DirectionPreview("S", "看空", (100 - rsi).coerceIn(50.0, 85.0), "无策略信号 · RSI${"%.0f".format(rsi)} 偏空")
+                else -> DirectionPreview("NEUTRAL", "观望", 45.0, "无策略信号 · RSI${"%.0f".format(rsi)} 中性")
+            }
+        }
+        return DirectionPreview("NEUTRAL", "观望", 0.0, "暂无可用信号")
+    }
+
     fun setOverlays(list: List<ChartOverlay>) {
         overlays = list
         sp.edit().putString("overlays", gson.toJson(list)).apply()
