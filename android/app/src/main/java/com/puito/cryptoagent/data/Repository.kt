@@ -179,7 +179,9 @@ class Repository(ctx: Context) {
     private fun trainBarLimit(s: AppSettings = settings()): Int =
         s.llmTrainKlineLimit.coerceIn(300, 1500)
 
-    fun consecutiveLosses(list: List<SimTrade> = allClosedSimTrades()): Int {
+    fun consecutiveLosses(
+        list: List<SimTrade> = allClosedSimTrades(settings().interval),
+    ): Int {
         var n = 0
         for (t in list.asReversed()) {
             if (!t.win) n++ else break
@@ -187,18 +189,40 @@ class Repository(ctx: Context) {
         return n
     }
 
-    /** 历史回测 + 实时已平仓（统一模拟仓） */
-    fun allClosedSimTrades(): List<SimTrade> =
-        (historySimTrades + liveSimTrades).sortedBy { it.entryTime }
+    private fun intervalMatch(a: String?, b: String?): Boolean {
+        val x = a?.trim()?.lowercase().orEmpty()
+        val y = b?.trim()?.lowercase().orEmpty()
+        if (x.isEmpty() || y.isEmpty()) return true
+        return x == y
+    }
 
-    /** 所有已平仓综合统计（自动调优 / 行情页胜率以此为准） */
-    fun unifiedStats(): Stats = statsOf(allClosedSimTrades())
+    /**
+     * 历史回测 + 实时已平仓。
+     * @param interval 非空时只保留该周期（如 10m），避免 5m/30m 污染 10m 策略统计。
+     */
+    fun allClosedSimTrades(interval: String? = null): List<SimTrade> {
+        val all = (historySimTrades + liveSimTrades).sortedBy { it.entryTime }
+        if (interval.isNullOrBlank()) return all
+        return all.filter { intervalMatch(it.interval, interval) }
+    }
+
+    /** 按周期过滤的综合统计（行情页 / 自动调优默认用当前设置周期） */
+    fun unifiedStats(interval: String? = settings().interval): Stats =
+        statsOf(allClosedSimTrades(interval))
+
+    /** 持仓按周期过滤 */
+    fun pendingLivePositions(interval: String? = null): List<PendingLiveSim> {
+        val all = pendingLiveSims.values.sortedByDescending { it.entryTime }
+        if (interval.isNullOrBlank()) return all
+        return all.filter { intervalMatch(it.interval, interval) }
+    }
 
     private fun publishUnifiedTrades() {
-        val all = allClosedSimTrades()
-        trades = all
-        stats = statsOf(all)
-        liveSimStats = stats // 兼容旧 UI 读 liveSimStats 也看到综合
+        val iv = settings().interval
+        val scoped = allClosedSimTrades(iv)
+        trades = scoped
+        stats = statsOf(scoped)
+        liveSimStats = stats
         bumpLiveSim()
     }
 
@@ -253,9 +277,6 @@ class Repository(ctx: Context) {
         bumpLiveSim()
     }
 
-    /** 当前未平仓模拟持仓（开仓即可见） */
-    fun pendingLivePositions(): List<PendingLiveSim> =
-        pendingLiveSims.values.sortedByDescending { it.entryTime }
 
     private fun bumpLiveSim() {
         _liveSimTick.value = _liveSimTick.value + 1
@@ -1582,9 +1603,9 @@ class Repository(ctx: Context) {
         if (!s.liveSimAutoRetune || !s.liveSimEnabled) return
         if (retuneInProgress) return
         if (System.currentTimeMillis() - lastAutoRetuneAt < 15 * 60_000L) return
-        val st = unifiedStats()
+        val st = unifiedStats(s.interval)
         if (st.trades < s.liveSimMinTradesBeforeRetune.coerceAtLeast(3)) return
-        val consec = consecutiveLosses()
+        val consec = consecutiveLosses(allClosedSimTrades(s.interval))
         val wrPct = st.winRate * 100
         val lowWr = wrPct < s.liveSimMinWinRatePct
         val tooManyLoss = consec >= s.liveSimMaxConsecutiveLosses.coerceIn(2, 10)
@@ -1593,8 +1614,8 @@ class Repository(ctx: Context) {
         retuneInProgress = true
         lastAutoRetuneAt = System.currentTimeMillis()
         val reason = buildString {
-            if (lowWr) append("综合模拟胜率${"%.1f".format(wrPct)}%<${s.liveSimMinWinRatePct}% ")
-            if (tooManyLoss) append("综合模拟连亏${consec}笔 ")
+            if (lowWr) append("${s.interval}综合胜率${"%.1f".format(wrPct)}%<${s.liveSimMinWinRatePct}% ")
+            if (tooManyLoss) append("${s.interval}连亏${consec}笔 ")
         }
         HibtWebSession.appendLog(">>> 自动调优触发: $reason · 策略「${en.title}」 kind=${en.kind}")
         try {
@@ -2074,11 +2095,11 @@ class Repository(ctx: Context) {
                 }
             }
             // 自动/手动调优都以统一模拟仓为实盘参考目标
-            val us = unifiedStats()
+            val us = unifiedStats(s.interval)
             if (us.trades > 0) {
                 appendLine(
-                    "【综合模拟仓】历史+实时共${us.trades}笔 胜率${"%.1f".format(us.winRate * 100)}% " +
-                        "连亏${consecutiveLosses()} —— 优化目标以提升该综合胜率为准。",
+                    "【${s.interval}综合模拟仓】历史+实时共${us.trades}笔 胜率${"%.1f".format(us.winRate * 100)}% " +
+                        "连亏${consecutiveLosses(allClosedSimTrades(s.interval))} —— 只优化该周期，勿混入其它周期。",
                 )
             }
             if (base != null) {
