@@ -1,42 +1,52 @@
 {
-  "version": 1,
+  "version": 2,
   "updated": "2026-10-04",
   "baseUrl": "https://raw.githubusercontent.com/PUITO/crypto-agent/android-app/android/models/",
   "models": [
     {
       "id": "off_momentum_v1",
-      "name": "动量顺势 V1",
-      "desc": "离线小模型：偏顺势动量（MACD/收益为正权），适合单边；固定参数不可改",
+      "name": "动量融合 V1",
+      "desc": "分类器(动量权重)+时序动量金融因子；可选在线AI加权。低成本离线量化",
       "file": "off_momentum_v1.json",
-      "sha256": "a5c43a4c43a8edaf48c1e706425f55b8553dd62c5eb79b1df305c8bf8c4a3a22",
-      "sizeBytes": 565,
-      "engine": "LOGREG_PACK",
+      "sha256": "168232cb330ea38667b55227fc9f21d7da573f60388b9b9c48e6bdeeec668c46",
+      "sizeBytes": 683,
+      "engine": "FUSION_V1",
       "locked": true
     },
     {
       "id": "off_meanrev_v1",
-      "name": "均值回归 V1",
-      "desc": "离线小模型：超买超卖回归（RSI/布林反向），适合震荡；固定参数不可改",
+      "name": "回归融合 V1",
+      "desc": "分类器(回归权重)+均值回归金融因子；震荡市友好。离线可跑",
       "file": "off_meanrev_v1.json",
-      "sha256": "54e5144e87c160d3264f21fdeb36aecc4d9e050aba6f4c6d65d482e710b0af1c",
-      "sizeBytes": 569,
-      "engine": "LOGREG_PACK",
+      "sha256": "c4775b3bf2201e27c233ccd4171d5e0076a7f028afeff38c66c8314d14d3ef2e",
+      "sizeBytes": 661,
+      "engine": "FUSION_V1",
       "locked": true
     },
     {
       "id": "off_breakout_v1",
-      "name": "波动突破 V1",
-      "desc": "离线小模型：放量突破（振幅/量比 + 方向动量）；固定参数不可改",
+      "name": "突破融合 V1",
+      "desc": "分类器+波动突破金融因子；放量突破场景。离线可跑",
       "file": "off_breakout_v1.json",
-      "sha256": "fa762dfaeb4eb38779975ea088c877eec2cda254f6e909e24b9ad3daf0afb923",
-      "sizeBytes": 552,
-      "engine": "LOGREG_PACK",
+      "sha256": "a5894a40b25f3c8c22179ec148c9e865b9ebccd817b2b5a5f2af53851b1db038",
+      "sizeBytes": 642,
+      "engine": "FUSION_V1",
+      "locked": true
+    },
+    {
+      "id": "off_trend_v1",
+      "name": "趋势融合 V1",
+      "desc": "分类器+趋势质量金融因子；识别趋势强度。离线可跑",
+      "file": "off_trend_v1.json",
+      "sha256": "72fe0fe22c88fe385d7ad00261a93fe701aaef60c61e079ead5cadbf73fd9d17",
+      "sizeBytes": 640,
+      "engine": "FUSION_V1",
       "locked": true
     }
   ],
   "online": {
     "id": "online_ai",
     "name": "在线 AI 预测",
-    "desc": "使用已配置的 LLM（DeepSeek/Grok 等）对话式金融方向预测，需网络与 API Key"
+    "desc": "融合第三腿：配置 LLM 后参与打分；也可在 Chat 对话预测"
   }
 }

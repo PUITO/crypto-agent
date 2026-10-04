@@ -159,7 +159,7 @@ fun TradeScreen(repo: Repository) {
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(
-                        "安装后可在策略-模型中选用；离线包参数锁定不可改。在线 AI 需配置 LLM。",
+                        "离线包=分类器权重+金融因子模型融合（可加在线AI第三腿）。参数锁定。请先下载再选用。",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.secondary,
                     )
@@ -521,6 +521,21 @@ private fun EditStrategy(
         modelWeights = if (ModelIds.isOfflinePack(modelId)) {
             repo.offlineModels.loadPack(modelId)?.weights ?: emptyMap()
         } else cfg.modelWeights,
+        financeId = if (ModelIds.isOfflinePack(modelId)) {
+            repo.offlineModels.loadPack(modelId)?.financeId.orEmpty()
+        } else cfg.financeId,
+        financeParams = if (ModelIds.isOfflinePack(modelId)) {
+            repo.offlineModels.loadPack(modelId)?.financeParams ?: emptyMap()
+        } else cfg.financeParams,
+        wClassifier = if (ModelIds.isOfflinePack(modelId)) {
+            repo.offlineModels.loadPack(modelId)?.wClassifier ?: 1.0
+        } else cfg.wClassifier,
+        wFinance = if (ModelIds.isOfflinePack(modelId)) {
+            repo.offlineModels.loadPack(modelId)?.wFinance ?: 0.0
+        } else cfg.wFinance,
+        wOnline = if (ModelIds.isOfflinePack(modelId)) {
+            repo.offlineModels.loadPack(modelId)?.wOnline ?: 0.0
+        } else cfg.wOnline,
         buyRules = buy.ifEmpty { listOf(Rule()) },
         sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
         tradeIntervals = tradeIntervalsSel.toList().sortedBy {

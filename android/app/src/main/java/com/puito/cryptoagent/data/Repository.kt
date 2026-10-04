@@ -521,6 +521,11 @@ class Repository(ctx: Context) {
             modelTrainReport = modelTrainReport,
             tradeIntervals = tradeIntervals,
             modelEndpoint = modelEndpoint,
+            financeId = try { c.financeId ?: "" } catch (_: Exception) { "" },
+            financeParams = try { c.financeParams ?: emptyMap() } catch (_: Exception) { emptyMap() },
+            wClassifier = try { c.wClassifier } catch (_: Exception) { 1.0 },
+            wFinance = try { c.wFinance } catch (_: Exception) { 0.0 },
+            wOnline = try { c.wOnline } catch (_: Exception) { 0.0 },
         )
     }
 
@@ -731,7 +736,12 @@ class Repository(ctx: Context) {
             modelWeights = pack.weights,
             modelParams = if (pack.params.isNotEmpty()) pack.params else cfg.modelParams,
             modelNote = pack.desc.ifBlank { pack.name },
-            modelTrainReport = "离线包 ${pack.id} v${pack.version}（锁定）",
+            modelTrainReport = "离线包 ${pack.id} v${pack.version} engine=${pack.engine}（锁定）",
+            financeId = pack.financeId.ifBlank { cfg.financeId },
+            financeParams = if (pack.financeParams.isNotEmpty()) pack.financeParams else cfg.financeParams,
+            wClassifier = if (pack.engine == "FUSION_V1") pack.wClassifier else cfg.wClassifier,
+            wFinance = if (pack.engine == "FUSION_V1") pack.wFinance else cfg.wFinance,
+            wOnline = if (pack.engine == "FUSION_V1") pack.wOnline else cfg.wOnline,
         )
     }
 
@@ -1556,6 +1566,12 @@ class Repository(ctx: Context) {
                 .trim()
                 .ifBlank { ans.take(120) }
             val pass = winEst >= threshold
+            // 融合第三腿：AI 胜率映射为「看多概率」缓存
+            runCatching {
+                val sc = (winEst / 100.0).coerceIn(0.05, 0.95)
+                val onlineProb = if (m.side == "B") sc else (1.0 - sc)
+                ModelEngine.putOnlineScore(onlineProb)
+            }
             AiEvalResult(
                 winRatePct = winEst,
                 summary = reason.take(180),

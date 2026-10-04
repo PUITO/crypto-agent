@@ -29,6 +29,19 @@ object ModelEngine {
         remoteScores.remove(strategyId)
     }
 
+    /** 在线 AI 最近一次方向分（0~1），供融合第三腿；由 Repository 在 LLM 评估后写入 */
+    @Volatile
+    var onlineScoreCache: Double? = null
+        private set
+    @Volatile
+    var onlineScoreAtMs: Long = 0L
+        private set
+
+    fun putOnlineScore(score: Double) {
+        onlineScoreCache = score.coerceIn(0.0, 1.0)
+        onlineScoreAtMs = System.currentTimeMillis()
+    }
+
     data class TrainResult(
         val weights: Map<String, Double>,
         val samples: Int,
@@ -73,9 +86,33 @@ object ModelEngine {
         val lo = (1.0 - hi).coerceAtLeast(0.08)
         val weights = resolveWeights(cfg)
         val feats = buildFeatureMatrix(candles, lookback)
+        val wc = cfg.wClassifier.coerceIn(0.0, 1.0)
+        val wf = cfg.wFinance.coerceIn(0.0, 1.0)
+        val wo = cfg.wOnline.coerceIn(0.0, 1.0)
+        val wSum = (wc + wf + wo).coerceAtLeast(1e-6)
+        val nWc = wc / wSum
+        val nWf = wf / wSum
+        val nWo = wo / wSum
+        val finId = cfg.financeId.trim()
+        val finScores = if (finId.isNotEmpty() && nWf > 1e-6) {
+            FinancialFactorEngine.scores(candles, finId, cfg.financeParams)
+        } else null
+        // 在线分：仅 30 分钟内有效，否则该腿权重并入分类器+金融
+        val online = onlineScoreCache
+        val onlineFresh = online != null && (System.currentTimeMillis() - onlineScoreAtMs) < 30 * 60_000L
         val scores = DoubleArray(feats.size) { i ->
             val f = feats[i] ?: return@DoubleArray Double.NaN
-            sigmoid(dot(weights, f))
+            val cls = sigmoid(dot(weights, f))
+            val fin = finScores?.getOrNull(i)
+            val finV = if (fin != null && !fin.isNaN()) fin else cls
+            when {
+                onlineFresh && nWo > 1e-6 -> nWc * cls + nWf * finV + nWo * online!!
+                nWf > 1e-6 -> {
+                    val s2 = nWc + nWf
+                    (nWc / s2) * cls + (nWf / s2) * finV
+                }
+                else -> cls
+            }
         }
         val out = mutableListOf<SignalMark>()
         var lastSig = -999

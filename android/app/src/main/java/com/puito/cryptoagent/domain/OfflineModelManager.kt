@@ -40,12 +40,20 @@ data class OfflinePack(
     val id: String,
     val name: String = "",
     val desc: String = "",
+    /** LOGREG_PACK | FUSION_V1 */
     val engine: String = "LOGREG_PACK",
     val featureNames: List<String> = emptyList(),
     val weights: Map<String, Double> = emptyMap(),
     val params: Map<String, Double> = emptyMap(),
     val locked: Boolean = true,
     val version: Int = 1,
+    /** 金融因子模型 ID，见 FinancialFactorEngine */
+    val financeId: String = "",
+    val financeParams: Map<String, Double> = emptyMap(),
+    /** 融合权重：分类器 / 金融因子 / 在线AI，和为 1 最佳 */
+    val wClassifier: Double = 1.0,
+    val wFinance: Double = 0.0,
+    val wOnline: Double = 0.0,
 )
 
 /**
@@ -73,35 +81,42 @@ class OfflineModelManager(private val context: Context) {
 
     /** 内置兜底清单（与仓库 android/models/catalog.json 同步；网络失败时仍可显示名称，下载需网络） */
     fun builtinCatalog(): OfflineCatalog = OfflineCatalog(
-        version = 1,
+        version = 2,
         updated = "2026-10-04",
         baseUrl = DEFAULT_BASE,
         models = listOf(
             OfflineCatalogEntry(
-                "off_momentum_v1", "动量顺势 V1",
-                "离线小模型：偏顺势动量；固定参数不可改",
+                "off_momentum_v1", "动量融合 V1",
+                "分类器(动量权重)+时序动量金融因子；可选在线AI加权。低成本离线量化",
                 "off_momentum_v1.json",
-                "a5c43a4c43a8edaf48c1e706425f55b8553dd62c5eb79b1df305c8bf8c4a3a22",
-                565, "LOGREG_PACK", true,
+                "168232cb330ea38667b55227fc9f21d7da573f60388b9b9c48e6bdeeec668c46",
+                683, "FUSION_V1", true,
             ),
             OfflineCatalogEntry(
-                "off_meanrev_v1", "均值回归 V1",
-                "离线小模型：超买超卖回归；固定参数不可改",
+                "off_meanrev_v1", "回归融合 V1",
+                "分类器(回归权重)+均值回归金融因子；震荡市友好。离线可跑",
                 "off_meanrev_v1.json",
-                "54e5144e87c160d3264f21fdeb36aecc4d9e050aba6f4c6d65d482e710b0af1c",
-                569, "LOGREG_PACK", true,
+                "c4775b3bf2201e27c233ccd4171d5e0076a7f028afeff38c66c8314d14d3ef2e",
+                661, "FUSION_V1", true,
             ),
             OfflineCatalogEntry(
-                "off_breakout_v1", "波动突破 V1",
-                "离线小模型：放量突破；固定参数不可改",
+                "off_breakout_v1", "突破融合 V1",
+                "分类器+波动突破金融因子；放量突破场景。离线可跑",
                 "off_breakout_v1.json",
-                "fa762dfaeb4eb38779975ea088c877eec2cda254f6e909e24b9ad3daf0afb923",
-                552, "LOGREG_PACK", true,
+                "a5894a40b25f3c8c22179ec148c9e865b9ebccd817b2b5a5f2af53851b1db038",
+                642, "FUSION_V1", true,
+            ),
+            OfflineCatalogEntry(
+                "off_trend_v1", "趋势融合 V1",
+                "分类器+趋势质量金融因子；识别趋势强度。离线可跑",
+                "off_trend_v1.json",
+                "72fe0fe22c88fe385d7ad00261a93fe701aaef60c61e079ead5cadbf73fd9d17",
+                640, "FUSION_V1", true,
             ),
         ),
         online = OfflineOnlineInfo(
             "online_ai", "在线 AI 预测",
-            "使用已配置 LLM（DeepSeek/Grok 等）做对话式金融方向预测",
+            "融合第三腿 + Chat 对话式金融预测（需 LLM Key）",
         ),
     )
 
@@ -160,7 +175,9 @@ class OfflineModelManager(private val context: Context) {
             val pack = gson.fromJson(bytes.decodeToString(), OfflinePack::class.java)
                 ?: error("模型 JSON 解析失败")
             if (pack.weights.isEmpty()) error("模型权重为空，不可用")
-            if (pack.engine != "LOGREG_PACK") error("不支持的引擎: ${pack.engine}")
+            if (pack.engine != "LOGREG_PACK" && pack.engine != "FUSION_V1") {
+                error("不支持的引擎: ${pack.engine}")
+            }
             packFile(id).writeBytes(bytes)
             pack.copy(id = id, name = pack.name.ifBlank { entry.name }, locked = true)
         }

@@ -81,7 +81,10 @@ object ModelIds {
         id == ONLINE_AI -> "在线 AI 预测"
         id == "off_momentum_v1" -> "离线·动量顺势"
         id == "off_meanrev_v1" -> "离线·均值回归"
-        id == "off_breakout_v1" -> "离线·波动突破"
+        id == "off_breakout_v1" -> "离线·突破融合"
+        id == "off_trend_v1" -> "离线·趋势融合"
+        id == "off_momentum_v1" -> "离线·动量融合"
+        id == "off_meanrev_v1" -> "离线·回归融合"
         isOfflinePack(id) -> "离线·$id"
         else -> id
     }
@@ -152,6 +155,13 @@ data class StrategyConfig(
      * 响应 JSON: {"score":0.0~1.0} 或 {"side":"B"|"S","score":0.7}
      */
     val modelEndpoint: String = "",
+    /** 离线金融因子模型 ID（FinancialFactorEngine） */
+    val financeId: String = "",
+    val financeParams: Map<String, Double> = emptyMap(),
+    /** 融合权重：分类器 / 金融因子 / 在线AI */
+    val wClassifier: Double = 1.0,
+    val wFinance: Double = 0.0,
+    val wOnline: Double = 0.0,
 )
 
 data class StrategyOptimizeResult(
