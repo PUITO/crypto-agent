@@ -1,6 +1,8 @@
 package com.puito.cryptoagent.ui.trade
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -159,7 +161,7 @@ fun TradeScreen(repo: Repository) {
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(
-                        "离线包=分类器权重+金融因子模型融合（可加在线AI第三腿）。参数锁定。请先下载再选用。",
+                        "下载完成后：策略列表「+」新建 → 类型选「模型」→ 点选「离线·xxx·已装」→ 保存 → 启用。融合包=分类器+金融因子(+可选在线AI)。",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.secondary,
                     )
@@ -414,6 +416,7 @@ private fun summarizeRules(cfg: StrategyConfig): String {
 }
 
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EditStrategy(
     repo: Repository,
@@ -579,22 +582,55 @@ private fun EditStrategy(
         when (kind) {
             StrategyKind.MODEL -> {
                 Text(
-                    "可选：①本地逻辑回归（App内训练）②第三方 HTTP 模型（对接你的 XGBoost/时序等真实金融模型服务）",
+                    "使用步骤：1) 返回点「模型管理」下载离线包  2) 此处类型选「模型」  3) 点选下方离线融合包  4) 保存并启用",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.secondary,
                 )
-                Text("模型", fontSize = 12.sp)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    (ModelIds.core + repo.offlineModels.installedIds()).distinct().forEach { id ->
+                Text("模型（含已下载离线包，可换行滚动查看）", fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                val catIds = repo.offlineModels.effectiveCatalog().models.map { it.id }
+                val modelChoices = (ModelIds.core + catIds + repo.offlineModels.installedIds()).distinct()
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    modelChoices.forEach { id ->
+                        val offline = ModelIds.isOfflinePack(id)
+                        val installed = !offline || repo.offlineModels.isInstalled(id)
+                        val label = buildString {
+                            append(ModelIds.label(id))
+                            if (offline) append(if (installed) "·已装" else "·未下")
+                        }
                         FilterChip(
                             selected = modelId == id,
-                            onClick = { modelId = id },
-                            label = { Text(ModelIds.label(id), fontSize = 11.sp) },
+                            onClick = {
+                                if (offline && !installed) {
+                                    // 仍允许选中以提示下载
+                                    modelId = id
+                                } else {
+                                    modelId = id
+                                }
+                            },
+                            enabled = true,
+                            label = { Text(label, fontSize = 11.sp) },
                         )
                     }
                 }
-                if (ModelIds.isOfflinePack(modelId) && !repo.offlineModels.isInstalled(modelId)) {
-                    Text("请先在「模型管理」下载该离线包", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                if (ModelIds.isOfflinePack(modelId)) {
+                    if (!repo.offlineModels.isInstalled(modelId)) {
+                        Text(
+                            "「${ModelIds.label(modelId)}」尚未下载：返回策略列表点「模型管理」→ 下载后再保存",
+                            color = MaterialTheme.colorScheme.error,
+                            fontSize = 12.sp,
+                        )
+                    } else {
+                        val pack = repo.offlineModels.loadPack(modelId)
+                        Text(
+                            "已选离线融合包：分类器 + ${pack?.financeId ?: "金融因子"}（参数锁定）",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 12.sp,
+                        )
+                    }
                 }
                 if (modelId == ModelIds.REMOTE_HTTP) {
                     OutlinedTextField(
