@@ -4,6 +4,7 @@ import com.puito.cryptoagent.data.Candle
 import com.puito.cryptoagent.data.ModelIds
 import com.puito.cryptoagent.data.SignalMark
 import com.puito.cryptoagent.data.StrategyConfig
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.exp
 
 /**
@@ -16,6 +17,17 @@ import kotlin.math.exp
  * - 可选 requireConfirm：连续 confirmBars 根同向偏置
  */
 object ModelEngine {
+
+    /** strategyId -> (openTime -> score 0~1) 由 Repository 拉取第三方结果写入 */
+    private val remoteScores = ConcurrentHashMap<String, ConcurrentHashMap<Long, Double>>()
+
+    fun putRemoteScore(strategyId: String, openTime: Long, score: Double) {
+        remoteScores.getOrPut(strategyId) { ConcurrentHashMap() }[openTime] = score.coerceIn(0.0, 1.0)
+    }
+
+    fun clearRemoteScores(strategyId: String) {
+        remoteScores.remove(strategyId)
+    }
 
     data class TrainResult(
         val weights: Map<String, Double>,
@@ -41,6 +53,9 @@ object ModelEngine {
 
     fun signals(candles: List<Candle>, cfg: StrategyConfig): List<SignalMark> {
         if (candles.size < 40) return emptyList()
+        if (cfg.modelId == ModelIds.REMOTE_HTTP) {
+            return signalsFromRemoteCache(candles, cfg)
+        }
         // 默认偏「少而准」：阈值 0.64、冷却 12、边距 0.04
         val threshold = p(cfg.modelParams, "threshold", 0.64).coerceIn(0.55, 0.82)
         val cooldown = p(cfg.modelParams, "cooldown", 12.0).toInt().coerceIn(3, 80)
@@ -97,6 +112,40 @@ object ModelEngine {
             }
         }
         return out
+    }
+
+    private fun signalsFromRemoteCache(candles: List<Candle>, cfg: StrategyConfig): List<SignalMark> {
+        val scores = remoteScores[cfg.id] ?: return emptyList()
+        val threshold = p(cfg.modelParams, "threshold", 0.64).coerceIn(0.55, 0.82)
+        val cooldown = p(cfg.modelParams, "cooldown", 12.0).toInt().coerceIn(3, 80)
+        val minEdge = p(cfg.modelParams, "minEdge", 0.04).coerceIn(0.0, 0.15)
+        val hi = (threshold + minEdge).coerceAtMost(0.92)
+        val lo = (1.0 - hi).coerceAtLeast(0.08)
+        val out = mutableListOf<SignalMark>()
+        var lastSig = -999
+        for (i in candles.indices) {
+            val sc = scores[candles[i].openTime] ?: continue
+            if (i - lastSig < cooldown) continue
+            when {
+                sc >= hi -> {
+                    out.add(SignalMark(candles[i].openTime, "B", candles[i].close, tag = "model"))
+                    lastSig = i
+                }
+                sc <= lo -> {
+                    out.add(SignalMark(candles[i].openTime, "S", candles[i].close, tag = "model"))
+                    lastSig = i
+                }
+            }
+        }
+        return out
+    }
+
+    /** 导出最后一根特征，供第三方 HTTP 模型 */
+    fun lastFeatures(candles: List<Candle>, lookback: Int = 5): Map<String, Double>? {
+        if (candles.size < 40) return null
+        val feats = buildFeatureMatrix(candles, lookback.coerceIn(2, 20))
+        val f = feats.getOrNull(candles.lastIndex) ?: return null
+        return featureNames.mapIndexed { i, n -> n to f[i] }.toMap()
     }
 
     /**

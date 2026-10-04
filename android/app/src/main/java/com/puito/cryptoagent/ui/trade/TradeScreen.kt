@@ -202,6 +202,9 @@ fun TradeScreen(repo: Repository) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(cfg.title, style = MaterialTheme.typography.titleSmall)
+                                val ivLabel = if (cfg.tradeIntervals.isEmpty()) "周期:跟随行情"
+                                else "周期:" + cfg.tradeIntervals.joinToString(",")
+                                Text(ivLabel, fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
                                 Text(
                                     if (cfg.enabled) "已启用" else "未启用",
                                     color = MaterialTheme.colorScheme.secondary,
@@ -363,6 +366,10 @@ private fun EditStrategy(
         )
     }
     var modelReport by remember { mutableStateOf(cfg.modelTrainReport) }
+    var modelEndpoint by remember { mutableStateOf(cfg.modelEndpoint) }
+    var tradeIntervalsSel by remember {
+        mutableStateOf(cfg.tradeIntervals.toSet().ifEmpty { emptySet() })
+    }
     var buy by remember { mutableStateOf(cfg.buyRules) }
     var sell by remember { mutableStateOf(cfg.sellRules) }
     var tuneGoal by remember { mutableStateOf("") }
@@ -384,6 +391,8 @@ private fun EditStrategy(
             )
         }.entries.joinToString("\n") { "${it.key}=${it.value}" }
         modelReport = cfg.modelTrainReport
+        modelEndpoint = cfg.modelEndpoint
+        tradeIntervalsSel = cfg.tradeIntervals.toSet()
         buy = cfg.buyRules
         sell = cfg.sellRules
     }
@@ -417,6 +426,10 @@ private fun EditStrategy(
         modelWeights = cfg.modelWeights,
         buyRules = buy.ifEmpty { listOf(Rule()) },
         sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
+        tradeIntervals = tradeIntervalsSel.toList().sortedBy {
+            listOf("5m", "10m", "30m", "1h").indexOf(it).let { i -> if (i < 0) 99 else i }
+        },
+        modelEndpoint = modelEndpoint.trim(),
     )
     Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState())) {
         TextButton(onBack) { Text("← 返回") }
@@ -425,6 +438,25 @@ private fun EditStrategy(
             label = { Text("策略标题") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
+        )
+        Text("交易周期（可多选；不选=仅跟随行情当前周期，避免全量噪音）", fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("5m", "10m", "30m", "1h").forEach { iv ->
+                FilterChip(
+                    selected = iv in tradeIntervalsSel,
+                    onClick = {
+                        tradeIntervalsSel = if (iv in tradeIntervalsSel) tradeIntervalsSel - iv
+                        else tradeIntervalsSel + iv
+                    },
+                    label = { Text(iv, fontSize = 12.sp) },
+                )
+            }
+        }
+        Text(
+            if (tradeIntervalsSel.isEmpty()) "当前：跟随行情选中周期"
+            else "当前：仅 ${tradeIntervalsSel.sorted().joinToString(",")}",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.secondary,
         )
         Text("类型", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -435,7 +467,7 @@ private fun EditStrategy(
         when (kind) {
             StrategyKind.MODEL -> {
                 Text(
-                    "本地逻辑回归（少而准）：训练会写权重并自动校准 threshold/cooldown，避免每根K都信号。",
+                    "可选：①本地逻辑回归（App内训练）②第三方 HTTP 模型（对接你的 XGBoost/时序等真实金融模型服务）",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.secondary,
                 )
@@ -448,6 +480,21 @@ private fun EditStrategy(
                             label = { Text(ModelIds.label(id), fontSize = 11.sp) },
                         )
                     }
+                }
+                if (modelId == ModelIds.REMOTE_HTTP) {
+                    OutlinedTextField(
+                        modelEndpoint,
+                        { modelEndpoint = it },
+                        label = { Text("第三方模型 API URL（POST JSON）") },
+                        placeholder = { Text("https://your-api.com/score") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Text(
+                        "请求含 features/symbol/interval；响应 {"score":0~1} 或 {"side":"B","confidence":0.7}",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
                 }
                 OutlinedTextField(
                     modelParamsText,
@@ -476,7 +523,9 @@ private fun EditStrategy(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(vertical = 8.dp),
                 ) {
-                    Button(onClick = { onTrainModel?.invoke(currentCfg()) }) { Text("训练模型") }
+                    if (modelId == ModelIds.LOGREG_V1) {
+                        Button(onClick = { onTrainModel?.invoke(currentCfg()) }) { Text("训练模型") }
+                    }
                     OutlinedButton(onClick = { onClearModel?.invoke(currentCfg()) }) { Text("清除权重") }
                 }
             }

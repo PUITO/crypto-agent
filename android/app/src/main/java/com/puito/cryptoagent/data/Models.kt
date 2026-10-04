@@ -64,10 +64,17 @@ enum class StrategyKind(val label: String) {
  * LOGREG_V1  逻辑回归：特征=RSI/MACD/BOLL/动量等，标签=下一根涨跌
  */
 object ModelIds {
+    /** 本地逻辑回归（App 内训练，非第三方金融模型） */
     const val LOGREG_V1 = "LOGREG_V1"
-    val all = listOf(LOGREG_V1)
+    /**
+     * 第三方远程模型：HTTP POST 特征向量，返回 score∈[0,1]。
+     * 由你的服务 / 云端真实模型（XGBoost、时序网络等）打分。
+     */
+    const val REMOTE_HTTP = "REMOTE_HTTP"
+    val all = listOf(LOGREG_V1, REMOTE_HTTP)
     fun label(id: String) = when (id) {
-        LOGREG_V1 -> "逻辑回归 V1"
+        LOGREG_V1 -> "本地逻辑回归"
+        REMOTE_HTTP -> "第三方 HTTP 模型"
         else -> id
     }
 }
@@ -126,6 +133,17 @@ data class StrategyConfig(
     val modelNote: String = "",
     /** 最近一次训练摘要（样本数、准确率等） */
     val modelTrainReport: String = "",
+    /**
+     * 本策略生效的交易周期（5m/10m/30m/1h）。
+     * 空列表 = 仅跟随行情页当前选中周期，避免在其它周期产生噪音信号。
+     */
+    val tradeIntervals: List<String> = emptyList(),
+    /**
+     * 第三方模型 HTTP 端点（modelId=REMOTE_HTTP 时必填）。
+     * POST JSON: {symbol, interval, features:{...}, close, openTime}
+     * 响应 JSON: {"score":0.0~1.0} 或 {"side":"B"|"S","score":0.7}
+     */
+    val modelEndpoint: String = "",
 )
 
 data class StrategyOptimizeResult(

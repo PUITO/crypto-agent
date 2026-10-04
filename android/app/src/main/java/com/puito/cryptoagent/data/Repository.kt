@@ -22,6 +22,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /** 实时模拟挂单：信号确认后在下一根 K 开盘开仓，该根收盘后平仓 */
 data class PendingLiveSim(
@@ -488,6 +490,17 @@ class Repository(ctx: Context) {
         } catch (_: Exception) {
             ""
         }
+        val tradeIntervals = try {
+            (c.tradeIntervals ?: emptyList()).map { it.trim().lowercase() }
+                .filter { it in listOf("5m", "10m", "30m", "1h") }.distinct()
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val modelEndpoint = try {
+            c.modelEndpoint ?: ""
+        } catch (_: Exception) {
+            ""
+        }
         return StrategyConfig(
             id = c.id,
             title = c.title,
@@ -503,6 +516,8 @@ class Repository(ctx: Context) {
             modelWeights = modelWeights,
             modelNote = modelNote,
             modelTrainReport = modelTrainReport,
+            tradeIntervals = tradeIntervals,
+            modelEndpoint = modelEndpoint,
         )
     }
 
@@ -696,6 +711,88 @@ class Repository(ctx: Context) {
     fun enabledStrategy(): StrategyConfig? = strategies().find { it.enabled }
 
     /**
+     * 策略绑定的交易周期：已配置则只用这些；未配置则仅当前行情周期（不跑全量 5m~1h）。
+     */
+    fun effectiveTradeIntervals(cfg: StrategyConfig, globalInterval: String = settings().interval): List<String> {
+        val allowed = listOf("5m", "10m", "30m", "1h")
+        val sel = cfg.tradeIntervals.map { it.trim().lowercase() }.filter { it in allowed }.distinct()
+        if (sel.isNotEmpty()) return sel
+        val g = globalInterval.trim().lowercase()
+        return if (g in allowed) listOf(g) else listOf("10m")
+    }
+
+    /**
+     * 调用第三方模型 HTTP 接口，对最近 K 线打分。
+     * 请求体含 features（与本地 LOGREG 同一套特征），便于对接 XGBoost/Torch 等真实模型服务。
+     */
+    private fun prefetchRemoteModelScores(
+        cfg: StrategyConfig,
+        bars: List<Candle>,
+        symbol: String,
+        interval: String,
+    ) {
+        val url = cfg.modelEndpoint.trim()
+        if (url.isEmpty()) {
+            HibtWebSession.appendLog("第三方模型未配置 modelEndpoint，跳过")
+            return
+        }
+        val lookback = (cfg.modelParams["lookback"] ?: 5.0).toInt().coerceIn(2, 20)
+        val tail = bars.takeLast(8)
+        for (i in tail.indices) {
+            val sub = bars.dropLast(tail.size - 1 - i)
+            if (sub.size < 40) continue
+            val feats = ModelEngine.lastFeatures(sub, lookback) ?: continue
+            val body = org.json.JSONObject()
+            body.put("symbol", symbol)
+            body.put("interval", interval)
+            body.put("openTime", sub.last().openTime)
+            body.put("close", sub.last().close)
+            val fj = org.json.JSONObject()
+            feats.forEach { (k, v) -> fj.put(k, v) }
+            body.put("features", fj)
+            try {
+                val score = postRemoteModelScore(url, body.toString())
+                if (score != null) {
+                    ModelEngine.putRemoteScore(cfg.id, sub.last().openTime, score)
+                }
+            } catch (e: Exception) {
+                HibtWebSession.appendLog("第三方模型请求失败: ${e.message}")
+            }
+        }
+    }
+
+    private fun postRemoteModelScore(url: String, jsonBody: String): Double? {
+        val client = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        val media = "application/json; charset=utf-8".toMediaType()
+        val req = okhttp3.Request.Builder()
+            .url(url)
+            .post(jsonBody.toRequestBody(media))
+            .build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return null
+            val text = resp.body?.string().orEmpty()
+            val o = org.json.JSONObject(text)
+            when {
+                o.has("score") -> return o.getDouble("score").coerceIn(0.0, 1.0)
+                o.has("prob") -> return o.getDouble("prob").coerceIn(0.0, 1.0)
+                o.has("side") -> {
+                    val side = o.getString("side").uppercase()
+                    val sc = if (o.has("confidence")) o.getDouble("confidence") else 0.7
+                    return when {
+                        side.startsWith("B") || side == "LONG" || side == "BUY" -> 0.5 + sc.coerceIn(0.0, 0.5)
+                        side.startsWith("S") || side == "SHORT" || side == "SELL" -> 0.5 - sc.coerceIn(0.0, 0.5)
+                        else -> null
+                    }
+                }
+                else -> return null
+            }
+        }
+    }
+
+    /**
      * 当前方向预测（行情页）：基于启用策略在最新 K 上的信号 / 模型分 / 近端信号多数。
      * 仅反映「现在偏多还是偏空」，不构成下单建议。
      */
@@ -817,7 +914,8 @@ class Repository(ctx: Context) {
             loadOverlays()
             if (s.strategyRunning) {
                 val cfg = enabledStrategy()
-                if (cfg != null && bars.size >= minBarsForSignal(s.interval)) {
+                val ivOk = cfg == null || s.interval.lowercase() in effectiveTradeIntervals(cfg, s.interval)
+                if (cfg != null && ivOk && bars.size >= minBarsForSignal(s.interval)) {
                     runStrategy(
                         s.symbol, s.interval, cfg, bars,
                         notifyNew = false, updateUiState = false,
@@ -879,6 +977,10 @@ class Repository(ctx: Context) {
         notifyNew: Boolean,
         updateUiState: Boolean = false,
     ): Pair<List<SignalMark>, Stats> {
+        // 第三方 HTTP 模型：对最近若干根拉分写入缓存后再推理
+        if (cfg.kind == StrategyKind.MODEL && cfg.modelId == ModelIds.REMOTE_HTTP) {
+            prefetchRemoteModelScores(cfg, barData, symbol, interval)
+        }
         val rawMarks = StrategyEngine.signals(barData, cfg)
         val marks = rawMarks.map { m ->
             m.copy(tag = if (interval == "1m") "1m" else "ht")
@@ -1115,7 +1217,7 @@ class Repository(ctx: Context) {
         if (!s.strategyRunning) return@withContext emptyList()
         binance.updateBase(s.binanceBaseUrl)
         val cfg = enabledStrategy() ?: return@withContext emptyList()
-        val tradeIntervals = listOf("5m", "10m", "30m", "1h")
+        val tradeIntervals = effectiveTradeIntervals(cfg, s.interval)
         val limit1m = s.klineLimit.coerceIn(200, 500)
         val limitHt = s.klineLimit.coerceIn(200, 500)
         val mode1m = s.signalMode1mConfirm
@@ -2443,7 +2545,18 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             }
             val modelNote = o.get("modelNote")?.asString?.take(200) ?: ""
             val modelIdRaw = o.get("modelId")?.asString?.uppercase() ?: ModelIds.LOGREG_V1
-            val modelId = if (modelIdRaw.contains("LOGREG") || modelIdRaw.isBlank()) ModelIds.LOGREG_V1 else modelIdRaw
+            val modelId = when {
+                modelIdRaw.contains("REMOTE") || modelIdRaw.contains("HTTP") -> ModelIds.REMOTE_HTTP
+                modelIdRaw.contains("LOGREG") || modelIdRaw.isBlank() -> ModelIds.LOGREG_V1
+                else -> modelIdRaw
+            }
+            val modelEndpoint = o.get("modelEndpoint")?.asString?.trim().orEmpty()
+            val tradeIntervalsParsed = mutableListOf<String>()
+            o.getAsJsonArray("tradeIntervals")?.forEach { el ->
+                runCatching { el.asString.trim().lowercase() }.getOrNull()
+                    ?.takeIf { it in listOf("5m", "10m", "30m", "1h") }
+                    ?.let { tradeIntervalsParsed.add(it) }
+            }
             var finalKind = when {
                 kind == StrategyKind.MODEL -> StrategyKind.MODEL
                 kind == StrategyKind.ALGO -> StrategyKind.ALGO
@@ -2472,6 +2585,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                     )
                 },
                 modelNote = modelNote,
+                tradeIntervals = tradeIntervalsParsed.distinct(),
+                modelEndpoint = modelEndpoint,
             )
         } catch (_: Exception) {
             null
