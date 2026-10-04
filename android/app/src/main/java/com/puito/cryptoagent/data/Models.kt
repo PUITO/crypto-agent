@@ -64,17 +64,25 @@ enum class StrategyKind(val label: String) {
  * LOGREG_V1  逻辑回归：特征=RSI/MACD/BOLL/动量等，标签=下一根涨跌
  */
 object ModelIds {
-    /** 本地逻辑回归（App 内训练，非第三方金融模型） */
+    /** 本地可训练逻辑回归（可改参） */
     const val LOGREG_V1 = "LOGREG_V1"
-    /**
-     * 第三方远程模型：HTTP POST 特征向量，返回 score∈[0,1]。
-     * 由你的服务 / 云端真实模型（XGBoost、时序网络等）打分。
-     */
+    /** 第三方远程 HTTP 模型 */
     const val REMOTE_HTTP = "REMOTE_HTTP"
-    val all = listOf(LOGREG_V1, REMOTE_HTTP)
-    fun label(id: String) = when (id) {
-        LOGREG_V1 -> "本地逻辑回归"
-        REMOTE_HTTP -> "第三方 HTTP 模型"
+    /** 在线 AI 智能体预测（DeepSeek/Grok 等，需 API） */
+    const val ONLINE_AI = "ONLINE_AI"
+    /** 内置可下载离线包 id 前缀 */
+    const val OFF_PREFIX = "off_"
+    val core = listOf(LOGREG_V1, ONLINE_AI, REMOTE_HTTP)
+    fun isOfflinePack(id: String) = id.startsWith(OFF_PREFIX)
+    fun isLocked(id: String) = isOfflinePack(id) || id == ONLINE_AI
+    fun label(id: String) = when {
+        id == LOGREG_V1 -> "本地可训练 LR"
+        id == REMOTE_HTTP -> "第三方 HTTP"
+        id == ONLINE_AI -> "在线 AI 预测"
+        id == "off_momentum_v1" -> "离线·动量顺势"
+        id == "off_meanrev_v1" -> "离线·均值回归"
+        id == "off_breakout_v1" -> "离线·波动突破"
+        isOfflinePack(id) -> "离线·$id"
         else -> id
     }
 }

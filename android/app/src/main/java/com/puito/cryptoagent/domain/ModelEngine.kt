@@ -56,6 +56,13 @@ object ModelEngine {
         if (cfg.modelId == ModelIds.REMOTE_HTTP) {
             return signalsFromRemoteCache(candles, cfg)
         }
+        if (cfg.modelId == ModelIds.ONLINE_AI) {
+            // 在线 AI 不在本地逐 K 打分；方向由 Chat/预览接口提供
+            return emptyList()
+        }
+        if (ModelIds.isOfflinePack(cfg.modelId) && cfg.modelWeights.isEmpty()) {
+            return emptyList()
+        }
         // 默认偏「少而准」：阈值 0.64、冷却 12、边距 0.04
         val threshold = p(cfg.modelParams, "threshold", 0.64).coerceIn(0.55, 0.82)
         val cooldown = p(cfg.modelParams, "cooldown", 12.0).toInt().coerceIn(3, 80)

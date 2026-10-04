@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.puito.cryptoagent.data.*
 import kotlinx.coroutines.launch
@@ -28,10 +29,13 @@ fun TradeScreen(repo: Repository) {
     var progress by remember { mutableStateOf<String?>(null) }
     var report by remember { mutableStateOf<String?>(null) }
     var goalDialog by remember { mutableStateOf<Pair<String?, String>?>(null) } // baseId to title
+    var showModelMgr by remember { mutableStateOf(false) }
+    var modelMgrMsg by remember { mutableStateOf<String?>(null) }
     var goalDraft by remember { mutableStateOf("") }
 
     if (editing != null) {
         EditStrategy(
+            repo,
             editing!!,
             onBack = { editing = null },
             onSave = { cfg ->
@@ -106,6 +110,7 @@ fun TradeScreen(repo: Repository) {
     Column(Modifier.fillMaxSize().padding(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("策略配置", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            TextButton(onClick = { showModelMgr = true }) { Text("模型管理") }
             IconButton({
                 editing = StrategyConfig(UUID.randomUUID().toString(), "新策略", false)
             }) { Icon(Icons.Default.Add, null) }
@@ -144,7 +149,79 @@ fun TradeScreen(repo: Repository) {
                 }
             }
         }
-        if (goalDialog != null) {
+        
+    if (showModelMgr) {
+        val cat = remember { repo.offlineModels.effectiveCatalog() }
+        var tickMgr by remember { mutableIntStateOf(0) }
+        AlertDialog(
+            onDismissRequest = { showModelMgr = false },
+            title = { Text("离线模型管理") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "安装后可在策略-模型中选用；离线包参数锁定不可改。在线 AI 需配置 LLM。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    modelMgrMsg?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
+                    TextButton(onClick = {
+                        scope.launch {
+                            modelMgrMsg = "刷新目录…"
+                            repo.offlineModels.refreshCatalog()
+                                .onSuccess { modelMgrMsg = "目录已更新 ${it.models.size} 个模型"; tickMgr++ }
+                                .onFailure { modelMgrMsg = "刷新失败: ${it.message}" }
+                        }
+                    }) { Text("从服务器刷新模型列表") }
+                    key(tickMgr) {
+                        cat.models.forEach { m ->
+                            val installed = repo.offlineModels.isInstalled(m.id)
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(m.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                    Text(m.desc, fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                                    Text(
+                                        if (installed) "已安装 · ${m.id}" else "未安装 · ${m.sizeBytes}B · ${m.sha256.take(8)}…",
+                                        fontSize = 10.sp,
+                                    )
+                                }
+                                if (installed) {
+                                    TextButton(onClick = {
+                                        repo.offlineModels.delete(m.id)
+                                        modelMgrMsg = "已删除 ${m.name}"
+                                        tickMgr++
+                                    }) { Text("删除") }
+                                } else {
+                                    Button(onClick = {
+                                        scope.launch {
+                                            modelMgrMsg = "下载 ${m.name}…"
+                                            repo.offlineModels.download(m.id)
+                                                .onSuccess { modelMgrMsg = "已安装 ${it.name}"; tickMgr++ }
+                                                .onFailure { modelMgrMsg = "失败: ${it.message}" }
+                                        }
+                                    }) { Text("下载") }
+                                }
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                    Text("在线", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
+                    Text(
+                        cat.online?.desc ?: "配置 LLM 后可在策略中选「在线 AI 预测」",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showModelMgr = false }) { Text("关闭") }
+            },
+        )
+    }
+
+if (goalDialog != null) {
             val (baseId, title) = goalDialog!!
             AlertDialog(
                 onDismissRequest = { if (!busy) goalDialog = null },
@@ -339,6 +416,7 @@ private fun summarizeRules(cfg: StrategyConfig): String {
 
 @Composable
 private fun EditStrategy(
+    repo: Repository,
     cfg: StrategyConfig,
     onBack: () -> Unit,
     onSave: (StrategyConfig) -> Unit,
@@ -416,14 +494,33 @@ private fun EditStrategy(
         algoParams = parseParams(paramsText),
         modelId = modelId.ifBlank { ModelIds.LOGREG_V1 },
         modelNote = modelNote,
-        modelParams = parseParams(modelParamsText).ifEmpty {
-            mapOf(
-                "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
-                "confirmBars" to 1.0, "lookback" to 5.0,
-            )
+        modelParams = when {
+            ModelIds.isOfflinePack(modelId) -> {
+                repo.offlineModels.loadPack(modelId)?.params?.ifEmpty { null }
+                    ?: parseParams(modelParamsText).ifEmpty {
+                        mapOf(
+                            "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
+                            "confirmBars" to 1.0, "lookback" to 5.0,
+                        )
+                    }
+            }
+            ModelIds.isLocked(modelId) -> parseParams(modelParamsText).ifEmpty {
+                mapOf(
+                    "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
+                    "confirmBars" to 1.0, "lookback" to 5.0,
+                )
+            }
+            else -> parseParams(modelParamsText).ifEmpty {
+                mapOf(
+                    "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
+                    "confirmBars" to 1.0, "lookback" to 5.0,
+                )
+            }
         },
         modelTrainReport = modelReport,
-        modelWeights = cfg.modelWeights,
+        modelWeights = if (ModelIds.isOfflinePack(modelId)) {
+            repo.offlineModels.loadPack(modelId)?.weights ?: emptyMap()
+        } else cfg.modelWeights,
         buyRules = buy.ifEmpty { listOf(Rule()) },
         sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
         tradeIntervals = tradeIntervalsSel.toList().sortedBy {
@@ -473,13 +570,16 @@ private fun EditStrategy(
                 )
                 Text("模型", fontSize = 12.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ModelIds.all.forEach { id ->
+                    (ModelIds.core + repo.offlineModels.installedIds()).distinct().forEach { id ->
                         FilterChip(
                             selected = modelId == id,
                             onClick = { modelId = id },
                             label = { Text(ModelIds.label(id), fontSize = 11.sp) },
                         )
                     }
+                }
+                if (ModelIds.isOfflinePack(modelId) && !repo.offlineModels.isInstalled(modelId)) {
+                    Text("请先在「模型管理」下载该离线包", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 }
                 if (modelId == ModelIds.REMOTE_HTTP) {
                     OutlinedTextField(
@@ -496,14 +596,30 @@ private fun EditStrategy(
                         color = MaterialTheme.colorScheme.secondary,
                     )
                 }
-                OutlinedTextField(
-                    modelParamsText,
-                    { modelParamsText = it },
-                    label = { Text("参数 threshold/cooldown/lookback（每行 key=value）") },
-                    placeholder = { Text("threshold=0.64\ncooldown=12\nminEdge=0.04\nconfirmBars=1\nlookback=5") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3,
-                )
+                if (!ModelIds.isLocked(modelId)) {
+                    OutlinedTextField(
+                        modelParamsText,
+                        { modelParamsText = it },
+                        label = { Text("参数 threshold/cooldown/lookback（每行 key=value）") },
+                        placeholder = { Text("threshold=0.64\ncooldown=12\nminEdge=0.04\nconfirmBars=1\nlookback=5") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                    )
+                } else {
+                    Text(
+                        "此模型参数已锁定，不可在策略中修改（避免异常）",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    // 展示锁定参数只读
+                    val pack = if (ModelIds.isOfflinePack(modelId)) repo.offlineModels.loadPack(modelId) else null
+                    if (pack != null) {
+                        Text(
+                            pack.params.entries.joinToString("  ") { "${it.key}=${it.value}" },
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
                 OutlinedTextField(
                     modelNote,
                     { modelNote = it },

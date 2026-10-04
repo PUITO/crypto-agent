@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "updated": "2026-10-04",
+  "baseUrl": "https://raw.githubusercontent.com/PUITO/crypto-agent/android-app/android/models/",
+  "models": [
+    {
+      "id": "off_momentum_v1",
+      "name": "动量顺势 V1",
+      "desc": "离线小模型：偏顺势动量（MACD/收益为正权），适合单边；固定参数不可改",
+      "file": "off_momentum_v1.json",
+      "sha256": "a5c43a4c43a8edaf48c1e706425f55b8553dd62c5eb79b1df305c8bf8c4a3a22",
+      "sizeBytes": 565,
+      "engine": "LOGREG_PACK",
+      "locked": true
+    },
+    {
+      "id": "off_meanrev_v1",
+      "name": "均值回归 V1",
+      "desc": "离线小模型：超买超卖回归（RSI/布林反向），适合震荡；固定参数不可改",
+      "file": "off_meanrev_v1.json",
+      "sha256": "54e5144e87c160d3264f21fdeb36aecc4d9e050aba6f4c6d65d482e710b0af1c",
+      "sizeBytes": 569,
+      "engine": "LOGREG_PACK",
+      "locked": true
+    },
+    {
+      "id": "off_breakout_v1",
+      "name": "波动突破 V1",
+      "desc": "离线小模型：放量突破（振幅/量比 + 方向动量）；固定参数不可改",
+      "file": "off_breakout_v1.json",
+      "sha256": "fa762dfaeb4eb38779975ea088c877eec2cda254f6e909e24b9ad3daf0afb923",
+      "sizeBytes": 552,
+      "engine": "LOGREG_PACK",
+      "locked": true
+    }
+  ],
+  "online": {
+    "id": "online_ai",
+    "name": "在线 AI 预测",
+    "desc": "使用已配置的 LLM（DeepSeek/Grok 等）对话式金融方向预测，需网络与 API Key"
+  }
+}

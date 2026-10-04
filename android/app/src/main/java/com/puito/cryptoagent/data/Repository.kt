@@ -7,6 +7,7 @@ import com.google.gson.reflect.TypeToken
 import com.puito.cryptoagent.domain.EventSim
 import com.puito.cryptoagent.domain.ModelEngine
 import com.puito.cryptoagent.domain.StrategyEngine
+import com.puito.cryptoagent.domain.OfflineModelManager
 import com.puito.cryptoagent.net.BinanceClient
 import com.puito.cryptoagent.net.HibtClient
 import com.puito.cryptoagent.net.HibtWebSession
@@ -39,6 +40,8 @@ data class PendingLiveSim(
 )
 
 class Repository(ctx: Context) {
+    val offlineModels = OfflineModelManager(ctx)
+
     private val appCtx = ctx.applicationContext
     private val sp = ctx.getSharedPreferences("agent_local", Context.MODE_PRIVATE)
     private val gson = Gson()
@@ -713,6 +716,25 @@ class Repository(ctx: Context) {
     /**
      * 策略绑定的交易周期：已配置则只用这些；未配置则仅当前行情周期（不跑全量 5m~1h）。
      */
+    /**
+     * 离线包：注入已下载权重与锁定参数；未下载则原样返回（信号为空直至安装）。
+     * 在线 AI：不注入权重，由 runStrategy 单独路径处理。
+     */
+    fun resolveModelConfig(cfg: StrategyConfig): StrategyConfig {
+        if (cfg.kind != StrategyKind.MODEL) return cfg
+        if (!ModelIds.isOfflinePack(cfg.modelId)) return cfg
+        val pack = offlineModels.loadPack(cfg.modelId) ?: return cfg.copy(
+            modelWeights = emptyMap(),
+            modelNote = "未下载离线模型 ${cfg.modelId}，请到模型管理安装",
+        )
+        return cfg.copy(
+            modelWeights = pack.weights,
+            modelParams = if (pack.params.isNotEmpty()) pack.params else cfg.modelParams,
+            modelNote = pack.desc.ifBlank { pack.name },
+            modelTrainReport = "离线包 ${pack.id} v${pack.version}（锁定）",
+        )
+    }
+
     fun effectiveTradeIntervals(cfg: StrategyConfig, globalInterval: String = settings().interval): List<String> {
         val allowed = listOf("5m", "10m", "30m", "1h")
         val sel = cfg.tradeIntervals.map { it.trim().lowercase() }.filter { it in allowed }.distinct()
@@ -920,7 +942,7 @@ class Repository(ctx: Context) {
                         s.symbol, s.interval, cfg, bars,
                         notifyNew = false, updateUiState = false,
                     )
-                    val htMarks = StrategyEngine.signals(bars, cfg).map { it.copy(tag = "ht") }
+                    val htMarks = StrategyEngine.signals(bars, resolveModelConfig(cfg)).map { it.copy(tag = "ht") }
                     var chartMarks = htMarks
                     // 1m 信号映射到当前行情周期，画在同一张图上
                     val want1m = s.signalMode1mConfirm || (!s.signalMode1mConfirm && !s.signalModeHtNative)
@@ -928,7 +950,7 @@ class Repository(ctx: Context) {
                         try {
                             val bars1m = binance.fetch(s.symbol, Interval.M1, s.klineLimit.coerceIn(200, 500))
                             if (bars1m.size >= minBarsForSignal("1m")) {
-                                val m1 = StrategyEngine.signals(bars1m, cfg)
+                                val m1 = StrategyEngine.signals(bars1m, resolveModelConfig(cfg))
                                 val mapped = map1mMarksToInterval(
                                     m1, bars, s.interval, onlyHtConfirmed = true,
                                 )
@@ -981,7 +1003,7 @@ class Repository(ctx: Context) {
         if (cfg.kind == StrategyKind.MODEL && cfg.modelId == ModelIds.REMOTE_HTTP) {
             prefetchRemoteModelScores(cfg, barData, symbol, interval)
         }
-        val rawMarks = StrategyEngine.signals(barData, cfg)
+        val rawMarks = StrategyEngine.signals(barData, resolveModelConfig(cfg))
         val marks = rawMarks.map { m ->
             m.copy(tag = if (interval == "1m") "1m" else "ht")
         }
@@ -1341,10 +1363,10 @@ class Repository(ctx: Context) {
                 )
                 if (barsChart.size >= minBarsForSignal(s.interval)) {
                     val htMarks = if (useHt) {
-                        StrategyEngine.signals(barsChart, cfg).map { it.copy(tag = "ht") }
+                        StrategyEngine.signals(barsChart, resolveModelConfig(cfg)).map { it.copy(tag = "ht") }
                     } else emptyList()
                     val mapped1m = if (use1m && bars1m.size >= minBarsForSignal("1m")) {
-                        val m1 = StrategyEngine.signals(bars1m, cfg)
+                        val m1 = StrategyEngine.signals(bars1m, resolveModelConfig(cfg))
                         // 叠加到当前行情周期图：1m 信号 + 高周期确认
                         map1mMarksToInterval(m1, barsChart, s.interval, onlyHtConfirmed = true)
                     } else emptyList()
