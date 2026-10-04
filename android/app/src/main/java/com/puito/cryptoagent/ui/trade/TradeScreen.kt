@@ -491,7 +491,7 @@ private fun EditStrategy(
                         singleLine = true,
                     )
                     Text(
-                        "请求含 features/symbol/interval；响应 {"score":0~1} 或 {"side":"B","confidence":0.7}",
+                        "请求含 features/symbol/interval；响应 score 0~1 或 side=B/S + confidence",
                         fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.secondary,
                     )
