@@ -718,6 +718,78 @@ class Repository(ctx: Context) {
 
     fun enabledStrategy(): StrategyConfig? = strategies().find { it.enabled }
 
+    /** 策略面板缓存的回测胜率（不依赖启用；由「评估胜率」按钮一次性刷新） */
+    @Volatile
+    var strategyEvalCache: Map<String, StrategyEvalSnapshot> = emptyMap()
+        private set
+
+    data class StrategyEvalSnapshot(
+        val trades: Int,
+        val wins: Int,
+        val winRate: Double,
+        val totalReturnPct: Double,
+        val intervalLabel: String,
+        val detail: String,
+        val atMs: Long = System.currentTimeMillis(),
+    )
+
+    /**
+     * 一次性评估当前列表中全部策略的历史回测胜率（无需启用）。
+     * 按各策略 tradeIntervals（空则用行情当前周期）拉 K 线并回测，避免后台常驻计算。
+     */
+    suspend fun evaluateStrategiesWinRates(
+        list: List<StrategyConfig> = strategies(),
+        onProgress: ((String) -> Unit)? = null,
+    ): Map<String, StrategyEvalSnapshot> = withContext(Dispatchers.IO) {
+        val s = settings()
+        val out = linkedMapOf<String, StrategyEvalSnapshot>()
+        val limit = trainBarLimit(s)
+        for ((idx, cfg) in list.withIndex()) {
+            onProgress?.invoke("评估 ${idx + 1}/${list.size}「${cfg.title}」…")
+            val ivs = effectiveTradeIntervals(cfg, s.interval)
+            val parts = mutableListOf<String>()
+            var allTrades = 0
+            var allWins = 0
+            var sumRet = 0.0
+            for (iv in ivs) {
+                try {
+                    val bars = binance.fetch(s.symbol, Interval.from(iv), limit)
+                    if (bars.size < minBarsForSignal(iv)) {
+                        parts.add("$iv:K不足")
+                        continue
+                    }
+                    val resolved = resolveModelConfig(cfg)
+                    if (cfg.kind == StrategyKind.MODEL && ModelIds.isOfflinePack(cfg.modelId) && resolved.modelWeights.isEmpty()) {
+                        parts.add("$iv:未下载模型")
+                        continue
+                    }
+                    if (cfg.kind == StrategyKind.MODEL && cfg.modelId == ModelIds.REMOTE_HTTP) {
+                        prefetchRemoteModelScores(cfg, bars, s.symbol, iv)
+                    }
+                    val marks = StrategyEngine.signals(bars, resolved)
+                    val (_, st) = EventSim.backtest(bars, marks, s.symbol, iv)
+                    allTrades += st.trades
+                    allWins += st.wins
+                    sumRet += st.totalReturnPct
+                    parts.add("$iv:${st.trades}笔/${"%.0f".format(st.winRate * 100)}%")
+                } catch (e: Exception) {
+                    parts.add("$iv:失败")
+                }
+            }
+            val wr = if (allTrades > 0) allWins.toDouble() / allTrades else 0.0
+            out[cfg.id] = StrategyEvalSnapshot(
+                trades = allTrades,
+                wins = allWins,
+                winRate = wr,
+                totalReturnPct = sumRet,
+                intervalLabel = ivs.joinToString(","),
+                detail = parts.joinToString(" · "),
+            )
+        }
+        strategyEvalCache = out
+        out
+    }
+
     /**
      * 策略绑定的交易周期：已配置则只用这些；未配置则仅当前行情周期（不跑全量 5m~1h）。
      */

@@ -33,6 +33,7 @@ fun TradeScreen(repo: Repository) {
     var goalDialog by remember { mutableStateOf<Pair<String?, String>?>(null) } // baseId to title
     var showModelMgr by remember { mutableStateOf(false) }
     var modelMgrMsg by remember { mutableStateOf<String?>(null) }
+    var evalMap by remember { mutableStateOf(repo.strategyEvalCache) }
     var goalDraft by remember { mutableStateOf("") }
 
     if (editing != null) {
@@ -138,6 +139,32 @@ fun TradeScreen(repo: Repository) {
                 enabled = !busy,
                 modifier = Modifier.weight(1f),
             ) { Text(if (busy) "优化中…" else "LLM生成新策略") }
+            Button(
+                onClick = {
+                    scope.launch {
+                        busy = true
+                        progress = "评估策略胜率…"
+                        report = null
+                        runCatching {
+                            repo.evaluateStrategiesWinRates(list) { progress = it }
+                        }.onSuccess { m ->
+                            evalMap = m
+                            val lines = list.map { cfg ->
+                                val e = m[cfg.id]
+                                if (e == null || e.trades == 0) "「${cfg.title}」无有效回测"
+                                else "「${cfg.title}」${e.trades}笔 胜率${"%.1f".format(e.winRate * 100)}% ${e.detail}"
+                            }
+                            report = "胜率评估（无需启用）\n" + lines.joinToString("\n")
+                        }.onFailure {
+                            report = "评估失败: ${it.message}"
+                        }
+                        busy = false
+                        progress = null
+                    }
+                },
+                enabled = !busy && list.isNotEmpty(),
+                modifier = Modifier.weight(1f),
+            ) { Text("评估胜率") }
         }
         progress?.let {
             LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 6.dp))
@@ -284,6 +311,21 @@ if (goalDialog != null) {
                                 val ivLabel = if (cfg.tradeIntervals.isEmpty()) "周期:跟随行情"
                                 else "周期:" + cfg.tradeIntervals.joinToString(",")
                                 Text(ivLabel, fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                                val ev = evalMap[cfg.id]
+                                if (ev != null && ev.trades > 0) {
+                                    Text(
+                                        "回测胜率 ${"%.1f".format(ev.winRate * 100)}% · ${ev.trades}笔 · 收益${"%.1f".format(ev.totalReturnPct)}%",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Text(ev.detail, fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
+                                } else {
+                                    Text(
+                                        "胜率未评估（点上方「评估胜率」）",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.secondary,
+                                    )
+                                }
                                 Text(
                                     if (cfg.enabled) "已启用" else "未启用",
                                     color = MaterialTheme.colorScheme.secondary,
