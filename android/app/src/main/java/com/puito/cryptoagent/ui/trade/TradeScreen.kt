@@ -149,12 +149,12 @@ fun TradeScreen(repo: Repository) {
                             repo.evaluateStrategiesWinRates(list) { progress = it }
                         }.onSuccess { m ->
                             evalMap = m
+                            list = repo.strategies() // 读回已持久化的胜率
                             val lines = list.map { cfg ->
-                                val e = m[cfg.id]
-                                if (e == null || e.trades == 0) "「${cfg.title}」无有效回测"
-                                else "「${cfg.title}」${e.trades}笔 胜率${"%.1f".format(e.winRate * 100)}% ${e.detail}"
+                                if (cfg.lastEvalTrades <= 0) "「${cfg.title}」无有效回测"
+                                else "「${cfg.title}」${cfg.lastEvalTrades}笔 胜率${"%.1f".format(cfg.lastWinRatePct)}% ${cfg.lastEvalDetail}"
                             }
-                            report = "胜率评估（无需启用）\n" + lines.joinToString("\n")
+                            report = "胜率已写入策略（标题旁持久显示）\n" + lines.joinToString("\n")
                         }.onFailure {
                             report = "评估失败: ${it.message}"
                         }
@@ -307,21 +307,31 @@ if (goalDialog != null) {
                     Column(Modifier.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(cfg.title, style = MaterialTheme.typography.titleSmall)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(cfg.title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f, fill = false))
+                                    if (cfg.lastEvalTrades > 0 && cfg.lastWinRatePct >= 0) {
+                                        Text(
+                                            "  ${"%.0f".format(cfg.lastWinRatePct)}%",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
                                 val ivLabel = if (cfg.tradeIntervals.isEmpty()) "周期:跟随行情"
                                 else "周期:" + cfg.tradeIntervals.joinToString(",")
                                 Text(ivLabel, fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
-                                val ev = evalMap[cfg.id]
-                                if (ev != null && ev.trades > 0) {
+                                if (cfg.lastEvalTrades > 0 && cfg.lastWinRatePct >= 0) {
                                     Text(
-                                        "回测胜率 ${"%.1f".format(ev.winRate * 100)}% · ${ev.trades}笔 · 收益${"%.1f".format(ev.totalReturnPct)}%",
+                                        "胜率 ${"%.1f".format(cfg.lastWinRatePct)}% · ${cfg.lastEvalTrades}笔 · 收益${"%.1f".format(cfg.lastEvalReturnPct)}%",
                                         fontSize = 12.sp,
                                         color = MaterialTheme.colorScheme.primary,
                                     )
-                                    Text(ev.detail, fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
+                                    if (cfg.lastEvalDetail.isNotBlank()) {
+                                        Text(cfg.lastEvalDetail, fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
+                                    }
                                 } else {
                                     Text(
-                                        "胜率未评估（点上方「评估胜率」）",
+                                        "胜率未评估（点上方「评估胜率」后写入本策略）",
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.secondary,
                                     )

@@ -162,6 +162,15 @@ data class StrategyConfig(
     val wClassifier: Double = 1.0,
     val wFinance: Double = 0.0,
     val wOnline: Double = 0.0,
+    /**
+     * 持久化回测胜率（点「评估胜率」写入，显示在策略标题旁；不依赖启用）。
+     * lastWinRatePct < 0 表示尚未评估。
+     */
+    val lastWinRatePct: Double = -1.0,
+    val lastEvalTrades: Int = 0,
+    val lastEvalReturnPct: Double = 0.0,
+    val lastEvalDetail: String = "",
+    val lastEvalAtMs: Long = 0L,
 )
 
 data class StrategyOptimizeResult(

@@ -526,6 +526,11 @@ class Repository(ctx: Context) {
             wClassifier = try { c.wClassifier } catch (_: Exception) { 1.0 },
             wFinance = try { c.wFinance } catch (_: Exception) { 0.0 },
             wOnline = try { c.wOnline } catch (_: Exception) { 0.0 },
+            lastWinRatePct = try { c.lastWinRatePct } catch (_: Exception) { -1.0 },
+            lastEvalTrades = try { c.lastEvalTrades } catch (_: Exception) { 0 },
+            lastEvalReturnPct = try { c.lastEvalReturnPct } catch (_: Exception) { 0.0 },
+            lastEvalDetail = try { c.lastEvalDetail ?: "" } catch (_: Exception) { "" },
+            lastEvalAtMs = try { c.lastEvalAtMs } catch (_: Exception) { 0L },
         )
     }
 
@@ -777,7 +782,7 @@ class Repository(ctx: Context) {
                 }
             }
             val wr = if (allTrades > 0) allWins.toDouble() / allTrades else 0.0
-            out[cfg.id] = StrategyEvalSnapshot(
+out[cfg.id] = StrategyEvalSnapshot(
                 trades = allTrades,
                 wins = allWins,
                 winRate = wr,
@@ -787,9 +792,20 @@ class Repository(ctx: Context) {
             )
         }
         strategyEvalCache = out
+        // 持久化到策略配置，标题旁可长期显示
+        val updated = strategies().map { cfg ->
+            val e = out[cfg.id] ?: return@map cfg
+            cfg.copy(
+                lastWinRatePct = if (e.trades > 0) e.winRate * 100.0 else -1.0,
+                lastEvalTrades = e.trades,
+                lastEvalReturnPct = e.totalReturnPct,
+                lastEvalDetail = e.detail,
+                lastEvalAtMs = e.atMs,
+            )
+        }
+        saveStrategies(updated)
         out
     }
-
     /**
      * 策略绑定的交易周期：已配置则只用这些；未配置则仅当前行情周期（不跑全量 5m~1h）。
      */
