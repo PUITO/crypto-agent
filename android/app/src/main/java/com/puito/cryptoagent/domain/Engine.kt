@@ -269,7 +269,15 @@ object EventSim {
         var i = 0
         while (i < signals.size) {
             val sig = signals[i]
-            val si = idx[sig.openTime]
+            // 精确匹配；否则取不超过信号时刻的最近一根（避免时间戳微差导致 0 笔）
+            val si = idx[sig.openTime] ?: run {
+                var best = -1
+                for (j in candles.indices) {
+                    if (candles[j].openTime <= sig.openTime) best = j
+                    else break
+                }
+                if (best < 0) null else best
+            }
             if (si == null) {
                 i++; continue
             }

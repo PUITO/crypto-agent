@@ -151,8 +151,13 @@ fun TradeScreen(repo: Repository) {
                             evalMap = m
                             list = repo.strategies() // 读回已持久化的胜率
                             val lines = list.map { cfg ->
-                                if (cfg.lastEvalTrades <= 0) "「${cfg.title}」无有效回测"
-                                else "「${cfg.title}」${cfg.lastEvalTrades}笔 胜率${"%.1f".format(cfg.lastWinRatePct)}% ${cfg.lastEvalDetail}"
+                                when {
+                                    cfg.lastEvalTrades > 0 ->
+                                        "「${cfg.title}」${cfg.lastEvalTrades}笔 胜率${"%.1f".format(cfg.lastWinRatePct)}% ${cfg.lastEvalDetail}"
+                                    cfg.lastEvalDetail.isNotBlank() ->
+                                        "「${cfg.title}」无成交 · ${cfg.lastEvalDetail}"
+                                    else -> "「${cfg.title}」无有效回测"
+                                }
                             }
                             report = "胜率已写入策略（标题旁持久显示）\n" + lines.joinToString("\n")
                         }.onFailure {
@@ -320,21 +325,34 @@ if (goalDialog != null) {
                                 val ivLabel = if (cfg.tradeIntervals.isEmpty()) "周期:跟随行情"
                                 else "周期:" + cfg.tradeIntervals.joinToString(",")
                                 Text(ivLabel, fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
-                                if (cfg.lastEvalTrades > 0 && cfg.lastWinRatePct >= 0) {
-                                    Text(
-                                        "胜率 ${"%.1f".format(cfg.lastWinRatePct)}% · ${cfg.lastEvalTrades}笔 · 收益${"%.1f".format(cfg.lastEvalReturnPct)}%",
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                    if (cfg.lastEvalDetail.isNotBlank()) {
-                                        Text(cfg.lastEvalDetail, fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
+                                when {
+                                    cfg.lastEvalTrades > 0 && cfg.lastWinRatePct >= 0 -> {
+                                        Text(
+                                            "胜率 ${"%.1f".format(cfg.lastWinRatePct)}% · ${cfg.lastEvalTrades}笔 · 收益${"%.1f".format(cfg.lastEvalReturnPct)}%",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                        if (cfg.lastEvalDetail.isNotBlank()) {
+                                            Text(cfg.lastEvalDetail, fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
+                                        }
                                     }
-                                } else {
-                                    Text(
-                                        "胜率未评估（点上方「评估胜率」后写入本策略）",
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.secondary,
-                                    )
+                                    cfg.lastEvalAtMs > 0L -> {
+                                        Text(
+                                            "评估完成但无有效成交（见原因）",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                        if (cfg.lastEvalDetail.isNotBlank()) {
+                                            Text(cfg.lastEvalDetail, fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
+                                        }
+                                    }
+                                    else -> {
+                                        Text(
+                                            "胜率未评估（点上方「评估胜率」后写入本策略）",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.secondary,
+                                        )
+                                    }
                                 }
                                 Text(
                                     if (cfg.enabled) "已启用" else "未启用",

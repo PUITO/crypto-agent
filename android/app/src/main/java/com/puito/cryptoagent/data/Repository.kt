@@ -748,10 +748,10 @@ class Repository(ctx: Context) {
     ): Map<String, StrategyEvalSnapshot> = withContext(Dispatchers.IO) {
         val s = settings()
         val out = linkedMapOf<String, StrategyEvalSnapshot>()
-        val limit = trainBarLimit(s)
+        val limit = trainBarLimit(s).coerceAtLeast(500).coerceAtMost(1000)
         for ((idx, cfg) in list.withIndex()) {
             onProgress?.invoke("评估 ${idx + 1}/${list.size}「${cfg.title}」…")
-            val ivs = effectiveTradeIntervals(cfg, s.interval)
+            val ivs = effectiveTradeIntervals(cfg, s.interval).ifEmpty { listOf(s.interval.ifBlank { "10m" }) }
             val parts = mutableListOf<String>()
             var allTrades = 0
             var allWins = 0
@@ -759,43 +759,64 @@ class Repository(ctx: Context) {
             for (iv in ivs) {
                 try {
                     val bars = binance.fetch(s.symbol, Interval.from(iv), limit)
-                    if (bars.size < minBarsForSignal(iv)) {
-                        parts.add("$iv:K不足")
+                    if (bars.size < 40) {
+                        parts.add("$iv:K仅${bars.size}")
                         continue
                     }
-                    val resolved = resolveModelConfig(cfg)
+                    var resolved = resolveModelConfig(cfg)
                     if (cfg.kind == StrategyKind.MODEL && ModelIds.isOfflinePack(cfg.modelId) && resolved.modelWeights.isEmpty()) {
-                        parts.add("$iv:未下载模型")
+                        parts.add("$iv:未下载模型包")
+                        continue
+                    }
+                    if (cfg.kind == StrategyKind.MODEL && cfg.modelId == ModelIds.ONLINE_AI) {
+                        parts.add("$iv:在线AI无本地回测")
                         continue
                     }
                     if (cfg.kind == StrategyKind.MODEL && cfg.modelId == ModelIds.REMOTE_HTTP) {
                         prefetchRemoteModelScores(cfg, bars, s.symbol, iv)
                     }
+                    if (cfg.kind == StrategyKind.MODEL && resolved.modelWeights.isNotEmpty()) {
+                        val p = resolved.modelParams.toMutableMap()
+                        val th = p["threshold"] ?: 0.64
+                        if (th > 0.62) p["threshold"] = (th - 0.04).coerceAtLeast(0.58)
+                        val cd = p["cooldown"] ?: 12.0
+                        if (cd > 8) p["cooldown"] = (cd * 0.75).coerceAtLeast(6.0)
+                        resolved = resolved.copy(modelParams = p)
+                    }
                     val marks = StrategyEngine.signals(bars, resolved)
+                    if (marks.isEmpty()) {
+                        parts.add("$iv:0信号/K${bars.size}")
+                        continue
+                    }
                     val (_, st) = EventSim.backtest(bars, marks, s.symbol, iv)
                     allTrades += st.trades
                     allWins += st.wins
                     sumRet += st.totalReturnPct
-                    parts.add("$iv:${st.trades}笔/${"%.0f".format(st.winRate * 100)}%")
+                    if (st.trades == 0) {
+                        parts.add("$iv:信号${marks.size}但0成交")
+                    } else {
+                        parts.add("$iv:${st.trades}笔/${"%.0f".format(st.winRate * 100)}%")
+                    }
                 } catch (e: Exception) {
-                    parts.add("$iv:失败")
+                    parts.add("$iv:失败 ${e.message?.take(28) ?: ""}")
                 }
             }
             val wr = if (allTrades > 0) allWins.toDouble() / allTrades else 0.0
-out[cfg.id] = StrategyEvalSnapshot(
+            out[cfg.id] = StrategyEvalSnapshot(
                 trades = allTrades,
                 wins = allWins,
                 winRate = wr,
                 totalReturnPct = sumRet,
                 intervalLabel = ivs.joinToString(","),
-                detail = parts.joinToString(" · "),
+                detail = parts.joinToString(" · ").ifBlank { "无周期可评估" },
             )
         }
         strategyEvalCache = out
-        // 持久化到策略配置，标题旁可长期显示
-        val updated = strategies().map { cfg ->
-            val e = out[cfg.id] ?: return@map cfg
-            cfg.copy(
+        val byId = strategies().associateBy { it.id }.toMutableMap()
+        for (cfg in list) {
+            val e = out[cfg.id] ?: continue
+            val base = byId[cfg.id] ?: cfg
+            byId[cfg.id] = base.copy(
                 lastWinRatePct = if (e.trades > 0) e.winRate * 100.0 else -1.0,
                 lastEvalTrades = e.trades,
                 lastEvalReturnPct = e.totalReturnPct,
@@ -803,9 +824,15 @@ out[cfg.id] = StrategyEvalSnapshot(
                 lastEvalAtMs = e.atMs,
             )
         }
-        saveStrategies(updated)
+        // 保持原顺序：以 strategies() 为主，补上仅在 list 中的项
+        val ordered = strategies().map { byId[it.id] ?: it }.toMutableList()
+        for (cfg in list) {
+            if (ordered.none { it.id == cfg.id }) ordered.add(byId[cfg.id] ?: cfg)
+        }
+        saveStrategies(ordered)
         out
     }
+
     /**
      * 策略绑定的交易周期：已配置则只用这些；未配置则仅当前行情周期（不跑全量 5m~1h）。
      */
