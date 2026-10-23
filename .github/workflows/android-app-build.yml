@@ -82,13 +82,15 @@ jobs:
           fi
           ls -lah dist/
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: crypto-agent-app-${{ steps.ver.outputs.name }}
-          path: android/dist/*.apk
-          retention-days: 30
-          if-no-files-found: error
+      # APK 已通过 GitHub Release(android-app-latest) 分发，不再上传 Actions Artifact，避免账号 500MB 配额被打满
+      # 若临时需要 artifact，取消下面注释并设 retention-days: 1
+      # - name: Upload artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: crypto-agent-app-${{ steps.ver.outputs.name }}
+      #     path: android/dist/*.apk
+      #     retention-days: 1
+      #     if-no-files-found: error
 
       - name: Recreate android-app-latest release
         if: github.event_name != 'pull_request'
