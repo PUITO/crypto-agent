@@ -50,12 +50,13 @@ jobs:
           echo "SHA=${SHA}" >> $GITHUB_ENV
           ls -la dist/
 
+      # 小包也缩短保留，防止历史堆积占满账号 Artifact 配额
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: crypto-agent-android-${{ env.SHA }}
           path: dist/*
-          retention-days: 30
+          retention-days: 3
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
