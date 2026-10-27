@@ -37,6 +37,7 @@ fun ConfigScreen(repo: Repository) {
     var mode1m by remember { mutableStateOf(cur.signalMode1mConfirm) }
     var modeHt by remember { mutableStateOf(cur.signalModeHtNative) }
     var liveSim by remember { mutableStateOf(cur.liveSimEnabled) }
+    var signalMinPred by remember { mutableStateOf(cur.signalMinPredictPct.toString()) }
     var liveSimAuto by remember { mutableStateOf(cur.liveSimAutoRetune) }
     var liveSimWr by remember { mutableStateOf(cur.liveSimMinWinRatePct.toString()) }
     var liveSimLoss by remember { mutableStateOf(cur.liveSimMaxConsecutiveLosses.toString()) }
@@ -163,9 +164,18 @@ fun ConfigScreen(repo: Repository) {
             Text("启用实时模拟（策略信号）", modifier = Modifier.weight(1f))
             Switch(liveSim, { liveSim = it })
         }
+        OutlinedTextField(
+            value = signalMinPred,
+            onValueChange = { signalMinPred = it.filter { c -> c.isDigit() || c == '.' } },
+            label = { Text("信号预测最低阈值(%) · 0=不限制") },
+            placeholder = { Text("例如 50：预测低于50不模拟不通知") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
         Text(
-            "AI评估开：仅过阈值进模拟；AI评估关：全部信号模拟。结果在策略面板查看。",
+            "AI开：用AI预测胜率；AI关：用该周期策略回测胜率。低于阈值的信号不进模拟、不发通知。0表示不过滤。",
             color = MaterialTheme.colorScheme.secondary,
+            fontSize = 12.sp,
         )
         Row {
             Text("模拟不佳时自动 LLM 调优", modifier = Modifier.weight(1f))
@@ -226,6 +236,7 @@ fun ConfigScreen(repo: Repository) {
                 backgroundEnabled = bg,
                 notifyVibrate = vibrate,
                 liveSimEnabled = liveSim,
+                signalMinPredictPct = signalMinPred.toDoubleOrNull()?.coerceIn(0.0, 99.0) ?: 0.0,
                 liveSimAutoRetune = liveSimAuto,
                 liveSimMinWinRatePct = liveSimWr.toDoubleOrNull()?.coerceIn(1.0, 99.0) ?: 48.0,
                 liveSimMaxConsecutiveLosses = liveSimLoss.toIntOrNull()?.coerceIn(2, 10) ?: 3,

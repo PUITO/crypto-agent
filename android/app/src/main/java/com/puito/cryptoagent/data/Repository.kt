@@ -110,6 +110,7 @@ class Repository(ctx: Context) {
                 onboardingDone = raw.onboardingDone,
                 chartIndicators = try { if (raw.chartIndicators.isEmpty()) def.chartIndicators else raw.chartIndicators } catch (_: Exception) { def.chartIndicators },
                 liveSimEnabled = raw.liveSimEnabled,
+                signalMinPredictPct = try { raw.signalMinPredictPct } catch (_: Exception) { 0.0 },
                 liveSimMinWinRatePct = raw.liveSimMinWinRatePct,
                 liveSimMaxConsecutiveLosses = raw.liveSimMaxConsecutiveLosses,
                 liveSimMinTradesBeforeRetune = raw.liveSimMinTradesBeforeRetune,
@@ -1593,7 +1594,12 @@ class Repository(ctx: Context) {
             }
             for (p in simTargets) {
                 val bars = barsOf(p.interval)
-                maybeLiveSim(s, p.mark, p.ai, p.interval, bars, source = p.source)
+                maybeLiveSim(
+                        s, p.mark, p.ai, p.interval, bars,
+                        source = p.source,
+                        intervalWinRatePct = p.intervalWinRatePct,
+                        intervalTrades = p.intervalTrades,
+                    )
             }
             // 对有挂单的周期统一尝试平仓（即使本轮无新信号）
             val pendingIvs = pendingLiveSims.values.map { it.interval }.distinct()
@@ -1811,6 +1817,37 @@ class Repository(ctx: Context) {
      * - 周期对齐仅用于确定 entryTime / expiryTime
      * - 开仓价、平仓价一律走数据服务 priceAt(时刻)
      */
+    /**
+     * 信号预测分(%)：优先 AI 胜率；否则该周期回测胜率；再否则策略持久化评估胜率。
+     */
+    fun signalPredictPct(
+        ai: AiEvalResult?,
+        intervalWinRatePct: Double,
+        intervalTrades: Int,
+        strategyLastWinRatePct: Double = -1.0,
+    ): Double? {
+        ai?.winRatePct?.let { return it }
+        if (intervalTrades > 0) return intervalWinRatePct
+        if (strategyLastWinRatePct >= 0) return strategyLastWinRatePct
+        return null
+    }
+
+    /** 是否达到「信号预测最低阈值」；min<=0 表示不限制 */
+    fun passesSignalMinPredict(
+        s: AppSettings,
+        ai: AiEvalResult?,
+        intervalWinRatePct: Double = 0.0,
+        intervalTrades: Int = 0,
+    ): Boolean {
+        val min = s.signalMinPredictPct
+        if (min <= 0) return true
+        val pred = signalPredictPct(
+            ai, intervalWinRatePct, intervalTrades,
+            enabledStrategy()?.lastWinRatePct ?: -1.0,
+        ) ?: return true // 无可用预测时不拦死
+        return pred + 1e-9 >= min
+    }
+
     private suspend fun maybeLiveSim(
         s: AppSettings,
         m: SignalMark,
@@ -1818,10 +1855,24 @@ class Repository(ctx: Context) {
         intervalCode: String,
         barData: List<Candle>,
         source: String = "",
+        intervalWinRatePct: Double = 0.0,
+        intervalTrades: Int = 0,
     ) {
         if (!s.liveSimEnabled) return
         if (s.hibt.aiEvaluate) {
             if (ai?.passThreshold != true) return
+        }
+        // 统一预测阈值：AI开用AI胜率，AI关用周期回测/策略评估胜率
+        if (!passesSignalMinPredict(s, ai, intervalWinRatePct, intervalTrades)) {
+            val pred = signalPredictPct(
+                ai, intervalWinRatePct, intervalTrades,
+                enabledStrategy()?.lastWinRatePct ?: -1.0,
+            )
+            HibtWebSession.appendLog(
+                "模拟跳过: ${m.side} $intervalCode 预测${pred?.let { "%.1f".format(it) } ?: "-"}% " +
+                    "< 阈值${s.signalMinPredictPct}%",
+            )
+            return
         }
         if (barData.size < 2) return
 

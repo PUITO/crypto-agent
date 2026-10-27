@@ -53,7 +53,14 @@ class MonitorService : Service() {
                         // 策略运行即 poll → 通知+AI（不再因 backgroundEnabled=false 停掉信号）
                         runCatching { HibtWebSession.peek()?.let { HibtWebSession.wakeIfNeeded(it) } }
                         val fresh = repo.poll()
+                        val stNow = repo.settings()
                         fresh.forEach {
+                            if (!repo.passesSignalMinPredict(
+                                    stNow, it.ai, it.intervalWinRatePct, it.intervalTrades,
+                                )
+                            ) {
+                                return@forEach
+                            }
                             Notify.signal(
                                 this@MonitorService,
                                 st.symbol,

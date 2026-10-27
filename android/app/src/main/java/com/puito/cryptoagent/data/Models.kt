@@ -338,8 +338,14 @@ data class AppSettings(
         ChartIndicatorPref("boll20", "BOLL20", false, 20, 0xFF78909C),
         ChartIndicatorPref("rsi14", "RSI14", false, 14, 0xFFEC407A),
     ),
-    /** 活跃策略：过阈值（或 AI 关闭时全部）信号做本地模拟 */
+    /** 活跃策略：过阈值信号做本地模拟 */
     val liveSimEnabled: Boolean = true,
+    /**
+     * 信号预测最低阈值(%)：低于此值不模拟、不通知。
+     * AI评估开：用 AI 预测胜率；AI评估关：用该周期策略回测胜率作为预测。
+     * 0 = 不限制（兼容旧行为：AI关时全部信号模拟/通知）。
+     */
+    val signalMinPredictPct: Double = 0.0,
     /** 模拟综合胜率低于该值(%) 触发 LLM 自动调优 */
     val liveSimMinWinRatePct: Double = 48.0,
     /** 连续亏损笔数达到后触发调优 */
