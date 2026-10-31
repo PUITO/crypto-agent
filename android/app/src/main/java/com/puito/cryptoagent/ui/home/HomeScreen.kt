@@ -195,19 +195,23 @@ fun HomeScreen(repo: Repository) {
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(340.dp)
+                    .height(260.dp)
                     .padding(top = 4.dp),
             )
         }
         Text("B/S=周期信号 · b/s=1m映射 · 单击Tips · 拖动平移 · 双指缩放 · 双击回最新", color = MaterialTheme.colorScheme.secondary, fontSize = 10.sp)
 
-        // 统一模拟仓：1m确认 + 周期原生信号，行情页展示
+        // 模拟仓：历史综合 vs 本轮实时（调参后可单独清零评估新生信号）
         val simTick by repo.liveSimTick.collectAsState()
         val iv = s.interval
         val pending = remember(simTick, iv) { repo.pendingLivePositions(iv) }
-        val closed = remember(simTick, iv) { repo.allClosedSimTrades(iv) }
-        val st = remember(simTick, iv) { repo.unifiedStats(iv) }
-        val consec = remember(simTick, iv) { repo.consecutiveLosses(closed) }
+        val sessionClosed = remember(simTick, iv) { repo.sessionClosedSimTrades(iv) }
+        val historyClosed = remember(simTick, iv) { repo.historyClosedSimTrades(iv) }
+        val histSt = remember(simTick, iv) { repo.historyStats(iv) }
+        val sessSt = remember(simTick, iv) { repo.sessionStats(iv) }
+        val uniSt = remember(simTick, iv) { repo.unifiedStats(iv) }
+        val sessConsec = remember(simTick, iv) { repo.sessionConsecutiveLosses(iv) }
+        var showHistoryList by remember { mutableStateOf(false) }
         val fmt = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
         fun srcLabel(src: String?) = when (src) {
             "1m_confirm" -> "实时·1m确认"
@@ -217,18 +221,52 @@ fun HomeScreen(repo: Repository) {
             "model" -> "模型"
             else -> src?.ifBlank { "-" } ?: "-"
         }
-        Text(
-            "${iv}综合模拟 持仓${pending.size} · 已平${st.trades} 胜${st.wins}负${st.losses} " +
-                "胜率${"%.1f".format(st.winRate * 100)}% 收益${"%.2f".format(st.totalReturnPct)}% 连亏$consec",
-            fontSize = 12.sp,
-            modifier = Modifier.padding(vertical = 4.dp),
-        )
-        Text(
-            "仅统计当前周期 ${iv}（回测+实时1m确认+实时周期），切换周期后独立统计",
-            fontSize = 10.sp,
-            color = MaterialTheme.colorScheme.secondary,
-        )
-        LazyColumn(Modifier.weight(1f)) {
+        Card(
+            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+        ) {
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                Text(
+                    "${iv} · 历史回测 已平${histSt.trades} 胜${histSt.wins}负${histSt.losses} " +
+                        "胜率${"%.1f".format(histSt.winRate * 100)}% 收益${"%.2f".format(histSt.totalReturnPct)}%",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Text(
+                    "本轮实时 持仓${pending.size} · 已平${sessSt.trades} 胜${sessSt.wins}负${sessSt.losses} " +
+                        "胜率${"%.1f".format(sessSt.winRate * 100)}% 收益${"%.2f".format(sessSt.totalReturnPct)}% 连亏$sessConsec",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    "综合(历史+本轮) 已平${uniSt.trades} 胜率${"%.1f".format(uniSt.winRate * 100)}% · 调参后点「清零本轮」再评新生信号",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    TextButton(onClick = { repo.clearSessionSim() }) {
+                        Text("清零本轮", fontSize = 12.sp)
+                    }
+                    TextButton(onClick = { repo.clearLiveSim() }) {
+                        Text("清空全部", fontSize = 12.sp)
+                    }
+                    TextButton(onClick = { showHistoryList = !showHistoryList }) {
+                        Text(if (showHistoryList) "收起历史" else "展开历史${histSt.trades}", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+        // 底部列表可滚动区域加大：固定最小高度 + 占满剩余
+        LazyColumn(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .heightIn(min = 180.dp),
+        ) {
             if (pending.isNotEmpty()) {
                 item {
                     Text("持仓中", fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
@@ -258,45 +296,68 @@ fun HomeScreen(repo: Repository) {
                     HorizontalDivider()
                 }
             }
-            item {
-                Text(
-                    "已平仓（最近）",
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
-            items(closed.takeLast(40).asReversed(), key = { it.id }) { t ->
-                Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                    Text(
-                        "${if (t.win) "✓" else "✗"} ${srcLabel(t.source)} ${t.side} ${t.interval} " +
-                            "pnl ${"%.2f".format(t.pnlPct)}%",
-                        fontSize = 11.sp,
-                        color = if (t.win) Color(0xFF0ECB81) else Color(0xFFF6465D),
-                    )
-                    Text(
-                        "开${fmt.format(Date(t.entryTime))} @${"%.2f".format(t.entryPrice)} → " +
-                            "平${fmt.format(Date(t.exitTime))} @${"%.2f".format(t.exitPrice)}",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.secondary,
-                    )
-                }
-                HorizontalDivider()
-            }
-            if (pending.isEmpty() && closed.isEmpty()) {
+            if (sessionClosed.isNotEmpty()) {
                 item {
                     Text(
-                        "启动策略后生成 ${iv} 历史回测；实时信号开仓后计入本周期综合胜率",
+                        "本轮已平（最近）",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                items(sessionClosed.takeLast(50).asReversed(), key = { "s-" + it.id }) { t ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                        Text(
+                            "${if (t.win) "✓" else "✗"} ${srcLabel(t.source)} ${t.side} ${t.interval} " +
+                                "pnl ${"%.2f".format(t.pnlPct)}%",
+                            fontSize = 11.sp,
+                            color = if (t.win) Color(0xFF0ECB81) else Color(0xFFF6465D),
+                        )
+                        Text(
+                            "开${fmt.format(Date(t.entryTime))} @${"%.2f".format(t.entryPrice)} → " +
+                                "平${fmt.format(Date(t.exitTime))} @${"%.2f".format(t.exitPrice)}",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                    HorizontalDivider()
+                }
+            }
+            if (showHistoryList && historyClosed.isNotEmpty()) {
+                item {
+                    Text(
+                        "历史回测（最近）",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                items(historyClosed.takeLast(30).asReversed(), key = { "h-" + it.id }) { t ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                        Text(
+                            "${if (t.win) "✓" else "✗"} ${srcLabel(t.source)} ${t.side} ${t.interval} " +
+                                "pnl ${"%.2f".format(t.pnlPct)}%",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                        Text(
+                            "开${fmt.format(Date(t.entryTime))} @${"%.2f".format(t.entryPrice)} → " +
+                                "平${fmt.format(Date(t.exitTime))} @${"%.2f".format(t.exitPrice)}",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                    HorizontalDivider()
+                }
+            }
+            if (pending.isEmpty() && sessionClosed.isEmpty() && (!showHistoryList || historyClosed.isEmpty())) {
+                item {
+                    Text(
+                        "启动策略后写入历史回测；实时信号计入「本轮」。调参后可「清零本轮」重新评估。",
                         color = MaterialTheme.colorScheme.secondary,
                         fontSize = 12.sp,
                     )
                 }
-            }
-            item {
-                TextButton(
-                    onClick = { repo.clearLiveSim() },
-                    modifier = Modifier.padding(top = 4.dp),
-                ) { Text("清空模拟仓", fontSize = 12.sp) }
             }
         }
     }

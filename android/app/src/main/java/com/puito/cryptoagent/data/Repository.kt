@@ -216,6 +216,35 @@ class Repository(ctx: Context) {
     fun unifiedStats(interval: String? = settings().interval): Stats =
         statsOf(allClosedSimTrades(interval))
 
+    /** 历史回测仓统计（启动策略时回测写入，不含实时信号） */
+    fun historyClosedSimTrades(interval: String? = settings().interval): List<SimTrade> {
+        val all = historySimTrades
+        if (interval.isNullOrBlank()) return all
+        return all.filter { intervalMatch(it.interval, interval) }
+    }
+
+    fun historyStats(interval: String? = settings().interval): Stats =
+        statsOf(historyClosedSimTrades(interval))
+
+    /** 本轮实时模拟（调参后新生信号），可单独清零，不影响历史回测胜率 */
+    fun sessionClosedSimTrades(interval: String? = settings().interval): List<SimTrade> {
+        val all = liveSimTrades
+        if (interval.isNullOrBlank()) return all
+        return all.filter { intervalMatch(it.interval, interval) }
+    }
+
+    fun sessionStats(interval: String? = settings().interval): Stats =
+        statsOf(sessionClosedSimTrades(interval))
+
+    fun sessionConsecutiveLosses(interval: String? = settings().interval): Int {
+        var n = 0
+        for (t in sessionClosedSimTrades(interval).asReversed()) {
+            if (!t.win) n++ else break
+        }
+        return n
+    }
+
+
     /** 持仓按周期过滤 */
     fun pendingLivePositions(interval: String? = null): List<PendingLiveSim> {
         val all = pendingLiveSims.values.sortedByDescending { it.entryTime }
@@ -270,6 +299,19 @@ class Repository(ctx: Context) {
         }
     }
 
+    /** 仅清零本轮实时模拟（持仓+已平实时单），保留历史回测综合胜率 */
+    fun clearSessionSim() {
+        liveSimTrades = emptyList()
+        liveSimStats = Stats()
+        liveSimKeys.clear()
+        pendingLiveSims.clear()
+        sp.edit().remove("live_sim_trades").apply()
+        sp.edit().remove("live_sim_pending").apply()
+        publishUnifiedTrades()
+        HibtWebSession.appendLog("已清零本轮实时模拟（历史回测保留）")
+    }
+
+    /** 清空全部：历史回测 + 本轮实时 */
     fun clearLiveSim() {
         liveSimTrades = emptyList()
         liveSimStats = Stats()
@@ -281,6 +323,7 @@ class Repository(ctx: Context) {
         sp.edit().remove("live_sim_trades").apply()
         sp.edit().remove("live_sim_pending").apply()
         bumpLiveSim()
+        HibtWebSession.appendLog("已清空全部模拟仓（历史+本轮）")
     }
 
 
@@ -1993,7 +2036,9 @@ class Repository(ctx: Context) {
         if (!s.liveSimAutoRetune || !s.liveSimEnabled) return
         if (retuneInProgress) return
         if (System.currentTimeMillis() - lastAutoRetuneAt < 15 * 60_000L) return
-        val st = unifiedStats(s.interval)
+        // 自动调优优先看「本轮实时」胜率（调参后新生信号）；样本不足再用综合
+        val sessionSt = sessionStats(s.interval)
+        val st = if (sessionSt.trades >= s.liveSimMinTradesBeforeRetune) sessionSt else unifiedStats(s.interval)
         if (st.trades < s.liveSimMinTradesBeforeRetune.coerceAtLeast(3)) return
         val consec = consecutiveLosses(allClosedSimTrades(s.interval))
         val wrPct = st.winRate * 100
