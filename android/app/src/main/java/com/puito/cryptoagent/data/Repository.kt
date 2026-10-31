@@ -2620,7 +2620,8 @@ op: GT,GTE,LT,LTE  period:2-200  同侧OR
         for (round in 1..maxRounds) {
             onProgress?.invoke("第${round}/${maxRounds}轮：请求 LLM…")
             val sys = """
-你是量化策略工程师。根据历史K线与回测反馈，输出可在本App运行的策略JSON。
+你是量化策略工程师。唯一优化目标：最大化事件合约回测胜率（在最少笔数约束下）。
+必须通过改 algoParams 数值或（ALGO时）algoId 来提胜率，禁止只改标题/说明。
 $schema
 禁止编造未给出的数据；不要解释，只输出JSON。
 """.trimIndent()
@@ -2661,7 +2662,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 onProgress?.invoke("第${round}轮参数未变，本地搜参…")
                 val (localCfg, localSt) = localTuneAlgoParams(
                     bars, parsed, s.symbol, s.interval,
-                    trials = 28, targetWr = targetWr, targetTrades = targetTrades,
+                    trials = 40, targetWr = targetWr, targetTrades = targetTrades,
+                    allowAlgoSwitch = lockKind == StrategyKind.ALGO,
                 )
                 parsed = localCfg
                 log.appendLine(
@@ -2671,7 +2673,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 // 即使 LLM 改了参，再做一轮本地精修（小范围）
                 val (localCfg, localSt) = localTuneAlgoParams(
                     bars, parsed, s.symbol, s.interval,
-                    trials = 12, targetWr = targetWr, targetTrades = targetTrades,
+                    trials = 24, targetWr = targetWr, targetTrades = targetTrades,
+                    allowAlgoSwitch = false,
                 )
                 if (localSt.winRate > 0 || localSt.trades > 0) {
                     val llmMarks = StrategyEngine.signals(bars, parsed)
@@ -2703,10 +2706,15 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 val okTr = targetTrades == null || stTrades >= targetTrades
                 return okWr && okTr && stTrades >= 3
             }
-            // 评分：达标优先，再比胜率与笔数
+            // 评分：用户只关心胜率——胜率权重大；笔数仅作软约束（过少扣分，达标加分）
             fun scoreOf(stWr: Double, stTrades: Int): Double {
-                val base = stWr * 100 + minOf(stTrades, 40) * 0.2
-                return if (meets(stWr, stTrades)) base + 1000.0 else base
+                var sc = stWr * 1000.0 // 胜率主导
+                val minT = targetTrades ?: 8
+                if (stTrades < 3) sc -= 400.0
+                else if (stTrades < minT) sc -= (minT - stTrades) * 12.0
+                else sc += minOf(stTrades - minT, 30) * 0.3
+                if (meets(stWr, stTrades)) sc += 5000.0
+                return sc
             }
             if (scoreOf(st.winRate, st.trades) >= scoreOf(bestWr, bestTrades) &&
                 (st.trades >= 1 || bestTrades < 1)
@@ -2731,9 +2739,10 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                         targetTrades?.let { "笔数≥$it" },
                     ).joinToString("，"))
                     if (!meets(st.winRate, st.trades)) {
-                        appendLine("未达标：必须改 algoParams 数字（至少2个键），禁止只改标题/说明。")
-                        appendLine("PEARSON 可试：拉开 p1/p2/p3、降低 minCorr 增样本、或提高 minCorr 提质量。")
-                        appendLine("禁止输出与上轮完全相同的 algoParams。")
+                        appendLine("【唯一目标】提高回测胜率。必须改 algoParams 至少2个数字，禁止只改文案。")
+                        appendLine("可换参数组合：拉开/收紧 p1<p2<p3；minCorr 在 0.45~0.90 大范围试；window/cooldown 同步改。")
+                        appendLine("在 kind=ALGO 下也可改 algoId 为 TREND_FOLLOW 或 BREAKOUT 若胜率更高。")
+                        appendLine("禁止与上轮完全相同的 algoParams。")
                     }
                 } else {
                     appendLine("请继续提高胜率，避免交易过少；优先 kind=ALGO。")
@@ -2742,8 +2751,44 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             if (metTarget) break
         }
 
+        // 收尾：胜率优先高强度本地搜参（ALGO 可尝试切换算法）
+        if (bestCfg.kind == StrategyKind.ALGO) {
+            onProgress?.invoke("最终本地深搜（主攻胜率）…")
+            log.appendLine("—— 最终本地深搜（胜率优先）——")
+            val (deepCfg, deepSt) = localTuneAlgoParams(
+                bars, bestCfg, s.symbol, s.interval,
+                trials = 64, targetWr = targetWr, targetTrades = targetTrades,
+                allowAlgoSwitch = lockKind == StrategyKind.ALGO || createNew,
+            )
+            val betterWr = deepSt.winRate > bestWr + 1e-9
+            val meetDeep = targetWr != null && deepSt.winRate * 100 >= targetWr - 1e-6 &&
+                (targetTrades == null || deepSt.trades >= targetTrades) && deepSt.trades >= 3
+            val meetBest = targetWr != null && bestWr * 100 >= targetWr - 1e-6 &&
+                (targetTrades == null || bestTrades >= targetTrades) && bestTrades >= 3
+            val take = when {
+                meetDeep && !meetBest -> true
+                meetDeep && meetBest && deepSt.winRate >= bestWr - 1e-9 -> true
+                !meetBest && betterWr && deepSt.trades >= 3 -> true
+                betterWr && deepSt.trades >= maxOf(3, (targetTrades ?: 5) / 2) -> true
+                else -> false
+            }
+            if (take) {
+                log.appendLine(
+                    "深搜采用: ${deepCfg.algoId} ${deepCfg.algoParams} → " +
+                        "${deepSt.trades}笔 胜率${"%.1f".format(deepSt.winRate * 100)}% " +
+                        "(原 ${bestTrades}笔/${"%.1f".format(bestWr * 100)}%)",
+                )
+                bestCfg = deepCfg
+                bestWr = deepSt.winRate
+                bestTrades = deepSt.trades
+            } else {
+                log.appendLine(
+                    "深搜未超越（${deepSt.trades}笔/${"%.1f".format(deepSt.winRate * 100)}%）",
+                )
+            }
+        }
+
         if (bestTrades < 1 && createNew) {
-            // 兜底：仍保存 LLM 最后能解析的结构
             log.appendLine("警告: 有效成交不足，仍保存当前最优结构供手工调整")
         }
         val list = strategies().toMutableList()
@@ -2839,12 +2884,19 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         trials: Int = 24,
         targetWr: Double? = null,
         targetTrades: Int? = null,
-    ): Pair<StrategyConfig, com.puito.cryptoagent.data.Stats> {
+        allowAlgoSwitch: Boolean = false,
+    ): Pair<StrategyConfig, Stats> {
+        // 胜率绝对优先；笔数不足只软惩罚
         fun score(st: Stats): Double {
-            val base = st.winRate * 100 + minOf(st.trades, 40) * 0.25
+            var sc = st.winRate * 1000.0
+            val minT = targetTrades ?: 8
+            if (st.trades < 3) sc -= 400.0
+            else if (st.trades < minT) sc -= (minT - st.trades) * 12.0
+            else sc += minOf(st.trades - minT, 30) * 0.3
             val okWr = targetWr == null || st.winRate * 100 >= targetWr - 1e-6
             val okTr = targetTrades == null || st.trades >= (targetTrades ?: 0)
-            return if (okWr && okTr && st.trades >= 3) base + 1000.0 else base
+            if (okWr && okTr && st.trades >= 3) sc += 5000.0
+            return sc
         }
         var bestCfg = cfg
         var bestSt = run {
@@ -2853,46 +2905,55 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         }
         var bestScore = score(bestSt)
         val rnd = kotlin.random.Random(System.currentTimeMillis())
-        val baseP = cfg.algoParams
+        val algoChoices = if (allowAlgoSwitch) {
+            listOf(AlgoIds.PEARSON_TRIPLE, AlgoIds.TREND_FOLLOW, AlgoIds.BREAKOUT)
+        } else listOf(cfg.algoId)
+
         repeat(trials) { trial ->
-            val p = baseP.toMutableMap()
-            when (cfg.algoId) {
+            val algoId = algoChoices[trial % algoChoices.size]
+            val p = linkedMapOf<String, Double>()
+            when (algoId) {
                 AlgoIds.PEARSON_TRIPLE -> {
-                    // 强制拉开三周期；minCorr/window/cooldown 多档探索
-                    val span = trial % 6
-                    when (span) {
-                        0 -> { p["p1"] = listOf(4.0, 5.0, 6.0, 7.0, 8.0).random(rnd); p["p2"] = listOf(10.0, 12.0, 14.0).random(rnd); p["p3"] = listOf(20.0, 24.0, 26.0, 30.0).random(rnd) }
-                        1 -> { p["p1"] = 5.0; p["p2"] = 15.0; p["p3"] = 30.0 }
-                        2 -> { p["p1"] = 8.0; p["p2"] = 18.0; p["p3"] = 36.0 }
-                        3 -> { p["p1"] = 3.0; p["p2"] = 9.0; p["p3"] = 21.0 }
-                        4 -> { p["p1"] = 6.0; p["p2"] = 13.0; p["p3"] = 28.0 }
+                    when (trial % 8) {
+                        0 -> { p["p1"] = 4.0; p["p2"] = 10.0; p["p3"] = 22.0 }
+                        1 -> { p["p1"] = 5.0; p["p2"] = 12.0; p["p3"] = 26.0 }
+                        2 -> { p["p1"] = 6.0; p["p2"] = 14.0; p["p3"] = 30.0 }
+                        3 -> { p["p1"] = 8.0; p["p2"] = 18.0; p["p3"] = 36.0 }
+                        4 -> { p["p1"] = 3.0; p["p2"] = 9.0; p["p3"] = 21.0 }
+                        5 -> { p["p1"] = 7.0; p["p2"] = 16.0; p["p3"] = 32.0 }
+                        6 -> { p["p1"] = 5.0; p["p2"] = 15.0; p["p3"] = 35.0 }
                         else -> {
-                            p["p1"] = (3 + rnd.nextInt(8)).toDouble()
-                            p["p2"] = (p["p1"]!! + 4 + rnd.nextInt(10))
-                            p["p3"] = (p["p2"]!! + 6 + rnd.nextInt(14))
+                            p["p1"] = (3 + rnd.nextInt(9)).toDouble()
+                            p["p2"] = p["p1"]!! + 4 + rnd.nextInt(12)
+                            p["p3"] = p["p2"]!! + 6 + rnd.nextInt(16)
                         }
                     }
-                    p["window"] = listOf(24.0, 30.0, 36.0, 42.0, 48.0, 54.0).random(rnd)
-                    p["minCorr"] = listOf(0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.88, 0.90).random(rnd)
-                    p["cooldown"] = listOf(2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0).random(rnd)
+                    p["window"] = listOf(20.0, 24.0, 28.0, 32.0, 36.0, 42.0, 48.0, 54.0, 60.0).random(rnd)
+                    // 覆盖低相关增样本 → 高相关提质量
+                    p["minCorr"] = listOf(
+                        0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.88, 0.90, 0.92,
+                    ).random(rnd)
+                    p["cooldown"] = listOf(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0).random(rnd)
                 }
                 AlgoIds.TREND_FOLLOW -> {
-                    p["fast"] = listOf(8.0, 10.0, 12.0, 14.0, 16.0).random(rnd)
-                    p["slow"] = listOf(21.0, 26.0, 30.0, 34.0, 40.0).random(rnd)
-                    p["consecutive"] = listOf(2.0, 3.0, 4.0, 5.0).random(rnd)
-                    p["cooldown"] = listOf(2.0, 3.0, 5.0, 7.0).random(rnd)
+                    p["fast"] = listOf(6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0).random(rnd)
+                    p["slow"] = listOf(18.0, 21.0, 24.0, 26.0, 30.0, 34.0, 40.0, 48.0).random(rnd)
+                    p["consecutive"] = listOf(1.0, 2.0, 3.0, 4.0, 5.0).random(rnd)
+                    p["cooldown"] = listOf(1.0, 2.0, 3.0, 5.0, 7.0, 10.0).random(rnd)
                 }
                 AlgoIds.BREAKOUT -> {
-                    p["lookback"] = listOf(12.0, 16.0, 20.0, 24.0, 30.0, 40.0).random(rnd)
-                    p["cooldown"] = listOf(3.0, 5.0, 7.0, 10.0).random(rnd)
+                    p["lookback"] = listOf(8.0, 12.0, 16.0, 20.0, 24.0, 30.0, 40.0, 50.0).random(rnd)
+                    p["cooldown"] = listOf(2.0, 3.0, 5.0, 7.0, 10.0, 12.0).random(rnd)
                 }
                 else -> return@repeat
             }
-            val norm = normalizeAlgoParams(cfg.algoId, p)
-            if (algoParamsEqual(norm, baseP)) return@repeat
+            val norm = normalizeAlgoParams(algoId, p)
+            if (algoId == cfg.algoId && algoParamsEqual(norm, cfg.algoParams)) return@repeat
             val cand = cfg.copy(
+                kind = StrategyKind.ALGO,
+                algoId = algoId,
                 algoParams = norm,
-                algoNote = (cfg.algoNote.take(80) + " | 本地搜索 trial$trial ${norm}").take(200),
+                algoNote = "胜率优先本地搜 ${algoId} t$trial".take(120),
             )
             val marks = StrategyEngine.signals(bars, cand)
             val st = EventSim.backtest(bars, marks, symbol, interval).second
@@ -2905,6 +2966,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         }
         return bestCfg to bestSt
     }
+
 
     private fun parseStrategyFromLlm(
         text: String,
