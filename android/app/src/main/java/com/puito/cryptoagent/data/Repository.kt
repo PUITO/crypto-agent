@@ -1617,12 +1617,13 @@ class Repository(ctx: Context) {
         // —— 实时模拟（策略面板）——
         // 规则：只用信号标注的周期 K 线；1m 扇出时只模拟当前选中周期，避免一次信号开满全周期
         if (s.liveSimEnabled) {
-            val simTargets = timely.filter { p ->
-                when {
-                    p.source == "ht_native" -> true
-                    p.source == "1m_confirm" -> p.interval.equals(s.interval, ignoreCase = true)
-                    else -> p.interval.equals(s.interval, ignoreCase = true)
-                }
+            // 通知过的及时信号都尝试模拟；不再按界面周期丢弃（避免有通知无持仓）
+            val simTargets = timely
+            if (timely.isNotEmpty()) {
+                HibtWebSession.appendLog(
+                    "实时模拟队列 ${timely.size}条: " +
+                        timely.joinToString { "${it.mark.side}/${it.interval}/${it.source}" },
+                )
             }
             val barsCache = mutableMapOf<String, List<Candle>>()
             suspend fun barsOf(iv: String): List<Candle> {
@@ -1901,23 +1902,33 @@ class Repository(ctx: Context) {
         intervalWinRatePct: Double = 0.0,
         intervalTrades: Int = 0,
     ) {
-        if (!s.liveSimEnabled) return
-        if (s.hibt.aiEvaluate) {
-            if (ai?.passThreshold != true) return
+        if (!s.liveSimEnabled) {
+            HibtWebSession.appendLog("模拟跳过: 实时模拟未开启 ${m.side} $intervalCode")
+            return
         }
-        // 统一预测阈值：AI开用AI胜率，AI关用周期回测/策略评估胜率
-        if (!passesSignalMinPredict(s, ai, intervalWinRatePct, intervalTrades)) {
+        // 与通知同一套预测阈值（不再额外要求 AI passThreshold，避免「有通知无持仓」）
+        // AI 开且 signalMinPredictPct=0 时：改用 aiMinWinRate 作为模拟门槛，与下单阈值对齐可选
+        val minPred = when {
+            s.signalMinPredictPct > 0 -> s.signalMinPredictPct
+            s.hibt.aiEvaluate -> 0.0 // 0=不额外拦；若要跟 AI 阈值一致可改为 s.hibt.aiMinWinRate
+            else -> 0.0
+        }
+        if (minPred > 0) {
             val pred = signalPredictPct(
                 ai, intervalWinRatePct, intervalTrades,
                 enabledStrategy()?.lastWinRatePct ?: -1.0,
             )
-            HibtWebSession.appendLog(
-                "模拟跳过: ${m.side} $intervalCode 预测${pred?.let { "%.1f".format(it) } ?: "-"}% " +
-                    "< 阈值${s.signalMinPredictPct}%",
-            )
+            if (pred != null && pred + 1e-9 < minPred) {
+                HibtWebSession.appendLog(
+                    "模拟跳过: ${m.side} $intervalCode 预测${"%.1f".format(pred)}% < 阈值${minPred}%",
+                )
+                return
+            }
+        }
+        if (barData.isEmpty()) {
+            HibtWebSession.appendLog("模拟跳过: ${m.side} $intervalCode K线为空")
             return
         }
-        if (barData.size < 2) return
 
         val ivMs = intervalMs(intervalCode)
         val signalIdx = barData.indexOfLast { it.openTime <= m.openTime }
@@ -1927,25 +1938,32 @@ class Repository(ctx: Context) {
             )
             return
         }
-        val entryIdx = signalIdx + 1
-        if (entryIdx >= barData.size) return
-
-        val entryTime = barData[entryIdx].openTime
+        // 下一根已存在 → 用下一根开盘；实时信号常在最新K，下一根尚未进列表 → 按周期推算开仓时刻
+        val entryTime = if (signalIdx + 1 < barData.size) {
+            barData[signalIdx + 1].openTime
+        } else {
+            val projected = barData[signalIdx].openTime + ivMs
+            val now = System.currentTimeMillis()
+            // 若推算时刻已过，用当前时刻开仓（仍按 interval 持有到期）
+            if (projected <= now) now.coerceAtLeast(m.openTime + 1) else projected
+        }
         val expiryTime = entryTime + ivMs
         val srcTag = source.ifBlank { "sig" }
         val posKey = "${s.symbol}|$intervalCode|$entryTime|${m.side}|$srcTag"
         if (posKey in liveSimKeys || pendingLiveSims.containsKey(posKey)) return
 
-        // 开仓价：1s → aggTrades → 1m（Binance 数据服务）
+        // 开仓价：数据服务 → 信号价 → 最近K收盘（避免取价失败导致有通知无持仓）
         val entryPrice = try {
             binance.priceAt(s.symbol, entryTime, preferClose = false)
         } catch (e: Exception) {
             HibtWebSession.appendLog("模拟开仓取价失败(Binance): ${e.message}")
             null
-        }
-        if (entryPrice == null) {
+        } ?: m.price.takeIf { it > 0 }
+            ?: barData.getOrNull(signalIdx)?.close
+            ?: barData.lastOrNull()?.close
+        if (entryPrice == null || entryPrice <= 0) {
             HibtWebSession.appendLog(
-                "模拟开仓暂缓 ${m.side} $intervalCode: Binance 无 t=$entryTime 价格，下轮重试",
+                "模拟开仓失败 ${m.side} $intervalCode: 无可用开仓价 t=$entryTime",
             )
             return
         }

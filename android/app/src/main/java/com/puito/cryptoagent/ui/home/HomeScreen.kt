@@ -205,7 +205,8 @@ fun HomeScreen(repo: Repository) {
         // —— 图表以下整块可滚动（解决底部无滚动条、内容看不全）——
         val simTick by repo.liveSimTick.collectAsState()
         val iv = s.interval
-        val pending = remember(simTick, iv) { repo.pendingLivePositions(iv) }
+        // 持仓展示全部周期（与通知一致）；已平仍按当前周期统计本轮胜率
+        val pending = remember(simTick, iv) { repo.pendingLivePositions(null) }
         val sessionClosed = remember(simTick, iv) { repo.sessionClosedSimTrades(iv) }
         val historyClosed = remember(simTick, iv) { repo.historyClosedSimTrades(iv) }
         val histSt = remember(simTick, iv) { repo.historyStats(iv) }
@@ -244,7 +245,7 @@ fun HomeScreen(repo: Repository) {
                         color = MaterialTheme.colorScheme.secondary,
                     )
                     Text(
-                        "本轮实时 持仓${pending.size} · 已平${sessSt.trades} 胜${sessSt.wins}负${sessSt.losses} " +
+                        "本轮实时 持仓${pending.size}(全周期) · ${iv}已平${sessSt.trades} 胜${sessSt.wins}负${sessSt.losses} " +
                             "胜率${"%.1f".format(sessSt.winRate * 100)}% 收益${"%.2f".format(sessSt.totalReturnPct)}% 连亏$sessConsec",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
