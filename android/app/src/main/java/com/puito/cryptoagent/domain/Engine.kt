@@ -242,6 +242,7 @@ object EventSim {
     /** 周期毫秒：开仓在信号下一根 open，平仓在持有一个合约周期后 */
     private fun intervalMs(code: String): Long = when (code.trim().lowercase()) {
         "1m" -> 60_000L
+        "3m" -> 180_000L
         "5m" -> 300_000L
         "10m" -> 600_000L
         "15m" -> 900_000L

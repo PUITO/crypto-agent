@@ -456,10 +456,10 @@ class HibtClient(
         }
         val dir = if (directionUp) 1 else 0
         // 仅允许官网/抓包常见档位；1m 等非法值拒绝映射到错误合约
-        val allowed = setOf(5, 10, 15, 30, 60)
+        val allowed = setOf(3, 5, 10, 15, 30, 60)
         val unit = when {
             timeUnit in allowed -> timeUnit
-            timeUnit == 1 -> 5 // 仅信号源 1m → 默认 5m，调用方应尽量直接传 5/10/30/60
+            timeUnit == 1 -> 5 // 仅信号源 1m → 默认 5m，调用方应尽量直接传 3/5/10/30/60
             else -> error("非法 timeUnit=$timeUnit，仅允许 $allowed")
         }
         require(amount >= 2.0) {

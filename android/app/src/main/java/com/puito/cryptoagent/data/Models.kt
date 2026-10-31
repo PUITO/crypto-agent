@@ -1,7 +1,7 @@
 package com.puito.cryptoagent.data
 
 enum class Interval(val code: String, val timeUnit: Int) {
-    M1("1m", 1), M5("5m", 5), M10("10m", 10), M30("30m", 30), H1("1h", 60);
+    M1("1m", 1), M3("3m", 3), M5("5m", 5), M10("10m", 10), M30("30m", 30), H1("1h", 60);
     companion object {
         fun from(code: String) = entries.find { it.code == code } ?: M10
     }
@@ -145,7 +145,7 @@ data class StrategyConfig(
     /** 最近一次训练摘要（样本数、准确率等） */
     val modelTrainReport: String = "",
     /**
-     * 本策略生效的交易周期（5m/10m/30m/1h）。
+     * 本策略生效的交易周期（3m/5m/10m/30m/1h）。
      * 空列表 = 仅跟随行情页当前选中周期，避免在其它周期产生噪音信号。
      */
     val tradeIntervals: List<String> = emptyList(),
@@ -283,7 +283,7 @@ data class HibtSettings(
      * 自动下单多选周期（与行情页全局 interval 解耦）。
      * 合法：5m / 10m / 30m / 1h
      */
-    val autoIntervals: List<String> = listOf("5m", "10m", "30m", "1h"),
+    val autoIntervals: List<String> = listOf("3m", "5m", "10m", "30m", "1h"),
     /** 大单边行情防追单：同向连续强势 K 线时跳过同向自动下单 */
     val antiChaseEnabled: Boolean = true,
     /** 检测窗口 K 线根数（1m 主源） */
@@ -302,7 +302,7 @@ data class AppSettings(
      */
     val signalMode1mConfirm: Boolean = true,
     /**
-     * 信号模式二：在 5m/10m/30m/1h 上直接跑策略（周期原生，信号更多）。
+     * 信号模式二：在 3m/5m/10m/30m/1h 上直接跑策略（周期原生，信号更多）。
      */
     val signalModeHtNative: Boolean = true,
     val backgroundEnabled: Boolean = true,

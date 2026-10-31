@@ -651,7 +651,7 @@ private fun EditStrategy(
         buyRules = buy.ifEmpty { listOf(Rule()) },
         sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
         tradeIntervals = tradeIntervalsSel.toList().sortedBy {
-            listOf("5m", "10m", "30m", "1h").indexOf(it).let { i -> if (i < 0) 99 else i }
+            listOf("3m", "5m", "10m", "30m", "1h").indexOf(it).let { i -> if (i < 0) 99 else i }
         },
         modelEndpoint = modelEndpoint.trim(),
     )
@@ -665,7 +665,7 @@ private fun EditStrategy(
         )
         Text("交易周期（可多选；不选=仅跟随行情当前周期，避免全量噪音）", fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("5m", "10m", "30m", "1h").forEach { iv ->
+            listOf("3m", "5m", "10m", "30m", "1h").forEach { iv ->
                 FilterChip(
                     selected = iv in tradeIntervalsSel,
                     onClick = {

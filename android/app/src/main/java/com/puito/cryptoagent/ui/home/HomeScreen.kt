@@ -74,7 +74,7 @@ fun HomeScreen(repo: Repository) {
             Drop(s.symbol, listOf("BTCUSDT", "ETHUSDT")) {
                 s = s.copy(symbol = it); repo.saveSettings(s); reload()
             }
-            Drop(s.interval, listOf("5m", "10m", "30m", "1h")) {
+            Drop(s.interval, listOf("3m", "5m", "10m", "30m", "1h")) {
                 s = s.copy(interval = it); repo.saveSettings(s); reload()
             }
             IconButton({ showInd = true }) {
@@ -304,6 +304,7 @@ fun HomeScreen(repo: Repository) {
                 pending.forEach { p ->
                     val ivMs = when (p.interval.lowercase()) {
                         "1m" -> 60_000L
+                        "3m" -> 180_000L
                         "5m" -> 300_000L
                         "10m" -> 600_000L
                         "30m" -> 1_800_000L

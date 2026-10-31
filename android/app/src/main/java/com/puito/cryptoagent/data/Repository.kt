@@ -540,7 +540,7 @@ class Repository(ctx: Context) {
         }
         val tradeIntervals = try {
             (c.tradeIntervals ?: emptyList()).map { it.trim().lowercase() }
-                .filter { it in listOf("5m", "10m", "30m", "1h") }.distinct()
+                .filter { it in listOf("3m", "5m", "10m", "30m", "1h") }.distinct()
         } catch (_: Exception) {
             emptyList()
         }
@@ -906,7 +906,7 @@ class Repository(ctx: Context) {
     }
 
     fun effectiveTradeIntervals(cfg: StrategyConfig, globalInterval: String = settings().interval): List<String> {
-        val allowed = listOf("5m", "10m", "30m", "1h")
+        val allowed = listOf("3m", "5m", "10m", "30m", "1h")
         val sel = cfg.tradeIntervals.map { it.trim().lowercase() }.filter { it in allowed }.distinct()
         if (sel.isNotEmpty()) return sel
         val g = globalInterval.trim().lowercase()
@@ -1193,6 +1193,7 @@ class Repository(ctx: Context) {
 
     private fun intervalMs(code: String): Long = when (code) {
         "1m" -> 60_000L
+        "3m" -> 3 * 60_000L
         "5m" -> 5 * 60_000L
         "10m" -> 10 * 60_000L
         "30m" -> 30 * 60_000L
@@ -1216,6 +1217,7 @@ class Repository(ctx: Context) {
     /** 收盘后允许的最大延迟；1m 主源更严，避免过期推送 */
     private fun maxLateMs(interval: String): Long = when (interval) {
         "1m" -> 120_000L
+        "3m" -> 90_000L
         "5m" -> 90_000L
         "10m" -> 120_000L
         "30m" -> 180_000L
@@ -1231,7 +1233,7 @@ class Repository(ctx: Context) {
     /** 策略/指标最少需要的历史根数 */
     private fun minBarsForSignal(interval: String): Int = when (interval) {
         "1m" -> 120
-        "5m", "10m" -> 120
+        "3m", "5m", "10m" -> 120
         "30m", "1h" -> 100
         else -> 100
     }
@@ -1401,7 +1403,7 @@ class Repository(ctx: Context) {
     /**
      * 后台轮询（低延迟）：
      * - 以 1m K 线为信号触发主源（约每分钟可出新信号，不再等 5m 收盘）
-     * - 对每个事件合约周期 5m/10m/30m/1h：用该周期完整历史做回测统计 + 同向软确认
+     * - 对每个事件合约周期 3m/5m/10m/30m/1h：用该周期完整历史做回测统计 + 同向软确认
      * - 通知打在对应交易周期上，便于 HiBT 时间单位与胜率展示
      */
     suspend fun poll(): List<SignalNotifyPayload> = withContext(Dispatchers.IO) {
@@ -1573,8 +1575,8 @@ class Repository(ctx: Context) {
             val h = s.hibt
             val selected = h.autoIntervals
                 .map { it.trim().lowercase() }
-                .filter { it in setOf("5m", "10m", "30m", "1h") }
-                .ifEmpty { listOf("5m", "10m", "30m", "1h") }
+                .filter { it in setOf("3m", "5m", "10m", "30m", "1h") }
+                .ifEmpty { listOf("3m", "5m", "10m", "30m", "1h") }
             val passedAi = timely.filter { it.ai?.passThreshold == true }
             if (!h.autoTrade) {
                 if (passedAi.isNotEmpty()) {
@@ -1813,10 +1815,11 @@ class Repository(ctx: Context) {
 
     /**
      * 行情页选中周期 → 事件合约 timeUnit（分钟）。
-     * 只认 5m/10m/30m/1h；与官网档位 5/10/30/60 对齐（另有 15 可选）。
+     * 支持 3m/5m/10m/30m/1h；下单 timeUnit 与周期分钟数对齐（平台若不支持 3 会在下单结果中体现）。
      */
     private fun eventTimeUnitMinutes(intervalCode: String): Int {
         return when (intervalCode.trim().lowercase()) {
+            "3m" -> 3
             "5m" -> 5
             "10m" -> 10
             "15m" -> 15
@@ -1824,7 +1827,7 @@ class Repository(ctx: Context) {
             "1h", "60m" -> 60
             "1m" -> 5 // 信号用 1m K 线时，合约仍按下单页/默认 5m，避免误开 1 分钟不存在的档
             else -> Interval.from(intervalCode).timeUnit.let { u ->
-                if (u in setOf(5, 10, 15, 30, 60)) u else 5
+                if (u in setOf(3, 5, 10, 15, 30, 60)) u else 5
             }
         }
     }
@@ -3069,7 +3072,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             val tradeIntervalsParsed = mutableListOf<String>()
             o.getAsJsonArray("tradeIntervals")?.forEach { el ->
                 runCatching { el.asString.trim().lowercase() }.getOrNull()
-                    ?.takeIf { it in listOf("5m", "10m", "30m", "1h") }
+                    ?.takeIf { it in listOf("3m", "5m", "10m", "30m", "1h") }
                     ?.let { tradeIntervalsParsed.add(it) }
             }
             var finalKind = when {

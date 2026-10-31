@@ -289,7 +289,7 @@ fun OrderScreen(repo: Repository) {
             }
             Text("自动下单周期（可多选，与行情页全局周期无关）", fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                val options = listOf("5m", "10m", "30m", "1h")
+                val options = listOf("3m", "5m", "10m", "30m", "1h")
                 val selected = h.autoIntervals.map { it.lowercase() }.toSet()
                 options.forEach { code ->
                     val on = code in selected

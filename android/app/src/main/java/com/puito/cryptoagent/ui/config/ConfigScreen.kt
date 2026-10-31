@@ -54,7 +54,7 @@ fun ConfigScreen(repo: Repository) {
         Text("行情", style = MaterialTheme.typography.titleSmall)
         OutlinedTextField(binance, { binance = it }, label = { Text("Binance Base URL") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(symbol, { symbol = it }, label = { Text("交易对") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(interval, { interval = it }, label = { Text("周期 5m/10m/30m/1h") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(interval, { interval = it }, label = { Text("周期 3m/5m/10m/30m/1h") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(limit, { limit = it }, label = { Text("K 线条数(建议 500～1000，过小易失真)") }, modifier = Modifier.fillMaxWidth())
 
         Text("信号模式（可双开，信号更多）", style = MaterialTheme.typography.titleSmall)
@@ -63,7 +63,7 @@ fun ConfigScreen(repo: Repository) {
             Switch(mode1m, { mode1m = it })
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("模式2：周期原生策略(5m/10m/30m/1h)", modifier = Modifier.weight(1f))
+            Text("模式2：周期原生策略(3m/5m/10m/30m/1h)", modifier = Modifier.weight(1f))
             Switch(modeHt, { modeHt = it })
         }
         Text(
