@@ -2591,6 +2591,12 @@ algoNote 用中文写意图；algoParams 全是数字。
 例:
 {"title":"顺势","kind":"ALGO","algoId":"TREND_FOLLOW","algoParams":{"fast":12,"slow":26,"consecutive":3,"cooldown":3},"algoNote":"单边顺势","buyRules":[],"sellRules":[]}
 {"title":"三曲线","kind":"ALGO","algoId":"PEARSON_TRIPLE","algoParams":{"p1":5,"p2":10,"p3":20,"window":30,"minCorr":0.55,"cooldown":2},"algoNote":"皮尔逊共振","buyRules":[],"sellRules":[]}
+【PEARSON 硬性要求】
+- 必须输出完整 algoParams：p1,p2,p3,window,minCorr,cooldown（六个数字全给）
+- 必须满足 p1 < p2 < p3，且间距≥3（禁止 6/14/26 原样照抄若上轮已是该组）
+- minCorr 建议在 0.50~0.90 之间探索，不要只在 0.90+ 微调
+- window 建议 24~54；cooldown 2~12
+- 禁止只改 algoNote 文案而不改任何数字；若回测未达标，至少改 2 个参数
 
 2) kind=RULES  指标规则（优化已有 RULES 时必须保持此类型）
 只输出 buyRules/sellRules；indicator 支持 RSI,MACD,KDJ_J,MA,EMA,BOLL,BOLL_PCT,MA_BIAS,EMA_BIAS,CLOSE
@@ -2638,8 +2644,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 onProgress?.invoke("第${round}轮失败: ${e.message?.take(40)}")
                 continue
             }
-            val parsed = parseStrategyFromLlm(
-                ans, bestCfg.id, keepEnabled = base?.enabled == true, lockKind = lockKind,
+            var parsed = parseStrategyFromLlm(
+                ans, bestCfg.id, keepEnabled = base?.enabled == true, lockKind = lockKind, base = bestCfg,
             )
             if (parsed == null) {
                 log.appendLine("第${round}轮解析失败: ${ans.take(120)}")
@@ -2647,11 +2653,45 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 lastFeedback = "上轮输出无法解析，请严格只输出JSON。样例见schema。上轮片段:\n${ans.take(200)}"
                 continue
             }
+            // LLM 常只改文案不改数值：参数未变则本地搜索强制换参
+            if (parsed.kind == StrategyKind.ALGO &&
+                algoParamsEqual(parsed.algoParams, bestCfg.algoParams)
+            ) {
+                log.appendLine("第${round}轮 LLM 参数未变 ${parsed.algoParams} → 本地搜索…")
+                onProgress?.invoke("第${round}轮参数未变，本地搜参…")
+                val (localCfg, localSt) = localTuneAlgoParams(
+                    bars, parsed, s.symbol, s.interval,
+                    trials = 28, targetWr = targetWr, targetTrades = targetTrades,
+                )
+                parsed = localCfg
+                log.appendLine(
+                    "本地搜索结果: ${localSt.trades}笔 胜率${"%.1f".format(localSt.winRate * 100)}% 参数${localCfg.algoParams}",
+                )
+            } else if (parsed.kind == StrategyKind.ALGO) {
+                // 即使 LLM 改了参，再做一轮本地精修（小范围）
+                val (localCfg, localSt) = localTuneAlgoParams(
+                    bars, parsed, s.symbol, s.interval,
+                    trials = 12, targetWr = targetWr, targetTrades = targetTrades,
+                )
+                if (localSt.winRate > 0 || localSt.trades > 0) {
+                    val llmMarks = StrategyEngine.signals(bars, parsed)
+                    val llmSt = EventSim.backtest(bars, llmMarks, s.symbol, s.interval).second
+                    val llmScore = llmSt.winRate * 100 + minOf(llmSt.trades, 40) * 0.25
+                    val locScore = localSt.winRate * 100 + minOf(localSt.trades, 40) * 0.25
+                    if (locScore > llmScore + 0.5) {
+                        log.appendLine(
+                            "本地精修优于LLM: ${localSt.trades}笔/${"%.1f".format(localSt.winRate * 100)}% vs " +
+                                "${llmSt.trades}笔/${"%.1f".format(llmSt.winRate * 100)}%",
+                        )
+                        parsed = localCfg
+                    }
+                }
+            }
             val marks = StrategyEngine.signals(bars, parsed)
             val (tlist, st) = EventSim.backtest(bars, marks, s.symbol, s.interval)
             log.appendLine(
                 "第${round}轮「${parsed.title}」: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% " +
-                    "买${parsed.buyRules.size}条/卖${parsed.sellRules.size}条",
+                    "参数${parsed.algoParams} 买${parsed.buyRules.size}/卖${parsed.sellRules.size}",
             )
             onProgress?.invoke(
                 "第${round}轮 回测 ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}%",
@@ -2691,7 +2731,9 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                         targetTrades?.let { "笔数≥$it" },
                     ).joinToString("，"))
                     if (!meets(st.winRate, st.trades)) {
-                        appendLine("未达标：请调整 algoParams 或规则，优先 ALGO 顺势/皮尔逊。")
+                        appendLine("未达标：必须改 algoParams 数字（至少2个键），禁止只改标题/说明。")
+                        appendLine("PEARSON 可试：拉开 p1/p2/p3、降低 minCorr 增样本、或提高 minCorr 提质量。")
+                        appendLine("禁止输出与上轮完全相同的 algoParams。")
                     }
                 } else {
                     appendLine("请继续提高胜率，避免交易过少；优先 kind=ALGO。")
@@ -2735,11 +2777,141 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         return """{"title":"${cfg.title.replace("\"", "")}","kind":"${cfg.kind.name}","algoId":"${cfg.algoId}","algoParams":{$params},"algoNote":"$note","buyRules":[${rules(cfg.buyRules)}],"sellRules":[${rules(cfg.sellRules)}]}"""
     }
 
+
+    /** 规范算法参数：保证 p1<p2<p3、数值在引擎可接受范围，避免 LLM 乱参无效 */
+    private fun normalizeAlgoParams(algoId: String, raw: Map<String, Double>): Map<String, Double> {
+        val p = raw.toMutableMap()
+        when (algoId) {
+            AlgoIds.PEARSON_TRIPLE -> {
+                var p1 = (p["p1"] ?: 5.0).toInt().coerceIn(2, 40)
+                var p2 = (p["p2"] ?: 10.0).toInt().coerceIn(p1 + 1, 60)
+                var p3 = (p["p3"] ?: 20.0).toInt().coerceIn(p2 + 1, 100)
+                if (p2 <= p1) p2 = (p1 + 4).coerceAtMost(60)
+                if (p3 <= p2) p3 = (p2 + 8).coerceAtMost(100)
+                p["p1"] = p1.toDouble()
+                p["p2"] = p2.toDouble()
+                p["p3"] = p3.toDouble()
+                p["window"] = (p["window"] ?: 30.0).coerceIn(12.0, 80.0)
+                p["minCorr"] = (p["minCorr"] ?: 0.6).coerceIn(0.35, 0.98)
+                p["cooldown"] = (p["cooldown"] ?: 2.0).coerceIn(0.0, 20.0)
+            }
+            AlgoIds.TREND_FOLLOW -> {
+                var fast = (p["fast"] ?: 12.0).toInt().coerceIn(3, 40)
+                var slow = (p["slow"] ?: 26.0).toInt().coerceIn(fast + 1, 80)
+                if (slow <= fast) slow = fast + 5
+                p["fast"] = fast.toDouble()
+                p["slow"] = slow.toDouble()
+                p["consecutive"] = (p["consecutive"] ?: 3.0).coerceIn(1.0, 8.0)
+                p["cooldown"] = (p["cooldown"] ?: 3.0).coerceIn(0.0, 20.0)
+            }
+            AlgoIds.BREAKOUT -> {
+                p["lookback"] = (p["lookback"] ?: 20.0).coerceIn(5.0, 80.0)
+                p["cooldown"] = (p["cooldown"] ?: 5.0).coerceIn(0.0, 20.0)
+            }
+        }
+        return p
+    }
+
+    private fun algoParamsEqual(a: Map<String, Double>, b: Map<String, Double>, eps: Double = 1e-6): Boolean {
+        if (a.size != b.size) {
+            val keys = a.keys + b.keys
+            return keys.all { k ->
+                val x = a[k] ?: return false
+                val y = b[k] ?: return false
+                kotlin.math.abs(x - y) <= eps
+            }
+        }
+        return a.keys.all { k ->
+            val y = b[k] ?: return false
+            kotlin.math.abs(a.getValue(k) - y) <= eps
+        }
+    }
+
+    /**
+     * 本地网格/随机搜索算法参数（LLM 不改参或效果差时兜底）。
+     * 围绕当前参数扰动，按回测胜率+笔数选优。
+     */
+    private fun localTuneAlgoParams(
+        bars: List<Candle>,
+        cfg: StrategyConfig,
+        symbol: String,
+        interval: String,
+        trials: Int = 24,
+        targetWr: Double? = null,
+        targetTrades: Int? = null,
+    ): Pair<StrategyConfig, com.puito.cryptoagent.data.Stats> {
+        fun score(st: Stats): Double {
+            val base = st.winRate * 100 + minOf(st.trades, 40) * 0.25
+            val okWr = targetWr == null || st.winRate * 100 >= targetWr - 1e-6
+            val okTr = targetTrades == null || st.trades >= (targetTrades ?: 0)
+            return if (okWr && okTr && st.trades >= 3) base + 1000.0 else base
+        }
+        var bestCfg = cfg
+        var bestSt = run {
+            val marks = StrategyEngine.signals(bars, cfg)
+            EventSim.backtest(bars, marks, symbol, interval).second
+        }
+        var bestScore = score(bestSt)
+        val rnd = kotlin.random.Random(System.currentTimeMillis())
+        val baseP = cfg.algoParams
+        repeat(trials) { trial ->
+            val p = baseP.toMutableMap()
+            when (cfg.algoId) {
+                AlgoIds.PEARSON_TRIPLE -> {
+                    // 强制拉开三周期；minCorr/window/cooldown 多档探索
+                    val span = trial % 6
+                    when (span) {
+                        0 -> { p["p1"] = listOf(4.0, 5.0, 6.0, 7.0, 8.0).random(rnd); p["p2"] = listOf(10.0, 12.0, 14.0).random(rnd); p["p3"] = listOf(20.0, 24.0, 26.0, 30.0).random(rnd) }
+                        1 -> { p["p1"] = 5.0; p["p2"] = 15.0; p["p3"] = 30.0 }
+                        2 -> { p["p1"] = 8.0; p["p2"] = 18.0; p["p3"] = 36.0 }
+                        3 -> { p["p1"] = 3.0; p["p2"] = 9.0; p["p3"] = 21.0 }
+                        4 -> { p["p1"] = 6.0; p["p2"] = 13.0; p["p3"] = 28.0 }
+                        else -> {
+                            p["p1"] = (3 + rnd.nextInt(8)).toDouble()
+                            p["p2"] = (p["p1"]!! + 4 + rnd.nextInt(10))
+                            p["p3"] = (p["p2"]!! + 6 + rnd.nextInt(14))
+                        }
+                    }
+                    p["window"] = listOf(24.0, 30.0, 36.0, 42.0, 48.0, 54.0).random(rnd)
+                    p["minCorr"] = listOf(0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.88, 0.90).random(rnd)
+                    p["cooldown"] = listOf(2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0).random(rnd)
+                }
+                AlgoIds.TREND_FOLLOW -> {
+                    p["fast"] = listOf(8.0, 10.0, 12.0, 14.0, 16.0).random(rnd)
+                    p["slow"] = listOf(21.0, 26.0, 30.0, 34.0, 40.0).random(rnd)
+                    p["consecutive"] = listOf(2.0, 3.0, 4.0, 5.0).random(rnd)
+                    p["cooldown"] = listOf(2.0, 3.0, 5.0, 7.0).random(rnd)
+                }
+                AlgoIds.BREAKOUT -> {
+                    p["lookback"] = listOf(12.0, 16.0, 20.0, 24.0, 30.0, 40.0).random(rnd)
+                    p["cooldown"] = listOf(3.0, 5.0, 7.0, 10.0).random(rnd)
+                }
+                else -> return@repeat
+            }
+            val norm = normalizeAlgoParams(cfg.algoId, p)
+            if (algoParamsEqual(norm, baseP)) return@repeat
+            val cand = cfg.copy(
+                algoParams = norm,
+                algoNote = (cfg.algoNote.take(80) + " | 本地搜索 trial$trial ${norm}").take(200),
+            )
+            val marks = StrategyEngine.signals(bars, cand)
+            val st = EventSim.backtest(bars, marks, symbol, interval).second
+            val sc = score(st)
+            if (sc > bestScore && (st.trades >= 1 || bestSt.trades < 1)) {
+                bestScore = sc
+                bestCfg = cand
+                bestSt = st
+            }
+        }
+        return bestCfg to bestSt
+    }
+
     private fun parseStrategyFromLlm(
         text: String,
         id: String,
         keepEnabled: Boolean,
         lockKind: StrategyKind? = null,
+        base: StrategyConfig? = null,
     ): StrategyConfig? {
         val jsonStr = extractJsonObject(text) ?: return null
         return try {
@@ -2752,7 +2924,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 else -> StrategyKind.RULES
             }
             val algoIdRaw = o.get("algoId")?.asString?.uppercase()?.replace("-", "_") ?: AlgoIds.TREND_FOLLOW
-            val algoId = when {
+            val algoIdParsed = when {
                 algoIdRaw.contains("PEARSON") || algoIdRaw.contains("皮尔逊") || algoIdRaw.contains("三曲线") ->
                     AlgoIds.PEARSON_TRIPLE
                 algoIdRaw.contains("BREAK") || algoIdRaw.contains("突破") -> AlgoIds.BREAKOUT
@@ -2761,12 +2933,26 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 algoIdRaw in AlgoIds.all -> algoIdRaw
                 else -> AlgoIds.TREND_FOLLOW
             }
-            val algoParams = linkedMapOf<String, Double>()
+            // 锁定 ALGO 时不允许 LLM 偷偷换算法类型
+            val algoId = if (lockKind == StrategyKind.ALGO && base != null) {
+                base.algoId.ifBlank { algoIdParsed }
+            } else algoIdParsed
+            val algoParamsRaw = linkedMapOf<String, Double>()
             o.getAsJsonObject("algoParams")?.entrySet()?.forEach { e ->
                 val v = runCatching { e.value.asDouble }.getOrNull()
-                if (v != null) algoParams[e.key] = v
+                    ?: runCatching { e.value.asString.trim().toDouble() }.getOrNull()
+                if (v != null) algoParamsRaw[e.key] = v
             }
-            val algoNote = o.get("algoNote")?.asString?.take(200) ?: ""
+            // 合并 base：防 LLM 漏字段/空对象把已有 p1/p2/p3 冲掉变成引擎默认 5/10/20
+            val algoParams = when {
+                base != null && (lockKind == StrategyKind.ALGO || base.kind == StrategyKind.ALGO) ->
+                    normalizeAlgoParams(algoId, base.algoParams + algoParamsRaw)
+                algoParamsRaw.isNotEmpty() -> normalizeAlgoParams(algoId, algoParamsRaw)
+                else -> algoParamsRaw
+            }
+            val algoNote = o.get("algoNote")?.asString?.take(200)
+                ?: base?.algoNote?.take(200)
+                ?: ""
             fun parseRules(key: String): List<Rule> {
                 val arr = o.getAsJsonArray(key) ?: return emptyList()
                 return arr.mapNotNull { el ->
@@ -2852,9 +3038,15 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                         "confirmBars" to 1.0, "lookback" to 5.0,
                     )
                 },
-                modelNote = modelNote,
-                tradeIntervals = tradeIntervalsParsed.distinct(),
-                modelEndpoint = modelEndpoint,
+                modelNote = modelNote.ifBlank { base?.modelNote.orEmpty() },
+                tradeIntervals = tradeIntervalsParsed.distinct().ifEmpty { base?.tradeIntervals.orEmpty() },
+                modelEndpoint = modelEndpoint.ifBlank { base?.modelEndpoint.orEmpty() },
+                // 保留评估胜率等字段，避免 LLM 优化后清零
+                lastWinRatePct = base?.lastWinRatePct ?: -1.0,
+                lastEvalTrades = base?.lastEvalTrades ?: 0,
+                lastEvalReturnPct = base?.lastEvalReturnPct ?: 0.0,
+                lastEvalDetail = base?.lastEvalDetail.orEmpty(),
+                lastEvalAtMs = base?.lastEvalAtMs ?: 0L,
             )
         } catch (_: Exception) {
             null
