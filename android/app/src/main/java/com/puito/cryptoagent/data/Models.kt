@@ -338,6 +338,8 @@ data class AppSettings(
         ChartIndicatorPref("boll20", "BOLL20", false, 20, 0xFF78909C),
         ChartIndicatorPref("rsi14", "RSI14", false, 14, 0xFFEC407A),
     ),
+    /** 行情图绘制当前启用策略的基准线（均线/布林/算法快慢线等） */
+    val showStrategyBaselines: Boolean = true,
     /** 活跃策略：过阈值信号做本地模拟 */
     val liveSimEnabled: Boolean = true,
     /**

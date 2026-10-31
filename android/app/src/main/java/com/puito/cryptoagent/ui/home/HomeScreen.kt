@@ -29,6 +29,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.puito.cryptoagent.data.*
 import com.puito.cryptoagent.domain.Indicators
+import com.puito.cryptoagent.domain.StrategyBaselines
+import com.puito.cryptoagent.domain.StrategyBaselineLine
 import com.puito.cryptoagent.service.MonitorService
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -174,10 +176,34 @@ fun HomeScreen(repo: Repository) {
                 fontSize = 10.sp,
                 color = MaterialTheme.colorScheme.secondary,
             )
+            val stBaselines = remember(tick, s.strategyRunning, s.showStrategyBaselines, repo.candles, repo.enabledStrategy()?.id) {
+                if (!s.showStrategyBaselines) emptyList()
+                else StrategyBaselines.build(repo.candles, repo.enabledStrategy())
+            }
+            val oscHints = remember(s.showStrategyBaselines, repo.enabledStrategy()?.id) {
+                if (!s.showStrategyBaselines) emptyList()
+                else StrategyBaselines.oscillatorHints(repo.enabledStrategy())
+            }
+            if (s.showStrategyBaselines && (stBaselines.isNotEmpty() || oscHints.isNotEmpty())) {
+                Text(
+                    buildString {
+                        append("策略线: ")
+                        append(stBaselines.joinToString(" · ") { it.label })
+                        if (oscHints.isNotEmpty()) {
+                            if (stBaselines.isNotEmpty()) append(" | ")
+                            append(oscHints.joinToString(" · "))
+                        }
+                    },
+                    fontSize = 10.sp,
+                    color = Color(0xFF29B6F6),
+                    maxLines = 2,
+                )
+            }
             Chart(
                 candles = repo.candles,
                 signals = if (s.strategyRunning) repo.signals else emptyList(),
                 indicators = s.chartIndicators.filter { it.enabled },
+                strategyBaselines = stBaselines,
                 overlays = repo.overlays,
                 scale = scale,
                 startIndex = startIndex,
@@ -359,6 +385,21 @@ fun HomeScreen(repo: Repository) {
     if (showInd) {
         ModalBottomSheet(onDismissRequest = { showInd = false }) {
             Text("图表指标（勾选即时生效，可改周期）", Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("策略基准线（当前启用策略的均线/布林/算法线）", Modifier.weight(1f), fontSize = 13.sp)
+                Switch(
+                    checked = s.showStrategyBaselines,
+                    onCheckedChange = {
+                        s = s.copy(showStrategyBaselines = it)
+                        repo.saveSettings(s)
+                        tick++
+                    },
+                )
+            }
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
             s.chartIndicators.forEachIndexed { idx, ind ->
                 var periodText by remember(ind.id, ind.period) { mutableStateOf(ind.period.toString()) }
                 Row(
@@ -416,6 +457,7 @@ fun Chart(
     candles: List<Candle>,
     signals: List<SignalMark>,
     indicators: List<ChartIndicatorPref>,
+    strategyBaselines: List<StrategyBaselineLine> = emptyList(),
     overlays: List<ChartOverlay>,
     scale: Float,
     startIndex: Float,
@@ -568,6 +610,14 @@ fun Chart(
                         overlays.filter { it.type == "fib" }.forEach { o ->
                             o.values.forEach { v -> maxH = max(maxH, v); minL = min(minL, v) }
                         }
+                        strategyBaselines.forEach { bl ->
+                            bl.horizontal?.let { v -> maxH = max(maxH, v); minL = min(minL, v) }
+                            for (i in startI until endI) {
+                                bl.values.getOrNull(i)?.let { v ->
+                                    maxH = max(maxH, v); minL = min(minL, v)
+                                }
+                            }
+                        }
 
                         val yMax = maxH + (maxH - minL) * 0.06
                         val yMin = minL - (maxH - minL) * 0.06
@@ -635,6 +685,23 @@ fun Chart(
                                     @Suppress("UNCHECKED_CAST")
                                     drawSeries(cached as List<Double?>, col)
                                 }
+                            }
+                        }
+
+                        // 策略基准线（当前启用策略）
+                        strategyBaselines.forEach { bl ->
+                            val col = Color(bl.colorArgb)
+                            bl.horizontal?.let { hv ->
+                                val y = yAt(hv)
+                                drawLine(
+                                    col.copy(alpha = 0.65f),
+                                    Offset(padL, y),
+                                    Offset(padL + plotW, y),
+                                    strokeWidth = 2f,
+                                )
+                            }
+                            if (bl.values.isNotEmpty()) {
+                                drawSeries(bl.values, col)
                             }
                         }
 

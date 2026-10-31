@@ -109,6 +109,7 @@ class Repository(ctx: Context) {
                 llmTrainKlineLimit = if (raw.llmTrainKlineLimit in 300..1500) raw.llmTrainKlineLimit else def.llmTrainKlineLimit,
                 onboardingDone = raw.onboardingDone,
                 chartIndicators = try { if (raw.chartIndicators.isEmpty()) def.chartIndicators else raw.chartIndicators } catch (_: Exception) { def.chartIndicators },
+                showStrategyBaselines = try { raw.showStrategyBaselines } catch (_: Exception) { true },
                 liveSimEnabled = raw.liveSimEnabled,
                 signalMinPredictPct = try { raw.signalMinPredictPct } catch (_: Exception) { 0.0 },
                 liveSimMinWinRatePct = raw.liveSimMinWinRatePct,
