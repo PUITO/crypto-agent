@@ -35,6 +35,8 @@ fun TradeScreen(repo: Repository) {
     var modelMgrMsg by remember { mutableStateOf<String?>(null) }
     var evalMap by remember { mutableStateOf(repo.strategyEvalCache) }
     var goalDraft by remember { mutableStateOf("") }
+    var tuneTargetWr by remember { mutableStateOf("55") }
+    var tuneMinTrades by remember { mutableStateOf("15") }
 
     if (editing != null) {
         EditStrategy(
@@ -59,10 +61,13 @@ fun TradeScreen(repo: Repository) {
                     busy = true
                     progress = "基于「${cfg.title}」LLM优化中…"
                     report = null
+                    val (tw, tm) = defaultTuneTargets(repo)
                     val r = repo.optimizeStrategyWithLlm(
                         baseId = cfg.id,
-                        rounds = null, // 使用设置 llmOptimizeRounds
-                        userGoal = goal,
+                        rounds = null,
+                        userGoal = goal.ifBlank { null },
+                        minWinRatePct = tw.toDoubleOrNull() ?: 55.0,
+                        minTrades = tm.toIntOrNull() ?: 15,
                     ) { progress = it }
                     r.onSuccess {
                         list = repo.strategies()
@@ -133,7 +138,10 @@ fun TradeScreen(repo: Repository) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
-                    goalDraft = defaultTuneGoal(repo, null)
+                    val (tw, tm) = defaultTuneTargets(repo)
+                    tuneTargetWr = tw
+                    tuneMinTrades = tm
+                    goalDraft = ""
                     goalDialog = null to "生成新策略"
                 },
                 enabled = !busy,
@@ -259,26 +267,52 @@ if (goalDialog != null) {
             val (baseId, title) = goalDialog!!
             AlertDialog(
                 onDismissRequest = { if (!busy) goalDialog = null },
-                title = { Text(if (baseId == null) "生成策略 · 填写需求" else "优化「$title」· 填写需求") },
+                title = { Text(if (baseId == null) "生成策略" else "优化「$title」") },
                 text = {
                     Column {
-                        Text("请说明市场偏好、指标、风格等（必填，避免默认 RSI+KDJ）", fontSize = 12.sp)
+                        Text(sessionHint(repo), fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = tuneTargetWr,
+                            onValueChange = { tuneTargetWr = it.filter { c -> c.isDigit() || c == '.' } },
+                            label = { Text("目标胜率 %") },
+                            placeholder = { Text("55") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            value = tuneMinTrades,
+                            onValueChange = { tuneMinTrades = it.filter { c -> c.isDigit() } },
+                            label = { Text("最少成交笔数") },
+                            placeholder = { Text("15") },
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                            singleLine = true,
+                        )
+                        Text(
+                            "轮次用设置里的「LLM优化轮次」。下面备注可选，一般不用填。",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
                         OutlinedTextField(
                             value = goalDraft,
                             onValueChange = { goalDraft = it },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(top = 4.dp),
+                            label = { Text("备注（可选）") },
                             placeholder = {
-                                Text("例：震荡布林+RSI；或趋势 MA 金叉死叉；减少假信号…")
+                                Text(if (baseId == null) "例：偏震荡 / 顺势…" else "可留空，直接按胜率目标搜参")
                             },
                         )
                     }
                 },
                 confirmButton = {
                     TextButton(
-                        enabled = !busy && goalDraft.trim().length >= 4,
+                        enabled = !busy && (baseId != null || goalDraft.trim().length >= 2 || tuneTargetWr.isNotBlank()),
                         onClick = {
                             val goal = goalDraft.trim()
                             val id = baseId
+                            val wr = tuneTargetWr.toDoubleOrNull()?.coerceIn(35.0, 90.0) ?: 55.0
+                            val mt = tuneMinTrades.toIntOrNull()?.coerceIn(3, 80) ?: 15
                             goalDialog = null
                             scope.launch {
                                 busy = true
@@ -287,7 +321,9 @@ if (goalDialog != null) {
                                 val r = repo.optimizeStrategyWithLlm(
                                     baseId = id,
                                     rounds = null,
-                                    userGoal = goal,
+                                    userGoal = goal.ifBlank { null },
+                                    minWinRatePct = wr,
+                                    minTrades = mt,
                                 ) { progress = it }
                                 r.onSuccess {
                                     list = repo.strategies()
@@ -428,7 +464,10 @@ if (goalDialog != null) {
                             }
                             TextButton(
                                 onClick = {
-                                    goalDraft = defaultTuneGoal(repo, cfg)
+                                    val (tw, tm) = defaultTuneTargets(repo)
+                                    tuneTargetWr = tw
+                                    tuneMinTrades = tm
+                                    goalDraft = ""
                                     goalDialog = cfg.id to cfg.title
                                 },
                                 enabled = !busy,
@@ -447,31 +486,31 @@ if (goalDialog != null) {
 }
 
 
+/** 打开优化弹窗时的默认胜率/笔数（不再塞长文案进输入框） */
+private fun defaultTuneTargets(repo: Repository): Pair<String, String> {
+    val s = repo.settings()
+    val wr = s.liveSimMinWinRatePct.coerceIn(40.0, 80.0).let {
+        if (it < 50) 55.0 else it
+    }
+    return "%.0f".format(wr) to "15"
+}
+
+private fun sessionHint(repo: Repository): String {
+    val st = repo.sessionStats()
+    val consec = repo.sessionConsecutiveLosses()
+    return if (st.trades > 0)
+        "本轮模拟 ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% 连亏$consec（仅参考，不必抄进需求）"
+    else {
+        val u = repo.unifiedStats()
+        if (u.trades > 0)
+            "综合模拟 ${u.trades}笔 胜率${"%.1f".format(u.winRate * 100)}%（仅参考）"
+        else "尚无模拟样本"
+    }
+}
+
 private fun defaultTuneGoal(repo: Repository, cfg: StrategyConfig?): String {
-    val st = repo.liveSimStats
-    val consec = repo.consecutiveLosses()
-    val sim = if (st.trades > 0)
-        "参考实时模拟${st.trades}笔胜率${"%.1f".format(st.winRate * 100)}%连亏$consec。"
-    else ""
-    if (cfg == null) {
-        return "生成事件合约策略，优先 ALGO 顺势/皮尔逊，轮次4，目标胜率55%，最少15笔。" + sim
-    }
-    return when (cfg.kind) {
-        StrategyKind.MODEL ->
-            "优化「${cfg.title}」为高胜率少信号的 MODEL 策略。" +
-                "必须提高或保持严格参数：threshold 0.62~0.72、cooldown 10~24、minEdge 0.03~0.08。" +
-                "禁止 threshold<0.58 或 cooldown<8（会导致每根K都信号）。" +
-                "不要输出 modelWeights。权重由 App 本地训练+校准。" +
-                sim + "轮次3，目标胜率≥55%，笔数适中即可。"
-        StrategyKind.ALGO ->
-            "优化「${cfg.title}」算法${cfg.algoId} 参数${cfg.algoParams} ${cfg.algoNote}。" +
-                sim + "直接调整 algoParams 数值，轮次4，目标胜率55%，最少15笔。"
-        StrategyKind.RULES ->
-            "优化「${cfg.title}」指标规则，必须保持 kind=RULES，只改 buyRules/sellRules 阈值与周期。" +
-                "禁止改成 ALGO 或 MODEL。" + sim + "轮次按设置，目标胜率55%。"
-        else ->
-            "优化「${cfg.title}」。" + sim + "轮次按设置，目标胜率55%。"
-    }
+    // 兼容旧调用：返回空，真正目标由弹窗「目标胜率/最少笔数」控制
+    return ""
 }
 
 private fun summarizeRules(cfg: StrategyConfig): String {
