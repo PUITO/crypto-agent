@@ -2621,7 +2621,7 @@ op: GT,GTE,LT,LTE  period:2-200  同侧OR
             onProgress?.invoke("第${round}/${maxRounds}轮：请求 LLM…")
             val sys = """
 你是量化策略工程师。唯一优化目标：最大化事件合约回测胜率（在最少笔数约束下）。
-必须通过改 algoParams 数值或（ALGO时）algoId 来提胜率，禁止只改标题/说明。
+必须通过改当前算法的 algoParams 数值来提胜率；禁止更换 algoId/kind；禁止只改标题/说明。
 $schema
 禁止编造未给出的数据；不要解释，只输出JSON。
 """.trimIndent()
@@ -2663,7 +2663,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 val (localCfg, localSt) = localTuneAlgoParams(
                     bars, parsed, s.symbol, s.interval,
                     trials = 40, targetWr = targetWr, targetTrades = targetTrades,
-                    allowAlgoSwitch = lockKind == StrategyKind.ALGO,
+                    allowAlgoSwitch = false, // 禁止换算法，只调当前 algoParams
                 )
                 parsed = localCfg
                 log.appendLine(
@@ -2739,10 +2739,10 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                         targetTrades?.let { "笔数≥$it" },
                     ).joinToString("，"))
                     if (!meets(st.winRate, st.trades)) {
-                        appendLine("【唯一目标】提高回测胜率。必须改 algoParams 至少2个数字，禁止只改文案。")
-                        appendLine("可换参数组合：拉开/收紧 p1<p2<p3；minCorr 在 0.45~0.90 大范围试；window/cooldown 同步改。")
-                        appendLine("在 kind=ALGO 下也可改 algoId 为 TREND_FOLLOW 或 BREAKOUT 若胜率更高。")
-                        appendLine("禁止与上轮完全相同的 algoParams。")
+                        appendLine("【唯一目标】提高回测胜率。必须改当前算法的 algoParams 至少2个数字，禁止只改文案。")
+                        appendLine("禁止更换 algoId / kind（保持当前算法类型不变）。")
+                        appendLine("PEARSON：拉开/收紧 p1<p2<p3；minCorr 0.45~0.92；window/cooldown 同步改。")
+                        appendLine("禁止与上轮完全相同的 algoParams。未达标则取最接近目标胜率的版本即可。")
                     }
                 } else {
                     appendLine("请继续提高胜率，避免交易过少；优先 kind=ALGO。")
@@ -2754,11 +2754,11 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         // 收尾：胜率优先高强度本地搜参（ALGO 可尝试切换算法）
         if (bestCfg.kind == StrategyKind.ALGO) {
             onProgress?.invoke("最终本地深搜（主攻胜率）…")
-            log.appendLine("—— 最终本地深搜（胜率优先）——")
+            log.appendLine("—— 最终本地深搜（同算法只调参，胜率优先；未达标保留最接近版本）——")
             val (deepCfg, deepSt) = localTuneAlgoParams(
                 bars, bestCfg, s.symbol, s.interval,
                 trials = 64, targetWr = targetWr, targetTrades = targetTrades,
-                allowAlgoSwitch = lockKind == StrategyKind.ALGO || createNew,
+                allowAlgoSwitch = false, // 禁止换算法，避免策略混淆
             )
             val betterWr = deepSt.winRate > bestWr + 1e-9
             val meetDeep = targetWr != null && deepSt.winRate * 100 >= targetWr - 1e-6 &&
@@ -2905,9 +2905,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         }
         var bestScore = score(bestSt)
         val rnd = kotlin.random.Random(System.currentTimeMillis())
-        val algoChoices = if (allowAlgoSwitch) {
-            listOf(AlgoIds.PEARSON_TRIPLE, AlgoIds.TREND_FOLLOW, AlgoIds.BREAKOUT)
-        } else listOf(cfg.algoId)
+        // 永远不切换算法类型：即使用户误开 allowAlgoSwitch，优化已有策略时也只锁当前 algoId
+        val algoChoices = listOf(cfg.algoId.ifBlank { AlgoIds.PEARSON_TRIPLE })
 
         repeat(trials) { trial ->
             val algoId = algoChoices[trial % algoChoices.size]
