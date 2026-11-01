@@ -26,7 +26,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 
-/** 实时模拟挂单：信号确认后在下一根 K 开盘开仓，该根收盘后平仓 */
+/** 实时模拟挂单：信号确认后按 1m 基准尽快开仓，持有一个合约周期后平仓 */
 data class PendingLiveSim(
     val key: String,
     val symbol: String,
@@ -1191,6 +1191,37 @@ class Repository(ctx: Context) {
         return marks to st
     }
 
+
+    /** 用 1m K 聚合成目标周期（含未收盘的当前桶），使高周期信号可每分钟刷新，降低延误 */
+    private fun aggregate1mToInterval(bars1m: List<Candle>, intervalCode: String): List<Candle> {
+        if (bars1m.isEmpty()) return emptyList()
+        val ivMs = intervalMs(intervalCode)
+        if (ivMs <= 60_000L) return bars1m
+        val out = ArrayList<Candle>()
+        var bucketStart = bars1m.first().openTime / ivMs * ivMs
+        var o = bars1m.first().open
+        var h = bars1m.first().high
+        var l = bars1m.first().low
+        var c = bars1m.first().close
+        var v = bars1m.first().volume
+        for (i in 1 until bars1m.size) {
+            val b = bars1m[i]
+            val start = b.openTime / ivMs * ivMs
+            if (start != bucketStart) {
+                out.add(Candle(bucketStart, o, h, l, c, v))
+                bucketStart = start
+                o = b.open; h = b.high; l = b.low; c = b.close; v = b.volume
+            } else {
+                if (b.high > h) h = b.high
+                if (b.low < l) l = b.low
+                c = b.close
+                v += b.volume
+            }
+        }
+        out.add(Candle(bucketStart, o, h, l, c, v)) // 含当前未完成桶
+        return out
+    }
+
     private fun intervalMs(code: String): Long = when (code) {
         "1m" -> 60_000L
         "3m" -> 3 * 60_000L
@@ -1484,13 +1515,29 @@ class Repository(ctx: Context) {
             }
         }
 
-        // —— 模式二：各交易周期原生策略信号 ——
+        // —— 模式二：各交易周期原生策略信号（优先 1m 聚合成周期，含未收盘桶，降低信号延误）——
         if (useHt) {
+            if (bars1m.isEmpty()) {
+                bars1m = try {
+                    binance.fetch(s.symbol, Interval.M1, limit1m)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            }
             val fromHt = coroutineScope {
                 tradeIntervals.map { iv ->
                     async {
                         try {
-                            val barsHt = binance.fetch(s.symbol, Interval.from(iv), limitHt)
+                            val barsHtNative = try {
+                                binance.fetch(s.symbol, Interval.from(iv), limitHt)
+                            } catch (_: Exception) {
+                                emptyList()
+                            }
+                            // 1m 聚合含当前桶 → 信号可按分钟更新；不足则回退原生周期 K
+                            val barsHt = if (bars1m.size >= minBarsForSignal("1m")) {
+                                val agg = aggregate1mToInterval(bars1m, iv)
+                                if (agg.size >= minBarsForSignal(iv)) agg else barsHtNative
+                            } else barsHtNative
                             if (barsHt.size < minBarsForSignal(iv)) return@async emptyList()
                             val (marksHt, st) = runStrategy(
                                 s.symbol, iv, cfg, barsHt,
@@ -1499,7 +1546,9 @@ class Repository(ctx: Context) {
                             )
                             val fresh = freshMarks(s.symbol, iv, marksHt, barsHt, notifyNew = true)
                             fresh.mapNotNull { m ->
-                                if (isSignalExpired(iv, m.openTime)) return@mapNotNull null
+                                // 未完成桶信号：过期判定按 1m 宽限，避免刚出现就被判过期
+                                val expIv = if (barsHt.lastOrNull()?.openTime == m.openTime) "1m" else iv
+                                if (isSignalExpired(expIv, m.openTime)) return@mapNotNull null
                                 val ai = if (s.hibt.aiEvaluate) {
                                     val toMs = s.llmTimeoutSec.coerceIn(10, 300) * 1000L
                                     withTimeoutOrNull(toMs) {
@@ -1942,16 +1991,10 @@ class Repository(ctx: Context) {
             )
             return
         }
-        // 下一根已存在 → 用下一根开盘；实时信号常在最新K，下一根尚未进列表 → 按周期推算开仓时刻
-        val entryTime = if (signalIdx + 1 < barData.size) {
-            barData[signalIdx + 1].openTime
-        } else {
-            val projected = barData[signalIdx].openTime + ivMs
-            val now = System.currentTimeMillis()
-            // 若推算时刻已过，用当前时刻开仓（仍按 interval 持有到期）
-            if (projected <= now) now.coerceAtLeast(m.openTime + 1) else projected
-        }
-        val expiryTime = entryTime + ivMs
+        // 1m 基准开仓：信号确认后立即开仓，不再等下一根同周期 K（消除 3m/5m/10m 空白等待）
+        val now = System.currentTimeMillis()
+        val entryTime = now.coerceAtLeast(m.openTime + 1)
+        val expiryTime = entryTime + ivMs // 合约时长仍为所选周期
         val srcTag = source.ifBlank { "sig" }
         val posKey = "${s.symbol}|$intervalCode|$entryTime|${m.side}|$srcTag"
         if (posKey in liveSimKeys || pendingLiveSims.containsKey(posKey)) return

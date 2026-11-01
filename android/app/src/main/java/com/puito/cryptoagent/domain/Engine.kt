@@ -239,7 +239,7 @@ object AlgoEngine {
 }
 
 object EventSim {
-    /** 周期毫秒：开仓在信号下一根 open，平仓在持有一个合约周期后 */
+    /** 周期毫秒：开仓约 1m 延迟，平仓持有一个合约周期 */
     private fun intervalMs(code: String): Long = when (code.trim().lowercase()) {
         "1m" -> 60_000L
         "3m" -> 180_000L
@@ -253,8 +253,9 @@ object EventSim {
 
     /**
      * 事件合约回测：
-     * - 信号出现在 si 根 → 在 si+1 根 **开盘** 开仓
-     * - 持有 1 个 interval 后到期 → 在 entry.openTime+intervalMs **收盘/到期价** 平仓
+     * - 信号仍由对应周期 K 线逻辑产生
+     * - 开仓：信号后最多约 1m 延迟（不再等下一根同周期 K，消除空白等待）
+     * - 平仓：开仓后持有 1 个合约周期 intervalMs
      * - 开平仓时间绝不相同
      */
     fun backtest(
@@ -265,12 +266,12 @@ object EventSim {
     ): Pair<List<SimTrade>, Stats> {
         if (candles.size < 2) return emptyList<SimTrade>() to Stats()
         val ivMs = intervalMs(interval)
+        val entryDelayMs = minOf(60_000L, ivMs) // 尽量 1m 开仓
         val idx = candles.withIndex().associate { (i, c) -> c.openTime to i }
         val trades = mutableListOf<SimTrade>()
         var i = 0
         while (i < signals.size) {
             val sig = signals[i]
-            // 精确匹配；否则取不超过信号时刻的最近一根（避免时间戳微差导致 0 笔）
             val si = idx[sig.openTime] ?: run {
                 var best = -1
                 for (j in candles.indices) {
@@ -282,25 +283,29 @@ object EventSim {
             if (si == null) {
                 i++; continue
             }
-            // 下一根 K 开盘开仓
-            val entryI = si + 1
-            if (entryI >= candles.size) {
+            val sigBar = candles[si]
+            val entryTime = sigBar.openTime + entryDelayMs
+            val frac = (entryDelayMs.toDouble() / ivMs.toDouble()).coerceIn(0.0, 1.0)
+            val entryPrice = sigBar.open + (sigBar.close - sigBar.open) * frac
+            val exitTime = entryTime + ivMs
+            // 到期价：落在某根周期 K 内则插值，否则最近 close
+            val exitPrice = run {
+                val eb = candles.firstOrNull { it.openTime <= exitTime && exitTime < it.openTime + ivMs }
+                    ?: candles.lastOrNull { it.openTime <= exitTime }
+                when {
+                    eb == null -> entryPrice
+                    exitTime >= eb.openTime + ivMs - 1 -> eb.close
+                    else -> {
+                        val f = ((exitTime - eb.openTime).toDouble() / ivMs).coerceIn(0.0, 1.0)
+                        eb.open + (eb.close - eb.open) * f
+                    }
+                }
+            }
+            // 数据未覆盖到期则跳过（避免假平仓）
+            if (candles.last().openTime + ivMs < exitTime) {
                 i++; continue
             }
-            val entry = candles[entryI]
-            val entryTime = entry.openTime
-            val exitTime = entryTime + ivMs
-            // 优先用到期时刻对应 K 线；否则用开仓那根的收盘（同一根周期的结束价）
-            val exitBar = candles.firstOrNull { it.openTime == exitTime }
-                ?: candles.getOrNull(entryI + 1)
-            val exitPrice = when {
-                exitBar != null && exitBar.openTime == exitTime -> exitBar.open // 下一根开盘≈本根收盘后
-                exitBar != null -> exitBar.open
-                else -> entry.close
-            }
-            // 若下一根存在且其 openTime > entryTime，平仓时间用 exitTime（合约到期），价格用下一根 open 或本根 close
             val long = sig.side == "B"
-            val entryPrice = entry.open
             val pnl = if (long) (exitPrice - entryPrice) / entryPrice * 100
             else (entryPrice - exitPrice) / entryPrice * 100
             trades.add(
@@ -317,7 +322,6 @@ object EventSim {
                     win = pnl > 0,
                 ),
             )
-            // 跳过到期前的重复信号，避免重叠持仓
             while (i < signals.size && signals[i].openTime < exitTime) i++
         }
         val wins = trades.count { it.win }
