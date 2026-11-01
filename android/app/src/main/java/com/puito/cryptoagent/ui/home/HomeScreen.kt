@@ -668,6 +668,7 @@ fun Chart(
                             drawContext.canvas.nativeCanvas.drawText(label, padL - 10f, y + 10f, yp)
                         }
                                                 // 1s/ticker 实时价水平线（落在最后一根 K 区域）
+                        // 实时价黄线（不画数字，避免遮挡K线）
                         if (livePrice > 0) {
                             val ly = yAt(livePrice)
                             drawLine(
@@ -675,18 +676,6 @@ fun Chart(
                                 Offset(padL, ly),
                                 Offset(padL + plotW, ly),
                                 strokeWidth = 1.5f,
-                            )
-                            val lp = android.graphics.Paint().apply {
-                                color = android.graphics.Color.parseColor("#F0B90B")
-                                textSize = 26f
-                                isFakeBoldText = true
-                                isAntiAlias = true
-                            }
-                            drawContext.canvas.nativeCanvas.drawText(
-                                "%.2f".format(livePrice),
-                                padL + plotW - 8f,
-                                ly - 6f,
-                                lp.apply { textAlign = android.graphics.Paint.Align.RIGHT },
                             )
                         }
 
