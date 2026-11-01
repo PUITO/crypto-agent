@@ -40,9 +40,71 @@ class BinanceClient(
         preferClose: Boolean = false,
     ): Double? = withContext(Dispatchers.IO) {
         val sym = symbol.uppercase()
+        val now = System.currentTimeMillis()
+        // 近 3 秒内：优先 ticker / 最新 1s，模拟「即时成交价」
+        if (kotlin.math.abs(now - timeMs) <= 3_000L) {
+            lastPrice(sym)?.let { return@withContext it }
+        }
         priceAt1s(sym, timeMs)?.let { return@withContext it }
         priceAtAggTrade(sym, timeMs)?.let { return@withContext it }
         priceAt1m(sym, timeMs, preferClose)
+    }
+
+    /** 最新成交价：ticker → 最近 1s K 收盘（图表实时刷新 / 即时开仓） */
+    suspend fun lastPrice(symbol: String): Double? = withContext(Dispatchers.IO) {
+        val sym = symbol.uppercase()
+        tickerPrice(sym) ?: latest1sClose(sym)
+    }
+
+    /**
+     * 批量精确取价：先 1m 打底，再对每笔尝试 1s/aggTrades。
+     * 用于回测重定价，提高开平仓准确率。
+     */
+    suspend fun pricesAtPrecise(
+        symbol: String,
+        times: List<Long>,
+        preferClose: Boolean = false,
+    ): Map<Long, Double> = withContext(Dispatchers.IO) {
+        if (times.isEmpty()) return@withContext emptyMap()
+        val sym = symbol.uppercase()
+        val base = pricesAt1m(sym, times, preferClose)
+        val out = linkedMapOf<Long, Double>()
+        for (t in times) {
+            val px = priceAt1s(sym, t)
+                ?: priceAtAggTrade(sym, t)
+                ?: base[t]
+            if (px != null && px > 0) out[t] = px
+        }
+        out
+    }
+
+    private fun tickerPrice(sym: String): Double? {
+        val url = "$baseUrl/api/v3/ticker/price?symbol=$sym"
+        return try {
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val o = org.json.JSONObject(resp.body?.string() ?: return null)
+                o.getString("price").toDouble()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun latest1sClose(sym: String): Double? {
+        val url = "$baseUrl/api/v3/klines?symbol=$sym&interval=1s&limit=1"
+        return try {
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val arr = JSONArray(resp.body?.string() ?: "[]")
+                if (arr.length() == 0) return null
+                arr.getJSONArray(0).getString(4).toDouble()
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /** 批量用 1m K 线给一组时刻取价（历史回测加速），仍按分钟对齐 */

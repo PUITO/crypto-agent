@@ -48,6 +48,7 @@ fun HomeScreen(repo: Repository) {
     var loading by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf<String?>(null) }
     var tick by remember { mutableIntStateOf(0) }
+    val liveTick by repo.liveSimTick.collectAsState()
     var scale by remember { mutableFloatStateOf(1f) }
     var startIndex by remember { mutableFloatStateOf(-1f) } // <0 = stick to latest
     var showInd by remember { mutableStateOf(false) }
@@ -65,6 +66,14 @@ fun HomeScreen(repo: Repository) {
     LaunchedEffect(s.strategyRunning) {
         while (s.strategyRunning) {
             kotlinx.coroutines.delay(8_000)
+            tick++
+        }
+    }
+    // 1s/ticker 最新价：无论策略是否运行，约 5s 刷新最后一根 K
+    LaunchedEffect(s.symbol) {
+        while (true) {
+            kotlinx.coroutines.delay(5_000)
+            runCatching { repo.refreshLivePrice() }
             tick++
         }
     }
@@ -90,6 +99,14 @@ fun HomeScreen(repo: Repository) {
                 color = if (s.strategyRunning) Color(0xFF0ECB81) else MaterialTheme.colorScheme.secondary,
                 fontSize = 12.sp,
             )
+            if (repo.livePrice > 0) {
+                Text(
+                    " · ${"%.2f".format(repo.livePrice)}",
+                    color = Color(0xFFF0B90B),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
             Spacer(Modifier.weight(1f))
             FilterChip(
                 selected = s.strategyRunning,
@@ -168,7 +185,7 @@ fun HomeScreen(repo: Repository) {
             }
         }
 
-        key(tick, s.chartIndicators) {
+        key(tick, liveTick, s.chartIndicators, repo.livePrice) {
             val candleCount = repo.candles.size
             // 图例：B/S=周期原生  1B/1S=1m触发+本周期确认叠加
             Text(
@@ -201,6 +218,7 @@ fun HomeScreen(repo: Repository) {
             }
             Chart(
                 candles = repo.candles,
+                livePrice = repo.livePrice,
                 signals = if (s.strategyRunning) repo.signals else emptyList(),
                 indicators = s.chartIndicators.filter { it.enabled },
                 strategyBaselines = stBaselines,
@@ -456,6 +474,7 @@ private fun Drop(v: String, opts: List<String>, on: (String) -> Unit) {
 @Composable
 fun Chart(
     candles: List<Candle>,
+    livePrice: Double = 0.0,
     signals: List<SignalMark>,
     indicators: List<ChartIndicatorPref>,
     strategyBaselines: List<StrategyBaselineLine> = emptyList(),
@@ -619,6 +638,10 @@ fun Chart(
                                 }
                             }
                         }
+                        if (livePrice > 0) {
+                            maxH = max(maxH, livePrice)
+                            minL = min(minL, livePrice)
+                        }
 
                         val yMax = maxH + (maxH - minL) * 0.06
                         val yMin = minL - (maxH - minL) * 0.06
@@ -644,7 +667,30 @@ fun Chart(
                             // 画在左侧边距内，完整可见
                             drawContext.canvas.nativeCanvas.drawText(label, padL - 10f, y + 10f, yp)
                         }
-                        drawLine(axis, Offset(padL, padT), Offset(padL, padT + plotH), 2.5f)
+                                                // 1s/ticker 实时价水平线（落在最后一根 K 区域）
+                        if (livePrice > 0) {
+                            val ly = yAt(livePrice)
+                            drawLine(
+                                Color(0xFFF0B90B).copy(alpha = 0.85f),
+                                Offset(padL, ly),
+                                Offset(padL + plotW, ly),
+                                strokeWidth = 1.5f,
+                            )
+                            val lp = android.graphics.Paint().apply {
+                                color = android.graphics.Color.parseColor("#F0B90B")
+                                textSize = 26f
+                                isFakeBoldText = true
+                                isAntiAlias = true
+                            }
+                            drawContext.canvas.nativeCanvas.drawText(
+                                "%.2f".format(livePrice),
+                                padL + plotW - 8f,
+                                ly - 6f,
+                                lp.apply { textAlign = android.graphics.Paint.Align.RIGHT },
+                            )
+                        }
+
+drawLine(axis, Offset(padL, padT), Offset(padL, padT + plotH), 2.5f)
                         drawLine(axis, Offset(padL, padT + plotH), Offset(padL + plotW, padT + plotH), 2.5f)
 
                         // 裁剪绘图区，避免蜡烛画出轴外

@@ -54,6 +54,9 @@ class Repository(ctx: Context) {
     private val hibt = HibtClient()
 
     var candles: List<Candle> = emptyList(); private set
+    /** 1s/ticker 最新价，驱动图表最后一根 K 实时刷新 */
+    var livePrice: Double = 0.0; private set
+    var livePriceAtMs: Long = 0L; private set
     var signals: List<SignalMark> = emptyList(); private set
     var trades: List<SimTrade> = emptyList(); private set
     var stats: Stats = Stats(); private set
@@ -280,25 +283,22 @@ class Repository(ctx: Context) {
     private suspend fun repriceSimTrades(symbol: String, trades: List<SimTrade>): List<SimTrade> {
         if (trades.isEmpty()) return trades
         return try {
-            val entryMap = binance.pricesAt1m(symbol, trades.map { it.entryTime }, preferClose = false)
-            val exitMap = binance.pricesAt1m(symbol, trades.map { it.exitTime }, preferClose = true)
-            val refineFrom = (trades.size - 30).coerceAtLeast(0)
-            trades.mapIndexed { idx, t ->
-                var ep = entryMap[t.entryTime] ?: t.entryPrice
-                var xp = exitMap[t.exitTime] ?: t.exitPrice
-                if (idx >= refineFrom) {
-                    binance.priceAt(symbol, t.entryTime, preferClose = false)?.let { ep = it }
-                    binance.priceAt(symbol, t.exitTime, preferClose = true)?.let { xp = it }
-                }
-                if (ep <= 0 || xp <= 0) return@mapIndexed t
-                val pnl = if (t.side == "B") (xp - ep) / ep * 100.0 else (ep - xp) / ep * 100.0
+            // 全量优先 1s/aggTrades，失败再 1m，提高开平仓准确率
+            val entryMap = binance.pricesAtPrecise(symbol, trades.map { it.entryTime }, preferClose = false)
+            val exitMap = binance.pricesAtPrecise(symbol, trades.map { it.exitTime }, preferClose = true)
+            trades.map { t ->
+                val ep = entryMap[t.entryTime] ?: t.entryPrice
+                val xp = exitMap[t.exitTime] ?: t.exitPrice
+                if (ep <= 0 || xp <= 0) return@map t
+                val long = t.side == "B"
+                val pnl = if (long) (xp - ep) / ep * 100 else (ep - xp) / ep * 100
                 t.copy(entryPrice = ep, exitPrice = xp, pnlPct = pnl, win = pnl > 0)
             }
-        } catch (e: Exception) {
-            HibtWebSession.appendLog("回测重定价失败，沿用K线价: ${e.message}")
+        } catch (_: Exception) {
             trades
         }
     }
+
 
     /** 仅清零本轮实时模拟（持仓+已平实时单），保留历史回测综合胜率 */
     fun clearSessionSim() {
@@ -1094,6 +1094,32 @@ class Repository(ctx: Context) {
 
     fun clearOverlays() = setOverlays(emptyList())
 
+
+    /** 拉取 ticker/1s 最新价，并写回当前周期最后一根 K 的 close/high/low（图表实时） */
+    suspend fun refreshLivePrice() {
+        val s = settings()
+        val px = try {
+            binance.lastPrice(s.symbol)
+        } catch (_: Exception) {
+            null
+        } ?: return
+        if (px <= 0) return
+        livePrice = px
+        livePriceAtMs = System.currentTimeMillis()
+        val list = candles
+        if (list.isEmpty()) return
+        val last = list.last()
+        val updated = last.copy(
+            high = maxOf(last.high, px),
+            low = minOf(last.low, px),
+            close = px,
+        )
+        if (updated != last) {
+            candles = list.dropLast(1) + updated
+            bumpLiveSim() // 复用 tick 触发 UI 重组
+        }
+    }
+
     suspend fun refreshMarket(): Result<Unit> {
         val s = settings()
         binance.updateBase(s.binanceBaseUrl)
@@ -1151,6 +1177,7 @@ class Repository(ctx: Context) {
             } else {
                 candles = bars
             }
+            runCatching { refreshLivePrice() }
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -1441,6 +1468,7 @@ class Repository(ctx: Context) {
         val s = settings()
         if (!s.strategyRunning) return@withContext emptyList()
         binance.updateBase(s.binanceBaseUrl)
+        runCatching { refreshLivePrice() }
         val cfg = enabledStrategy() ?: return@withContext emptyList()
         val tradeIntervals = effectiveTradeIntervals(cfg, s.interval)
         val limit1m = s.klineLimit.coerceIn(200, 500)
