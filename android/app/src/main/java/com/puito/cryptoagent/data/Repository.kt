@@ -7,6 +7,7 @@ import com.google.gson.reflect.TypeToken
 import com.puito.cryptoagent.domain.EventSim
 import com.puito.cryptoagent.domain.ModelEngine
 import com.puito.cryptoagent.domain.StrategyEngine
+import com.puito.cryptoagent.domain.Indicators
 import com.puito.cryptoagent.domain.OfflineModelManager
 import com.puito.cryptoagent.net.BinanceClient
 import com.puito.cryptoagent.net.HibtClient
@@ -115,6 +116,10 @@ class Repository(ctx: Context) {
                 showStrategyBaselines = try { raw.showStrategyBaselines } catch (_: Exception) { true },
                 liveSimEnabled = raw.liveSimEnabled,
                 signalMinPredictPct = try { raw.signalMinPredictPct } catch (_: Exception) { 0.0 },
+                signalReverseEnabled = try { raw.signalReverseEnabled } catch (_: Exception) { true },
+                signalReverseBelowPct = try {
+                    raw.signalReverseBelowPct.takeIf { it in 20.0..70.0 } ?: 48.0
+                } catch (_: Exception) { 48.0 },
                 liveSimMinWinRatePct = raw.liveSimMinWinRatePct,
                 liveSimMaxConsecutiveLosses = raw.liveSimMaxConsecutiveLosses,
                 liveSimMinTradesBeforeRetune = raw.liveSimMinTradesBeforeRetune,
@@ -1517,18 +1522,19 @@ class Repository(ctx: Context) {
                                     fresh1m.mapNotNull { m ->
                                         if (!higherTfAgrees(barsHt, m.side)) return@mapNotNull null
                                         if (isSignalExpired("1m", m.openTime)) return@mapNotNull null
-                                        val ai = if (s.hibt.aiEvaluate) {
+                                        val ai0 = if (s.hibt.aiEvaluate) {
                                             val toMs = s.llmTimeoutSec.coerceIn(10, 300) * 1000L
                                             withTimeoutOrNull(toMs) {
                                                 evaluateSignal(s, m, iv, barsHt, st.winRate * 100, st.trades)
                                             }
                                         } else null
+                                        val (mEval, aiEval) = applySignalDirectionEval(s, m, barsHt, ai0)
                                         SignalNotifyPayload(
-                                            mark = m,
+                                            mark = mEval,
                                             interval = iv,
                                             intervalWinRatePct = st.winRate * 100,
                                             intervalTrades = st.trades,
-                                            ai = ai,
+                                            ai = aiEval,
                                             source = "1m_confirm",
                                         )
                                     }
@@ -1577,18 +1583,19 @@ class Repository(ctx: Context) {
                                 // 未完成桶信号：过期判定按 1m 宽限，避免刚出现就被判过期
                                 val expIv = if (barsHt.lastOrNull()?.openTime == m.openTime) "1m" else iv
                                 if (isSignalExpired(expIv, m.openTime)) return@mapNotNull null
-                                val ai = if (s.hibt.aiEvaluate) {
+                                val ai0 = if (s.hibt.aiEvaluate) {
                                     val toMs = s.llmTimeoutSec.coerceIn(10, 300) * 1000L
                                     withTimeoutOrNull(toMs) {
                                         evaluateSignal(s, m, iv, barsHt, st.winRate * 100, st.trades)
                                     }
                                 } else null
+                                val (mEval, aiEval) = applySignalDirectionEval(s, m, barsHt, ai0)
                                 SignalNotifyPayload(
-                                    mark = m,
+                                    mark = mEval,
                                     interval = iv,
                                     intervalWinRatePct = st.winRate * 100,
                                     intervalTrades = st.trades,
-                                    ai = ai,
+                                    ai = aiEval,
                                     source = "ht_native",
                                 )
                             }
@@ -1737,6 +1744,103 @@ class Repository(ctx: Context) {
             }
         }
         out
+    }
+
+
+    /**
+     * 本地算法：对「当前信号方向」做结构评分（0～100），不使用历史回测胜率。
+     */
+    private fun localSignalScorePct(bars: List<Candle>, side: String): Double {
+        if (bars.size < 15) return 50.0
+        val closes = bars.map { it.close }
+        val last = closes.last()
+        if (last <= 0) return 50.0
+        val rsi = Indicators.rsi(closes, 14).lastOrNull() ?: 50.0
+        val n = minOf(5, closes.size / 2)
+        val recent = closes.takeLast(n).average()
+        val prev = closes.dropLast(n).takeLast(n).average()
+        val momPct = ((recent - prev) / last) * 100.0
+        val win = bars.takeLast(20)
+        val hi = win.maxOf { it.high }
+        val lo = win.minOf { it.low }
+        val pos = if (hi > lo) ((last - lo) / (hi - lo)).coerceIn(0.0, 1.0) else 0.5
+        val last3 = bars.takeLast(3)
+        val bullishBars = last3.count { it.close >= it.open }
+        var score = 50.0
+        if (side == "B") {
+            score += (rsi - 50.0) * 0.4
+            score += momPct.coerceIn(-3.0, 3.0) * 4.0
+            if (rsi >= 72) score -= 18.0 else if (rsi >= 65) score -= 8.0
+            if (rsi <= 30) score += 12.0 else if (rsi <= 40) score += 6.0
+            if (pos >= 0.85) score -= 10.0
+            if (pos <= 0.2) score += 8.0
+            score += (bullishBars - 1.5) * 4.0
+        } else {
+            score += (50.0 - rsi) * 0.4
+            score -= momPct.coerceIn(-3.0, 3.0) * 4.0
+            if (rsi <= 28) score -= 18.0 else if (rsi <= 35) score -= 8.0
+            if (rsi >= 70) score += 12.0 else if (rsi >= 60) score += 6.0
+            if (pos <= 0.15) score -= 10.0
+            if (pos >= 0.8) score += 8.0
+            score += (1.5 - bullishBars) * 4.0
+        }
+        return score.coerceIn(8.0, 92.0)
+    }
+
+    /**
+     * 信号方向评估 + 可选逆转（非历史回测）。
+     * AI 开且有 winRate → 用 AI 胜率；否则用本地算法分。
+     * 低于阈值则反向开单，并重写 AI 结果中的胜率/是否过阈。
+     */
+    private fun applySignalDirectionEval(
+        s: AppSettings,
+        mark: SignalMark,
+        bars: List<Candle>,
+        ai: AiEvalResult?,
+    ): Pair<SignalMark, AiEvalResult?> {
+        if (!s.signalReverseEnabled) return mark to ai
+        val thr = s.signalReverseBelowPct.coerceIn(20.0, 70.0)
+        val algoScore = localSignalScorePct(bars, mark.side)
+        val useAi = s.hibt.aiEvaluate && ai?.winRatePct != null
+        val decisionScore = if (useAi) ai!!.winRatePct!! else algoScore
+        if (decisionScore + 1e-9 >= thr) {
+            if (ai == null) {
+                return mark to AiEvalResult(
+                    winRatePct = algoScore,
+                    summary = "算法评估 ${mark.side} 约${"%.0f".format(algoScore)}%（未逆转）",
+                    passThreshold = algoScore >= thr,
+                    thresholdPct = thr,
+                )
+            }
+            return mark to ai
+        }
+        val revSide = if (mark.side == "B") "S" else "B"
+        val revScore = (100.0 - decisionScore).coerceIn(8.0, 92.0)
+        val orderThr = if (s.hibt.aiEvaluate) s.hibt.aiMinWinRate else thr
+        val baseSummary = if (useAi) {
+            "逆转: AI原${mark.side}${("%.0f".format(decisionScore))}%<$thr% → ${revSide} ${"%.0f".format(revScore)}%"
+        } else {
+            "逆转: 算法原${mark.side}${("%.0f".format(decisionScore))}%<$thr% → ${revSide} ${"%.0f".format(revScore)}%"
+        }
+        val mergedSummary = listOfNotNull(
+            baseSummary,
+            ai?.summary?.takeIf { it.isNotBlank() }?.let { "原评:$it" },
+        ).joinToString(" | ")
+        val newAi = AiEvalResult(
+            winRatePct = revScore,
+            summary = mergedSummary,
+            passThreshold = revScore + 1e-9 >= orderThr,
+            thresholdPct = orderThr,
+            error = ai?.error,
+        )
+        val newMark = mark.copy(
+            side = revSide,
+            tag = listOf(mark.tag, "rev").filter { it.isNotBlank() }.joinToString("|"),
+        )
+        HibtWebSession.appendLog(
+            "信号评估逆转 ${mark.side}→$revSide ${"%.0f".format(decisionScore)}%→${"%.0f".format(revScore)}% thr=$thr",
+        )
+        return newMark to newAi
     }
 
     /**

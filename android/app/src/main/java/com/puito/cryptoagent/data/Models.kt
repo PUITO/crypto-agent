@@ -348,6 +348,13 @@ data class AppSettings(
      * 0 = 不限制（兼容旧行为：AI关时全部信号模拟/通知）。
      */
     val signalMinPredictPct: Double = 0.0,
+    /**
+     * 信号方向评估（非历史回测）：对单条信号估胜率，过低则逆转方向做反手。
+     * 开启 AI 评估时优先用 AI 胜率；否则用本地算法结构分。
+     */
+    val signalReverseEnabled: Boolean = true,
+    /** 原方向估计胜率低于该值(%) 时逆转 */
+    val signalReverseBelowPct: Double = 48.0,
     /** 模拟综合胜率低于该值(%) 触发 LLM 自动调优 */
     val liveSimMinWinRatePct: Double = 48.0,
     /** 连续亏损笔数达到后触发调优 */

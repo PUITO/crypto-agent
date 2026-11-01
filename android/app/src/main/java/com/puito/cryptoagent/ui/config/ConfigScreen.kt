@@ -38,6 +38,8 @@ fun ConfigScreen(repo: Repository) {
     var modeHt by remember { mutableStateOf(cur.signalModeHtNative) }
     var liveSim by remember { mutableStateOf(cur.liveSimEnabled) }
     var signalMinPred by remember { mutableStateOf(cur.signalMinPredictPct.toString()) }
+    var signalRev by remember { mutableStateOf(cur.signalReverseEnabled) }
+    var signalRevBelow by remember { mutableStateOf(cur.signalReverseBelowPct.toString()) }
     var liveSimAuto by remember { mutableStateOf(cur.liveSimAutoRetune) }
     var liveSimWr by remember { mutableStateOf(cur.liveSimMinWinRatePct.toString()) }
     var liveSimLoss by remember { mutableStateOf(cur.liveSimMaxConsecutiveLosses.toString()) }
@@ -178,6 +180,23 @@ fun ConfigScreen(repo: Repository) {
             fontSize = 12.sp,
         )
         Row {
+            Text("信号评估逆转（低胜率做反手）", modifier = Modifier.weight(1f))
+            Switch(signalRev, { signalRev = it })
+        }
+        OutlinedTextField(
+            value = signalRevBelow,
+            onValueChange = { signalRevBelow = it.filter { c -> c.isDigit() || c == '.' } },
+            label = { Text("原方向估胜率低于(%)则逆转") },
+            placeholder = { Text("默认48") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        Text(
+            "不依赖历史回测。AI评估开：用AI胜率判定；关闭时用本地结构算法。逆转后通知/模拟/下单均用新方向，AI胜率改为100-原值。",
+            color = MaterialTheme.colorScheme.secondary,
+            fontSize = 12.sp,
+        )
+        Row {
             Text("模拟不佳时自动 LLM 调优", modifier = Modifier.weight(1f))
             Switch(liveSimAuto, { liveSimAuto = it })
         }
@@ -237,6 +256,8 @@ fun ConfigScreen(repo: Repository) {
                 notifyVibrate = vibrate,
                 liveSimEnabled = liveSim,
                 signalMinPredictPct = signalMinPred.toDoubleOrNull()?.coerceIn(0.0, 99.0) ?: 0.0,
+                signalReverseEnabled = signalRev,
+                signalReverseBelowPct = signalRevBelow.toDoubleOrNull()?.coerceIn(20.0, 70.0) ?: 48.0,
                 liveSimAutoRetune = liveSimAuto,
                 liveSimMinWinRatePct = liveSimWr.toDoubleOrNull()?.coerceIn(1.0, 99.0) ?: 48.0,
                 liveSimMaxConsecutiveLosses = liveSimLoss.toIntOrNull()?.coerceIn(2, 10) ?: 3,
