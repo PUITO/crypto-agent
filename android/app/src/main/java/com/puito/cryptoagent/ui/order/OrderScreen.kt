@@ -209,9 +209,9 @@ fun OrderScreen(repo: Repository) {
                             modifier = Modifier.weight(1f),
                         ) { Text("刷新账户") }
                         OutlinedButton(
-                            onClick = { HibtWebSession.reload() },
+                            onClick = { HibtWebSession.forceReloadFresh() },
                             modifier = Modifier.weight(1f),
-                        ) { Text("刷新页面") }
+                        ) { Text("强刷(清缓存)") }
                         OutlinedButton(
                             onClick = {
                                 HibtWebSession.clearSession(ctx)

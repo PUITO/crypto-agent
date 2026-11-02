@@ -2,11 +2,18 @@ package com.puito.cryptoagent.net
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Handler
 import android.os.Looper
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -88,6 +95,9 @@ object HibtWebSession {
     @Volatile private var lastSyncedApi: String = ""
     @Volatile private var placeWait: CompletableDeferred<PlaceOutcome>? = null
     private val placeSeq = AtomicLong(0)
+    @Volatile private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var lastAutoReloadAt = 0L
+    @Volatile private var pendingNetworkReload = false
 
     data class PlaceOutcome(val ok: Boolean, val message: String, val dryRun: Boolean)
 
@@ -150,29 +160,72 @@ object HibtWebSession {
                 domStorageEnabled = true
                 databaseEnabled = true
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                // VPN 下脏缓存易导致接口一直 loading
                 cacheMode = WebSettings.LOAD_DEFAULT
                 loadsImagesAutomatically = true
                 mediaPlaybackRequiresUserGesture = false
-                // 关键默认带 "; wv)" 的 UA，很多站点会卡 API loading
                 userAgentString =
                     "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 " +
                     "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
                 setSupportMultipleWindows(false)
                 javaScriptCanOpenWindowsAutomatically = false
+                @Suppress("DEPRECATION")
+                setRenderPriority(WebSettings.RenderPriority.HIGH)
+                allowFileAccess = true
+                allowContentAccess = true
             }
+            try { wv.setNetworkAvailable(true) } catch (_: Exception) {}
             wv.addJavascriptInterface(Bridge(), "CaHibt")
             wv.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String) {
+                    try { view.setNetworkAvailable(true) } catch (_: Exception) {}
                     if (looksLikeOrderPage(url)) {
                         rememberOrderPage(url)
                     }
                     val tip = if (looksLikeOrderPage(url)) "合约下单页已锁定" else "页面已加载（请进入事件合约下单页）"
                     _ui.value = _ui.value.copy(pageUrl = url, loaded = true, status = tip)
-                    // 不全页狂刷注入；仅首次/冷却后补一次轻量脚本（无网络钩子）
                     injectHooks(view, force = false)
+                }
+
+                override fun onReceivedError(
+                    view: WebView,
+                    request: WebResourceRequest?,
+                    error: WebResourceError?,
+                ) {
+                    val isMain = request?.isForMainFrame == true
+                    val desc = error?.description?.toString().orEmpty()
+                    val code = error?.errorCode ?: -1
+                    if (isMain) {
+                        appendLog("WebView主框错误 code=$code $desc → 自动重试")
+                        scheduleAutoReload("主框错误:$code")
+                    } else if (
+                        code == ERROR_HOST_LOOKUP ||
+                        code == ERROR_CONNECT ||
+                        code == ERROR_TIMEOUT ||
+                        code == ERROR_IO
+                    ) {
+                        scheduleAutoReload("子资源网络错误:$code", softOnly = true)
+                    }
+                }
+
+                override fun onReceivedHttpError(
+                    view: WebView,
+                    request: WebResourceRequest?,
+                    errorResponse: WebResourceResponse?,
+                ) {
+                    val code = errorResponse?.statusCode ?: 0
+                    if (request?.isForMainFrame == true && code >= 500) {
+                        appendLog("WebView HTTP $code → 自动重试")
+                        scheduleAutoReload("HTTP$code")
+                    }
+                }
+
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest?): Boolean {
+                    return false
                 }
             }
             webView = wv
+            registerNetworkCallback(appCtx)
             _ui.value = _ui.value.copy(status = "WebView 已创建，请打开并登录")
             return wv
         }
@@ -382,7 +435,139 @@ object HibtWebSession {
     }
 
     fun reload() {
-        main.post { webView?.reload() }
+        main.post {
+            val wv = webView ?: return@post
+            try {
+                wakeWebView(wv)
+                wv.settings.cacheMode = WebSettings.LOAD_NO_CACHE
+                wv.reload()
+                // 恢复默认缓存策略，避免长期无缓存浪费流量
+                main.postDelayed({
+                    try { wv.settings.cacheMode = WebSettings.LOAD_DEFAULT } catch (_: Exception) {}
+                }, 3_000)
+                appendLog("页面刷新(绕过缓存)")
+            } catch (e: Exception) {
+                appendLog("reload失败: ${e.message}")
+            }
+        }
+    }
+
+    /** 强制刷新：清 HTTP 缓存后重新 load 当前 URL（保留 Cookie） */
+    fun forceReloadFresh() {
+        main.post {
+            val wv = webView ?: return@post
+            try {
+                wakeWebView(wv)
+                wv.clearCache(false)
+                val url = wv.url?.takeIf { it.isNotBlank() && it != "about:blank" }
+                    ?: lastOrderPageUrl.ifBlank { "https://m.hibt.com/" }
+                wv.settings.cacheMode = WebSettings.LOAD_NO_CACHE
+                val headers = mapOf(
+                    "Cache-Control" to "no-cache",
+                    "Pragma" to "no-cache",
+                )
+                wv.loadUrl(url, headers)
+                main.postDelayed({
+                    try { wv.settings.cacheMode = WebSettings.LOAD_DEFAULT } catch (_: Exception) {}
+                }, 5_000)
+                appendLog("强制刷新(清缓存) $url")
+                _ui.value = _ui.value.copy(status = "强制刷新中…")
+            } catch (e: Exception) {
+                appendLog("forceReload失败: ${e.message}")
+            }
+        }
+    }
+
+    private fun scheduleAutoReload(reason: String, softOnly: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (now - lastAutoReloadAt < 12_000L) return
+        lastAutoReloadAt = now
+        main.postDelayed({
+            val wv = webView ?: return@postDelayed
+            try {
+                wakeWebView(wv)
+                if (softOnly) {
+                    // SPA：尝试触发页面内重新拉数，不行再 reload
+                    wv.evaluateJavascript(
+                        """
+                        (function(){
+                          try {
+                            if (typeof window!=='undefined' && window.dispatchEvent) {
+                              window.dispatchEvent(new Event('online'));
+                              window.dispatchEvent(new Event('focus'));
+                            }
+                            // 常见框架路由/可见性刷新
+                            document.dispatchEvent(new Event('visibilitychange'));
+                            return 'soft-ok';
+                          } catch(e) { return 'soft-fail:'+e; }
+                        })();
+                        """.trimIndent(),
+                    ) { r ->
+                        appendLog("网络恢复软刷新 $reason → $r")
+                    }
+                    // 2s 后若仍可能卡死，再硬刷一次（限频）
+                    main.postDelayed({
+                        if (System.currentTimeMillis() - lastAutoReloadAt >= 11_000L) return@postDelayed
+                        try { wv.reload() } catch (_: Exception) {}
+                    }, 2_500)
+                } else {
+                    appendLog("自动重载: $reason")
+                    wv.settings.cacheMode = WebSettings.LOAD_NO_CACHE
+                    wv.reload()
+                    main.postDelayed({
+                        try { wv.settings.cacheMode = WebSettings.LOAD_DEFAULT } catch (_: Exception) {}
+                    }, 3_000)
+                }
+            } catch (e: Exception) {
+                appendLog("自动重载失败: ${e.message}")
+            }
+        }, 1_200)
+    }
+
+    private fun registerNetworkCallback(ctx: Context) {
+        if (networkCallback != null) return
+        try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    main.post {
+                        webView?.let { wv ->
+                            try { wv.setNetworkAvailable(true) } catch (_: Exception) {}
+                            wakeWebView(wv)
+                        }
+                        // VPN 刚连上：延迟软刷新，避免一连上就狂刷
+                        if (pendingNetworkReload || webView != null) {
+                            pendingNetworkReload = false
+                            scheduleAutoReload("网络恢复/VPN", softOnly = true)
+                        }
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    pendingNetworkReload = true
+                    appendLog("网络断开，恢复后将自动刷新 WebView")
+                }
+
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    val hasNet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    main.post {
+                        try { webView?.setNetworkAvailable(hasNet) } catch (_: Exception) {}
+                    }
+                }
+            }
+            val req = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            cm.registerNetworkCallback(req, cb)
+            networkCallback = cb
+            // 当前是否已有网
+            val active = cm.activeNetwork
+            val caps = active?.let { cm.getNetworkCapabilities(it) }
+            val online = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+            try { webView?.setNetworkAvailable(online || true) } catch (_: Exception) {}
+        } catch (e: Exception) {
+            appendLog("注册网络监听失败: ${e.message}")
+        }
     }
 
     private val GO_EVENT_MENU_JS = """
@@ -918,6 +1103,11 @@ object HibtWebSession {
         try {
             @Suppress("DEPRECATION")
             wv.onResume()
+        } catch (_: Exception) {
+        }
+        try {
+            // 后台/VPN 场景下系统可能把 WebView 标成无网，导致接口一直转圈
+            wv.setNetworkAvailable(true)
         } catch (_: Exception) {
         }
     }
