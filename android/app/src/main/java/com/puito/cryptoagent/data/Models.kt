@@ -343,17 +343,18 @@ data class AppSettings(
     /** 活跃策略：过阈值信号做本地模拟 */
     val liveSimEnabled: Boolean = true,
     /**
-     * 信号预测最低阈值(%)：低于此值不模拟、不通知。
-     * AI评估开：用 AI 预测胜率；AI评估关：用该周期策略回测胜率作为预测。
-     * 0 = 不限制（兼容旧行为：AI关时全部信号模拟/通知）。
+     * 信号预测最低阈值(%)：
+     * - 开启「评估逆转」时：原方向估胜率低于此值 → 逆转做反手（通知/模拟/下单用新方向）
+     * - 关闭「评估逆转」时：低于此值不模拟、不通知
+     * AI开用AI胜率；AI关用本地算法分（逆转开）或周期回测胜率（逆转关）。
+     * 0 = 不限制（不逆转、不过滤）。
      */
     val signalMinPredictPct: Double = 0.0,
     /**
-     * 信号方向评估（非历史回测）：对单条信号估胜率，过低则逆转方向做反手。
-     * 开启 AI 评估时优先用 AI 胜率；否则用本地算法结构分。
+     * 是否启用信号评估逆转。开：低于 signalMinPredictPct 做反手；关：低于阈值则丢弃。
      */
     val signalReverseEnabled: Boolean = true,
-    /** 原方向估计胜率低于该值(%) 时逆转 */
+    /** @deprecated 已合并到 signalMinPredictPct，保留字段仅兼容旧配置 */
     val signalReverseBelowPct: Double = 48.0,
     /** 模拟综合胜率低于该值(%) 触发 LLM 自动调优 */
     val liveSimMinWinRatePct: Double = 48.0,

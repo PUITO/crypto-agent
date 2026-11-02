@@ -39,7 +39,6 @@ fun ConfigScreen(repo: Repository) {
     var liveSim by remember { mutableStateOf(cur.liveSimEnabled) }
     var signalMinPred by remember { mutableStateOf(cur.signalMinPredictPct.toString()) }
     var signalRev by remember { mutableStateOf(cur.signalReverseEnabled) }
-    var signalRevBelow by remember { mutableStateOf(cur.signalReverseBelowPct.toString()) }
     var liveSimAuto by remember { mutableStateOf(cur.liveSimAutoRetune) }
     var liveSimWr by remember { mutableStateOf(cur.liveSimMinWinRatePct.toString()) }
     var liveSimLoss by remember { mutableStateOf(cur.liveSimMaxConsecutiveLosses.toString()) }
@@ -170,29 +169,16 @@ fun ConfigScreen(repo: Repository) {
             value = signalMinPred,
             onValueChange = { signalMinPred = it.filter { c -> c.isDigit() || c == '.' } },
             label = { Text("信号预测最低阈值(%) · 0=不限制") },
-            placeholder = { Text("例如 50：预测低于50不模拟不通知") },
+            placeholder = { Text("例如 50") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-        )
-        Text(
-            "AI开：用AI预测胜率；AI关：用该周期策略回测胜率。低于阈值的信号不进模拟、不发通知。0表示不过滤。",
-            color = MaterialTheme.colorScheme.secondary,
-            fontSize = 12.sp,
         )
         Row {
-            Text("信号评估逆转（低胜率做反手）", modifier = Modifier.weight(1f))
+            Text("低于阈值时逆转做反手", modifier = Modifier.weight(1f))
             Switch(signalRev, { signalRev = it })
         }
-        OutlinedTextField(
-            value = signalRevBelow,
-            onValueChange = { signalRevBelow = it.filter { c -> c.isDigit() || c == '.' } },
-            label = { Text("原方向估胜率低于(%)则逆转") },
-            placeholder = { Text("默认48") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-        )
         Text(
-            "不依赖历史回测。AI评估开：用AI胜率判定；关闭时用本地结构算法。逆转后通知/模拟/下单均用新方向，AI胜率改为100-原值。",
+            "同一阈值：开启逆转→低于阈值改反方向（通知/模拟/下单）；关闭逆转→低于阈值直接丢弃。AI开用AI胜率，关用算法分。0=不限制。",
             color = MaterialTheme.colorScheme.secondary,
             fontSize = 12.sp,
         )
@@ -257,7 +243,6 @@ fun ConfigScreen(repo: Repository) {
                 liveSimEnabled = liveSim,
                 signalMinPredictPct = signalMinPred.toDoubleOrNull()?.coerceIn(0.0, 99.0) ?: 0.0,
                 signalReverseEnabled = signalRev,
-                signalReverseBelowPct = signalRevBelow.toDoubleOrNull()?.coerceIn(20.0, 70.0) ?: 48.0,
                 liveSimAutoRetune = liveSimAuto,
                 liveSimMinWinRatePct = liveSimWr.toDoubleOrNull()?.coerceIn(1.0, 99.0) ?: 48.0,
                 liveSimMaxConsecutiveLosses = liveSimLoss.toIntOrNull()?.coerceIn(2, 10) ?: 3,

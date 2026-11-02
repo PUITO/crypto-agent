@@ -1798,8 +1798,10 @@ class Repository(ctx: Context) {
         bars: List<Candle>,
         ai: AiEvalResult?,
     ): Pair<SignalMark, AiEvalResult?> {
+        // 与「信号预测最低阈值」共用：0 表示不逆转；>0 时低于阈值则逆转
         if (!s.signalReverseEnabled) return mark to ai
-        val thr = s.signalReverseBelowPct.coerceIn(20.0, 70.0)
+        val thr = s.signalMinPredictPct
+        if (thr <= 0) return mark to ai
         val algoScore = localSignalScorePct(bars, mark.side)
         val useAi = s.hibt.aiEvaluate && ai?.winRatePct != null
         val decisionScore = if (useAi) ai!!.winRatePct!! else algoScore
@@ -1807,8 +1809,8 @@ class Repository(ctx: Context) {
             if (ai == null) {
                 return mark to AiEvalResult(
                     winRatePct = algoScore,
-                    summary = "算法评估 ${mark.side} 约${"%.0f".format(algoScore)}%（未逆转）",
-                    passThreshold = algoScore >= thr,
+                    summary = "算法评估 ${mark.side} 约${"%.0f".format(algoScore)}%（≥阈值${"%.0f".format(thr)}% 未逆转）",
+                    passThreshold = true,
                     thresholdPct = thr,
                 )
             }
@@ -1816,6 +1818,7 @@ class Repository(ctx: Context) {
         }
         val revSide = if (mark.side == "B") "S" else "B"
         val revScore = (100.0 - decisionScore).coerceIn(8.0, 92.0)
+        // 逆转后视为已满足预测阈值；真实下单仍可再看 AI 下单阈值
         val orderThr = if (s.hibt.aiEvaluate) s.hibt.aiMinWinRate else thr
         val baseSummary = if (useAi) {
             "逆转: AI原${mark.side}${("%.0f".format(decisionScore))}%<$thr% → ${revSide} ${"%.0f".format(revScore)}%"
@@ -2061,15 +2064,20 @@ class Repository(ctx: Context) {
         return null
     }
 
-    /** 是否达到「信号预测最低阈值」；min<=0 表示不限制 */
+    /**
+     * 是否达到「信号预测最低阈值」；min<=0 表示不限制。
+     * 已评估逆转（tag 含 rev）的信号直接放行：低胜率已改做反手，不再二次过滤。
+     */
     fun passesSignalMinPredict(
         s: AppSettings,
         ai: AiEvalResult?,
         intervalWinRatePct: Double = 0.0,
         intervalTrades: Int = 0,
+        mark: SignalMark? = null,
     ): Boolean {
         val min = s.signalMinPredictPct
         if (min <= 0) return true
+        if (s.signalReverseEnabled && mark?.tag?.contains("rev") == true) return true
         val pred = signalPredictPct(
             ai, intervalWinRatePct, intervalTrades,
             enabledStrategy()?.lastWinRatePct ?: -1.0,
@@ -2098,7 +2106,8 @@ class Repository(ctx: Context) {
             s.hibt.aiEvaluate -> 0.0 // 0=不额外拦；若要跟 AI 阈值一致可改为 s.hibt.aiMinWinRate
             else -> 0.0
         }
-        if (minPred > 0) {
+        // 逆转信号已按阈值做反手，不再因原方向低分被拦截
+        if (minPred > 0 && "rev" !in m.tag) {
             val pred = signalPredictPct(
                 ai, intervalWinRatePct, intervalTrades,
                 enabledStrategy()?.lastWinRatePct ?: -1.0,

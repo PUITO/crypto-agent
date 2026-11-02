@@ -56,7 +56,7 @@ class MonitorService : Service() {
                         val stNow = repo.settings()
                         fresh.forEach {
                             if (!repo.passesSignalMinPredict(
-                                    stNow, it.ai, it.intervalWinRatePct, it.intervalTrades,
+                                    stNow, it.ai, it.intervalWinRatePct, it.intervalTrades, it.mark,
                                 )
                             ) {
                                 return@forEach
