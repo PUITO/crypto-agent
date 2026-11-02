@@ -116,6 +116,15 @@ fun OrderScreen(repo: Repository) {
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.secondary,
                     )
+                    Text(
+                        "固化下单API：${HibtWebSession.placeApiTemplateSummary()}",
+                        fontSize = 11.sp,
+                        color = if (HibtWebSession.hasPlaceApiTemplate())
+                            MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.secondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     if (webUi.pageUrl.isNotBlank()) {
                         Text("页：${webUi.pageUrl}", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
