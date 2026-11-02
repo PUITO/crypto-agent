@@ -1887,6 +1887,17 @@ object HibtWebSession {
         function isPeriodChipText(t){
           return /^\d+\s*分钟$/.test(t) || /^\d+m$/i.test(t);
         }
+        /** 从节点文案提取周期，兼容「5分钟✓」「5 分钟」等 */
+        function extractPeriodText(raw){
+          var s = String(raw||'').replace(/\s/g,'');
+          var m = s.match(/(\d{1,3})分钟/);
+          if (m) return m[1] + '分钟';
+          m = s.match(/^(\d{1,3})m$/i);
+          if (m) return m[1] + '分钟';
+          m = s.match(/(\d{1,3})m(?![a-z0-9])/i);
+          if (m) return m[1] + '分钟';
+          return null;
+        }
         function isVisible(el){
           if (!el) return false;
           try {
@@ -1900,7 +1911,6 @@ object HibtWebSession {
             return true;
           } catch(e){ return false; }
         }
-        /** 绑定到可点击节点：向上找 button / role=button / 带点击的父级 */
         function bindClickable(el){
           if (!el) return null;
           var t = el;
@@ -1910,14 +1920,13 @@ object HibtWebSession {
               var role = (t.getAttribute && t.getAttribute('role')) || '';
               var cls = (t.className && String(t.className)) || '';
               if (tag==='button' || tag==='a' || role==='button' || role==='option' || role==='listitem') return t;
-              if (/\b(btn|button|select|picker|dropdown|cell|item)\b/i.test(cls)) return t;
+              if (/\b(btn|button|select|picker|dropdown|cell|item|option|row)\b/i.test(cls)) return t;
               if (typeof t.onclick === 'function') return t;
             } catch(e){}
             t = t.parentElement;
           }
           return el;
         }
-        /** 注入点击：完整 pointer/mouse/touch 序列，绑定节点后触发 */
         function forceClick(el){
           var node = bindClickable(el);
           if (!node) return false;
@@ -1959,14 +1968,9 @@ object HibtWebSession {
           return best;
         }
         /**
-         * 扫描并绑定周期相关节点（不点击，只定位）
-         * return {
-         *   sheet: 选择时间面板根节点|null,
-         *   sheetOpen: bool,
-         *   trigger: 主界面周期芯片节点,
-         *   currentText: '3分钟',
-         *   options: { '3分钟': el, '5分钟': el, ... }
-         * }
+         * 扫描并绑定周期节点
+         * sheet 打开时：在「选择时间」面板内提取 3分钟/5分钟… 选项（允许行内带对勾）
+         * sheet 关闭时：绑定主界面 trigger 芯片
          */
         function bindPeriodNodes(){
           var result = { sheet: null, sheetOpen: false, trigger: null, currentText: '', options: {} };
@@ -1974,26 +1978,43 @@ object HibtWebSession {
           if (title) {
             result.sheetOpen = true;
             var root = title;
-            for (var up=0; up<8 && root.parentElement; up++) root = root.parentElement;
+            for (var up=0; up<10 && root.parentElement; up++) {
+              root = root.parentElement;
+              // 找到同时包含多个「N分钟」的容器即可
+              var probe = root.innerText || '';
+              if (probe.indexOf('3分钟')>=0 && probe.indexOf('5分钟')>=0 && probe.indexOf('10分钟')>=0) break;
+            }
             result.sheet = root;
-            var nodes = root.querySelectorAll('div,span,li,button,p,a,label');
+            var nodes = root.querySelectorAll('div,span,li,button,p,a,label,section');
             for (var i=0;i<nodes.length;i++){
               var el = nodes[i];
               if (!isVisible(el)) continue;
-              var tt = textOf(el).replace(/\s/g,'');
-              if (!isPeriodChipText(tt)) continue;
-              // 列表项：短文本叶子
-              if (tt.length > 6) continue;
+              var raw = textOf(el);
+              var extracted = extractPeriodText(raw);
+              if (!extracted) continue;
+              // 整页大容器可能一次提取出多个，跳过含多个周期的节点
+              var allMatches = String(raw).match(/\d+\s*分钟/g);
+              if (allMatches && allMatches.length > 1) continue;
               var bound = bindClickable(el);
-              // 同文案保留更小的节点
-              if (!result.options[tt] || (el.innerHTML||'').length < (result.options[tt].__caLen||1e9)) {
-                bound.__caLen = (el.innerHTML||'').length;
-                result.options[tt] = bound;
+              var len = (el.innerHTML||'').length;
+              if (!result.options[extracted] || len < (result.options[extracted].__caLen||1e9)) {
+                bound.__caLen = len;
+                result.options[extracted] = bound;
               }
             }
+            // 当前选中：带对勾的那一行
+            for (var i=0;i<nodes.length;i++){
+              var el = nodes[i];
+              if (!isVisible(el)) continue;
+              var raw = textOf(el);
+              if (raw.indexOf('✓')<0 && raw.indexOf('✔')<0 && raw.indexOf('√')<0 && raw.indexOf('check')<0) continue;
+              var extracted = extractPeriodText(raw);
+              if (extracted) { result.currentText = extracted; break; }
+            }
+            // 若没识别对勾，options 里有值即可
             return result;
           }
-          // 主界面：找「时间」标签附近的周期芯片作为 trigger
+          // 主界面 trigger
           var timeLabel = null;
           var all = document.querySelectorAll('div,span,label,p,th,td');
           for (var i=0;i<all.length;i++){
@@ -2007,9 +2028,12 @@ object HibtWebSession {
           for (var j=0;j<nodes2.length;j++){
             var el2 = nodes2[j];
             if (!isVisible(el2)) continue;
-            var t2 = textOf(el2).replace(/\s/g,'');
-            if (!isPeriodChipText(t2) || t2.length > 6) continue;
-            if (/买涨|买跌|看涨|看跌|下单|确认|可用|赠金/.test(t2)) continue;
+            var raw2 = textOf(el2);
+            var t2 = extractPeriodText(raw2);
+            if (!t2) continue;
+            var multi = String(raw2).match(/\d+\s*分钟/g);
+            if (multi && multi.length > 1) continue;
+            if (/买涨|买跌|看涨|看跌|下单|确认|可用|赠金/.test(raw2)) continue;
             var r = null;
             try { r = el2.getBoundingClientRect(); } catch(e){}
             chips.push({
@@ -2017,7 +2041,6 @@ object HibtWebSession {
               bound: bindClickable(el2),
               t: t2,
               area: r ? r.width*r.height : 99999,
-              top: r ? r.top : 0,
               dist: 0
             });
           }
@@ -2048,23 +2071,28 @@ object HibtWebSession {
               key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true
             }));
           } catch(e){}
-          // 绑定关闭按钮节点
+          // 绑定右上角 X（截图中的关闭）
           var title = findExactTextVisible('选择时间');
           if (title) {
-            var root = title.parentElement;
-            for (var up=0; up<6 && root; up++){
-              var cands = root.querySelectorAll('button,div,span,i,a');
+            var row = title.parentElement;
+            for (var up=0; up<4 && row; up++){
+              var cands = row.querySelectorAll('button,div,span,i,a,svg');
               for (var i=0;i<cands.length;i++){
                 var c = cands[i];
                 if (!isVisible(c)) continue;
                 var ct = textOf(c);
                 var aria = ((c.getAttribute && c.getAttribute('aria-label'))||'') + ' ' + (c.className||'');
-                if (ct==='×' || ct==='✕' || ct==='X' || ct==='关闭' || /close|icon-close|关闭/i.test(aria)) {
+                if (ct==='×' || ct==='✕' || ct==='X' || ct==='关闭' || ct==='' && /close|icon/i.test(aria)) {
                   forceClick(c);
                   break;
                 }
               }
-              root = root.parentElement;
+              // 标题行最右侧可点节点
+              try {
+                var kids = row.children;
+                if (kids && kids.length) forceClick(kids[kids.length-1]);
+              } catch(e){}
+              row = row.parentElement;
             }
           }
           setTimeout(function(){
@@ -2077,19 +2105,15 @@ object HibtWebSession {
           }, 220);
         }
         function waitUntil(checkFn, timeoutMs, stepMs, cb){
-          var start = Date.now();
+          var startAt = Date.now();
           (function loop(){
             var ok = false;
             try { ok = !!checkFn(); } catch(e){}
             if (ok) { cb(true); return; }
-            if (Date.now() - start >= timeoutMs) { cb(false); return; }
+            if (Date.now() - startAt >= timeoutMs) { cb(false); return; }
             setTimeout(loop, stepMs||80);
           })();
         }
-        /**
-         * 注入选周期：绑定节点 → 判断 → 操作绑定节点
-         * 已是目标：0 点击；需切换：点 trigger → 等 sheet → 点 option → 关闭
-         */
         function selectTimeUnitAsync(unit, done){
           var label = periodLabel(unit);
           var bind0 = bindPeriodNodes();
@@ -2097,14 +2121,13 @@ object HibtWebSession {
             CaHibt.onLog('周期绑定 目标='+label
               +' 当前='+(bind0.currentText||'?')
               +' sheet='+bind0.sheetOpen
-              +' opts='+Object.keys(bind0.options).join(','));
+              +' opts='+Object.keys(bind0.options).join('|'));
           } catch(e){}
 
           if (!bind0.sheetOpen && bind0.currentText === label) {
             done(true, '已是'+label+'(跳过)');
             return;
           }
-          // sheet 开着但已是目标：只关
           if (bind0.sheetOpen && bind0.currentText === label) {
             closePeriodPicker(function(){ done(true, '已是'+label); });
             return;
@@ -2115,22 +2138,30 @@ object HibtWebSession {
             if (!bind.sheetOpen) { next(false); return; }
             var opt = bind.options[label];
             if (!opt) {
-              // 尝试其它别名
               var alts = periodLabels(unit);
               for (var i=0;i<alts.length;i++){
-                if (bind.options[alts[i]]) { opt = bind.options[alts[i]]; label = alts[i]; break; }
+                if (bind.options[alts[i]]) { opt = bind.options[alts[i]]; break; }
               }
             }
-            if (!opt) { next(false); return; }
+            if (!opt) {
+              try { CaHibt.onLog('周期选项未绑定到节点 opts='+Object.keys(bind.options).join('|')); } catch(e){}
+              next(false);
+              return;
+            }
             forceClick(opt);
-            // 等 sheet 关闭或主界面文案变化
             waitUntil(function(){
               var b = bindPeriodNodes();
-              return (!b.sheetOpen && b.currentText === label) || (!b.sheetOpen);
-            }, 1200, 100, function(){
+              return !b.sheetOpen || b.currentText === label;
+            }, 1500, 100, function(){
               var b2 = bindPeriodNodes();
-              if (b2.sheetOpen) closePeriodPicker(function(){ next(b2.currentText === label || true); });
-              else next(b2.currentText === label || true);
+              if (b2.sheetOpen) {
+                closePeriodPicker(function(){
+                  var b3 = bindPeriodNodes();
+                  next(b3.currentText === label || !b3.sheetOpen);
+                });
+              } else {
+                next(b2.currentText === label || true);
+              }
             });
           }
 
@@ -2138,26 +2169,27 @@ object HibtWebSession {
             pickInSheet(function(ok){ done(!!ok, ok ? label : null); });
             return;
           }
-
           if (!bind0.trigger) {
-            try { CaHibt.onLog('周期绑定失败：未找到主界面周期芯片节点'); } catch(e){}
+            try { CaHibt.onLog('周期绑定失败：未找到主界面周期芯片'); } catch(e){}
             done(false, null);
             return;
           }
-          // 点绑定的 trigger 打开列表
           forceClick(bind0.trigger);
-          waitUntil(function(){ return bindPeriodNodes().sheetOpen; }, 1500, 100, function(opened){
+          waitUntil(function(){ return bindPeriodNodes().sheetOpen; }, 1800, 100, function(opened){
             if (!opened) {
-              try { CaHibt.onLog('周期选择器未打开(trigger已点)'); } catch(e){}
+              try { CaHibt.onLog('周期选择器未打开'); } catch(e){}
               var b = bindPeriodNodes();
               done(b.currentText === label, b.currentText === label ? ('已是'+label) : null);
               return;
             }
-            pickInSheet(function(ok){
-              var b3 = bindPeriodNodes();
-              if (b3.currentText === label) done(true, label);
-              else done(!!ok, ok ? label : null);
-            });
+            // sheet 已开，再扫一次选项（等列表渲染）
+            setTimeout(function(){
+              pickInSheet(function(ok){
+                var b3 = bindPeriodNodes();
+                if (b3.currentText === label) done(true, label);
+                else done(!!ok, ok ? label : null);
+              });
+            }, 200);
           });
         }
         function selectDirection(dir){
