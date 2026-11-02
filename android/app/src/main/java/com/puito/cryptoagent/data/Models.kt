@@ -284,6 +284,11 @@ data class HibtSettings(
      * 合法：5m / 10m / 30m / 1h
      */
     val autoIntervals: List<String> = listOf("3m", "5m", "10m", "30m", "1h"),
+    /**
+     * UI 下单失败后是否降级走固化API/原生猜参。
+     * 默认关闭：避免错误 API 误下单；需先 UI 成功固化模板后再按需开启。
+     */
+    val apiFallbackEnabled: Boolean = false,
     /** 大单边行情防追单：同向连续强势 K 线时跳过同向自动下单 */
     val antiChaseEnabled: Boolean = true,
     /** 检测窗口 K 线根数（1m 主源） */

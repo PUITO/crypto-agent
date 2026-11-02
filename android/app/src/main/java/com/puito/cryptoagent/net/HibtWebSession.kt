@@ -970,6 +970,8 @@ object HibtWebSession {
         timeUnit: Int,
         dryRun: Boolean,
         timeoutSec: Int = 45,
+        /** false=仅UI，不降级API；true=UI失败后固化API/原生 */
+        apiFallback: Boolean = false,
     ): PlaceOutcome? {
         val wv = webView
         if (wv == null) {
@@ -1044,7 +1046,7 @@ object HibtWebSession {
         // —— 0) 优先平台 UI（成功时固化真实 place API）——
         if (!dryRun) {
             val tplHint = if (hasPlaceApiTemplate()) "已有固化API" else "尚无固化API(需UI成功一次)"
-            appendLog("下单顺序: UI优先 → 固化API重放 → 原生猜参 · $tplHint")
+            appendLog("下单顺序: UI优先" + (if (apiFallback) " → 固化API/原生(已开降级)" else "（API降级关闭）") + " · $tplHint")
         }
 
         // —— 1) WebView 平台 UI 下单（参数由官网处理）——
@@ -1133,6 +1135,13 @@ object HibtWebSession {
         }
 
         val webMsg = webResult?.message.orEmpty()
+        if (!apiFallback) {
+            val msg = webResult?.message
+                ?: "UI未成交且已关闭API降级（设置中可开启「API降级下单」）"
+            appendLog("跳过API降级: ${msg.take(80)}")
+            _ui.value = _ui.value.copy(lastPlaceMsg = msg, status = msg.take(100))
+            return PlaceOutcome(false, msg, dryRun = false)
+        }
         if (hasPlaceApiTemplate()) {
             appendLog("UI未成交(${webMsg.take(50)})，重放固化下单API…")
             _ui.value = _ui.value.copy(status = "固化API重放中…")
@@ -1822,9 +1831,20 @@ object HibtWebSession {
         function findByText(cands, words){
           for (var i=0;i<cands.length;i++){
             var t = textOf(cands[i]);
-            if (!t || t.length>20) continue;
+            if (!t || t.length>24) continue;
             for (var j=0;j<words.length;j++){
-              if (t === words[j] || t.indexOf(words[j])>=0) return cands[i];
+              if (t === words[j]) return cands[i];
+            }
+          }
+          for (var i=0;i<cands.length;i++){
+            var t = textOf(cands[i]);
+            if (!t || t.length>24) continue;
+            for (var j=0;j<words.length;j++){
+              var w = words[j];
+              if (!w) continue;
+              if (/^\d+$/.test(w)) {
+                if (new RegExp('(^|[^0-9])'+w+'([^0-9]|$)').test(t)) return cands[i];
+              } else if (t.indexOf(w)>=0) return cands[i];
             }
           }
           return null;
@@ -1837,19 +1857,96 @@ object HibtWebSession {
             var t = ph.toLowerCase();
             if (el.type==='number' || /amount|金额|数量|quota|money/i.test(t) || el.inputMode==='decimal') return el;
           }
-          // 可见的数字框
           for (var k=0;k<inputs.length;k++){
             if (inputs[k].offsetParent!==null && (inputs[k].type==='text'||inputs[k].type==='number'||!inputs[k].type)) return inputs[k];
           }
           return null;
         }
-        function selectTimeUnit(unit){
+        /** 官网列表文案：3分钟 / 5分钟 / 10分钟 / 15分钟 / 30分钟 / 60分钟 */
+        function periodLabel(unit){
+          var u = String(unit||'5');
+          if (u==='60' || u==='1h' || u==='1H') return '60分钟';
+          return u + '分钟';
+        }
+        function periodLabels(unit){
+          var u = String(unit||'5');
+          var lab = periodLabel(u);
+          return [lab, u+'m', u+'M', u+'分', String(u)];
+        }
+        function findExactText(text){
+          var nodes = document.querySelectorAll('div,span,li,button,p,a,label,td,section');
+          var best = null, bestLen = 1e9;
+          for (var i=0;i<nodes.length;i++){
+            var el = nodes[i];
+            if (textOf(el) !== text) continue;
+            var len = (el.innerHTML||'').length;
+            if (len < bestLen) { best = el; bestLen = len; }
+          }
+          return best;
+        }
+        function isPeriodChipText(t){
+          return /^\d+\s*分钟$/.test(t) || /^\d+m$/i.test(t);
+        }
+        function openPeriodPicker(){
+          if (findExactText('选择时间')) return true;
+          // 点主界面「5分钟」芯片打开底部列表
+          var nodes = document.querySelectorAll('div,span,button,li,p,a');
+          for (var i=0;i<nodes.length;i++){
+            var el = nodes[i];
+            var t = textOf(el);
+            if (!isPeriodChipText(t)) continue;
+            if (/买涨|买跌|看涨|看跌|下单|确认|可用|赠金|选择时间/.test(t)) continue;
+            try { el.scrollIntoView({block:'center'}); } catch(e){}
+            clickEl(el);
+            return true;
+          }
           var cands = allClickable();
-          var labels = [unit+'m', unit+'分钟', unit+'分', String(unit)];
-          if (unit==='60' || unit==='1h') labels = labels.concat(['1h','1H','60m','60分钟','1小时']);
-          var el = findByText(cands, labels);
-          if (el) { clickEl(el); return true; }
+          for (var i=0;i<cands.length;i++){
+            var t = textOf(cands[i]);
+            if (t && t.indexOf('分钟')>=0 && t.length<=8) {
+              clickEl(cands[i]);
+              return true;
+            }
+          }
           return false;
+        }
+        function clickPeriodOption(unit){
+          var labels = periodLabels(unit);
+          for (var i=0;i<labels.length;i++){
+            var el = findExactText(labels[i]);
+            if (el) {
+              try { el.scrollIntoView({block:'center'}); } catch(e){}
+              clickEl(el);
+              return labels[i];
+            }
+          }
+          var el2 = findByText(allClickable(), labels);
+          if (el2) { clickEl(el2); return textOf(el2)||labels[0]; }
+          return null;
+        }
+        /** 异步：打开「选择时间」→ 点「N分钟」 */
+        function selectTimeUnitAsync(unit, done){
+          var label = periodLabel(unit);
+          function tryClick(){
+            var hit = clickPeriodOption(unit);
+            if (hit) { done(true, hit); return true; }
+            return false;
+          }
+          // 若列表已开，直接点
+          if (findExactText('选择时间') || findExactText('3分钟')) {
+            if (tryClick()) return;
+          }
+          openPeriodPicker();
+          setTimeout(function(){
+            if (tryClick()) return;
+            openPeriodPicker();
+            setTimeout(function(){
+              if (tryClick()) return;
+              var el = findExactText(label);
+              if (el) { clickEl(el); done(true, label); }
+              else done(false, null);
+            }, 500);
+          }, 500);
         }
         function selectDirection(dir){
           var cands = allClickable();
@@ -1873,81 +1970,67 @@ object HibtWebSession {
           if (amtEl) { setInput(amtEl, amount); steps.push('金额='+amount); }
           else steps.push('未找到金额框');
 
-          // 周期必须点中目标档位，禁止留在页面默认 5m 误下
-          var periodOk = selectTimeUnit(timeUnit);
-          if (!periodOk) {
-            // 再试一次：延迟后重新扫（弹层动画）
-            openPeriodPicker();
-            periodOk = selectTimeUnit(timeUnit);
-          }
-          if (periodOk) steps.push('周期='+timeUnit+'m');
-          else steps.push('未点到周期'+timeUnit+'m');
-
-          if (!periodOk) {
-            finish(false, '周期未切换到'+timeUnit+'m(页面默认可能仍是5m)，拒绝提交，改走固化API/原生。步骤:'+steps.join('; '));
-            return;
-          }
-
-          var dirLabel = selectDirection(direction);
-          if (dirLabel) steps.push('方向='+dirLabel);
-          else steps.push('未点到方向按钮');
-
-          var sub = findSubmit(direction);
-          if (dry) {
-            finish(true, 'DRY-RUN 平台UI '+steps.join('; ')+(sub?'; 将点提交「'+textOf(sub)+'」':'；未找到提交按钮'), true);
-            return;
-          }
-          if (!sub) {
-            finish(false, '未找到提交按钮，交还原生Cookie下单。步骤:'+steps.join('; '));
-            return;
-          }
-          clickEl(sub);
-          steps.push('已点「'+textOf(sub)+'」');
-          CaHibt.onLog('已触发平台下单UI: '+steps.join('; '));
-          // 等待官网 place 响应（由 fetch/XHR 钩子识别）
-          // 短延迟：检测二次确认弹窗（可提示用户，不强行代点）
-          setTimeout(function(){
+          // 先填金额，再异步选周期（底部「选择时间」列表：3分钟/5分钟…）
+          function afterPeriod(ok, hit){
+            if (ok) steps.push('周期='+(hit|| (timeUnit+'分钟')));
+            else steps.push('未点到周期'+timeUnit+'分钟');
+            if (!ok) {
+              finish(false, '周期未切换到'+timeUnit+'分钟(仍可能是5分钟)，拒绝提交。步骤:'+steps.join('; '));
+              return;
+            }
+            // 关闭可能残留的选择层（点空白或已选项）
             try {
-              var cands = allClickable();
-              var confWords = ['确认下单','二次确认','确定下单','确认提交','我知道了','确认','确定'];
-              var conf = null, confText = '';
-              for (var i=0;i<cands.length;i++){
-                var t = textOf(cands[i]);
-                if (!t || t.length>24) continue;
-                // 弹层内按钮通常较短
-                for (var j=0;j<confWords.length;j++){
-                  if (t === confWords[j] || (t.indexOf(confWords[j])>=0 && t.length<=12)) {
-                    // 排除主下单按钮自身已点过的「买涨」
-                    if (/买涨|买跌|看涨|看跌/.test(t)) continue;
-                    conf = cands[i]; confText = t; break;
+              var closeBtn = findExactText('×') || findExactText('X');
+              // 不强制关，选项点击后官网一般会自动收起
+            } catch(e){}
+
+            var dirLabel = selectDirection(direction);
+            if (dirLabel) steps.push('方向='+dirLabel);
+            else steps.push('未点到方向按钮');
+
+            var sub = findSubmit(direction);
+            if (dry) {
+              finish(true, 'DRY-RUN 平台UI '+steps.join('; ')+(sub?'; 将点提交「'+textOf(sub)+'」':'；未找到提交按钮'), true);
+              return;
+            }
+            if (!sub) {
+              finish(false, '未找到提交按钮，交还原生Cookie下单。步骤:'+steps.join('; '));
+              return;
+            }
+            clickEl(sub);
+            steps.push('已点「'+textOf(sub)+'」');
+
+            setTimeout(function(){
+              try {
+                var conf = findByText(allClickable(), ['确认','确定','Confirm','继续']);
+                var confText = conf ? textOf(conf) : '';
+                var dialogs = document.querySelectorAll('[class*="confirm"],[class*="popup"],[class*="Dialog"],[class*="Modal"]');
+                var hasDialog = dialogs && dialogs.length>0;
+                if (conf || hasDialog) {
+                  var p0 = window.__caPendingPlace;
+                  if (p0 && !p0.done) {
+                    p0.confirmHint = true;
+                    CaHibt.onLog('检测到二次确认: '+(confText||'弹层'));
                   }
                 }
-                if (conf) break;
-              }
-              // 也检查常见 mask/dialog
-              var dialogs = document.querySelectorAll('[class*="dialog"],[class*="modal"],[class*="confirm"],[class*="popup"],[class*="Dialog"],[class*="Modal"]');
-              var hasDialog = dialogs && dialogs.length>0;
-              if (conf || hasDialog) {
-                var p0 = window.__caPendingPlace;
-                if (p0 && !p0.done) {
-                  p0.confirmHint = true;
-                  CaHibt.onLog('检测到二次确认: '+(confText||'弹层'));
-                }
-              }
-            } catch(e){}
-          }, 800);
+              } catch(e){}
+            }, 800);
 
-          setTimeout(function(){
-            var p = window.__caPendingPlace;
-            if (p && !p.done && p.id===pendingId) {
-              var hint = p.confirmHint
-                ? '【二次确认】请手动点确认；将尝试原生+Cookie下单'
-                : 'UI未捕获成功响应，将尝试原生+Cookie下单';
-              finish(false, hint+' 步骤:'+steps.join('; '));
-              p.done = true;
-            }
-          }, 12000);
+            setTimeout(function(){
+              var p = window.__caPendingPlace;
+              if (p && !p.done && p.id===pendingId) {
+                var hint = p.confirmHint
+                  ? '【二次确认】请手动点确认；将尝试原生+Cookie下单'
+                  : 'UI未捕获成功响应，将尝试原生+Cookie下单';
+                finish(false, hint+' 步骤:'+steps.join('; '));
+                p.done = true;
+              }
+            }, 12000);
+          }
+
+          selectTimeUnitAsync(timeUnit, afterPeriod);
           return;
+
         } catch(e) {
           CaHibt.onLog('UI下单异常 '+e);
           finish(false, 'UI异常交还原生: '+String(e));

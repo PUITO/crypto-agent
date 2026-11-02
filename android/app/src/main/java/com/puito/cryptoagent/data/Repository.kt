@@ -2512,6 +2512,7 @@ class Repository(ctx: Context) {
                 timeUnit = timeUnit,
                 dryRun = cfg.dryRun,
                 timeoutSec = to,
+                apiFallback = cfg.apiFallbackEnabled,
             )
         } catch (e: Exception) {
             HibtWebSession.appendLog("placeOrder异常: ${e.message}")

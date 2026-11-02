@@ -296,6 +296,15 @@ fun OrderScreen(repo: Repository) {
                 Text("Dry-Run（关=真实请求）", Modifier.weight(1f))
                 Switch(h.dryRun, { persist(h.copy(dryRun = it)) })
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("API降级下单（UI失败后走固化API/原生）", Modifier.weight(1f), fontSize = 13.sp)
+                Switch(h.apiFallbackEnabled, { persist(h.copy(apiFallbackEnabled = it)) })
+            }
+            Text(
+                "建议默认关闭。仅当 WebView UI 能稳定选对周期并成功下单、已固化模板后再按需开启。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.secondary,
+            )
             Text("自动下单周期（可多选，与行情页全局周期无关）", fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 val options = listOf("3m", "5m", "10m", "30m", "1h")
