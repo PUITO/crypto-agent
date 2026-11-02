@@ -1748,10 +1748,11 @@ class Repository(ctx: Context) {
 
 
     /**
-     * 本地算法：对「当前信号方向」做结构评分（0～100），不使用历史回测胜率。
+     * 本地算法评估「本条信号方向」瞬时质量（0～100），**不含**历史回测胜率。
+     * 综合 RSI / 短动量 / 区间位置 / K线形态 / 波动与 MACD 柱方向。
      */
     private fun localSignalScorePct(bars: List<Candle>, side: String): Double {
-        if (bars.size < 15) return 50.0
+        if (bars.size < 20) return 50.0
         val closes = bars.map { it.close }
         val last = closes.last()
         if (last <= 0) return 50.0
@@ -1760,29 +1761,49 @@ class Repository(ctx: Context) {
         val recent = closes.takeLast(n).average()
         val prev = closes.dropLast(n).takeLast(n).average()
         val momPct = ((recent - prev) / last) * 100.0
-        val win = bars.takeLast(20)
+        val win = bars.takeLast(24)
         val hi = win.maxOf { it.high }
         val lo = win.minOf { it.low }
         val pos = if (hi > lo) ((last - lo) / (hi - lo)).coerceIn(0.0, 1.0) else 0.5
-        val last3 = bars.takeLast(3)
-        val bullishBars = last3.count { it.close >= it.open }
+        val last5 = bars.takeLast(5)
+        val bullishBars = last5.count { it.close >= it.open }
+        // MACD 柱近似：快慢 EMA 差的变化
+        val ema12 = Indicators.ema(closes, 12)
+        val ema26 = Indicators.ema(closes, 26)
+        val macdNow = (ema12.lastOrNull() ?: last) - (ema26.lastOrNull() ?: last)
+        val macdPrev = if (ema12.size >= 2 && ema26.size >= 2)
+            (ema12[ema12.lastIndex - 1] ?: last) - (ema26[ema26.lastIndex - 1] ?: last)
+        else macdNow
+        val macdDelta = macdNow - macdPrev
+        // 波动：近段振幅相对价格
+        val atrPct = if (last > 0) ((hi - lo) / last * 100.0).coerceIn(0.0, 8.0) else 1.0
+
         var score = 50.0
         if (side == "B") {
-            score += (rsi - 50.0) * 0.4
-            score += momPct.coerceIn(-3.0, 3.0) * 4.0
-            if (rsi >= 72) score -= 18.0 else if (rsi >= 65) score -= 8.0
-            if (rsi <= 30) score += 12.0 else if (rsi <= 40) score += 6.0
-            if (pos >= 0.85) score -= 10.0
-            if (pos <= 0.2) score += 8.0
-            score += (bullishBars - 1.5) * 4.0
+            score += (rsi - 50.0) * 0.35
+            score += momPct.coerceIn(-4.0, 4.0) * 3.5
+            score += macdDelta.coerceIn(-last * 0.002, last * 0.002) / (last * 0.002) * 6.0
+            if (rsi >= 72) score -= 20.0 else if (rsi >= 65) score -= 10.0
+            if (rsi <= 28) score += 14.0 else if (rsi <= 40) score += 7.0
+            if (pos >= 0.88) score -= 12.0 else if (pos >= 0.75) score -= 5.0
+            if (pos <= 0.18) score += 10.0
+            score += (bullishBars - 2.5) * 3.0
+            if (macdNow > 0 && macdDelta > 0) score += 6.0
+            if (macdNow < 0 && macdDelta < 0) score -= 8.0
+            // 过高波动追多降分
+            if (atrPct >= 4.0 && momPct > 1.5) score -= 6.0
         } else {
-            score += (50.0 - rsi) * 0.4
-            score -= momPct.coerceIn(-3.0, 3.0) * 4.0
-            if (rsi <= 28) score -= 18.0 else if (rsi <= 35) score -= 8.0
-            if (rsi >= 70) score += 12.0 else if (rsi >= 60) score += 6.0
-            if (pos <= 0.15) score -= 10.0
-            if (pos >= 0.8) score += 8.0
-            score += (1.5 - bullishBars) * 4.0
+            score += (50.0 - rsi) * 0.35
+            score -= momPct.coerceIn(-4.0, 4.0) * 3.5
+            score -= macdDelta.coerceIn(-last * 0.002, last * 0.002) / (last * 0.002) * 6.0
+            if (rsi <= 28) score -= 20.0 else if (rsi <= 35) score -= 10.0
+            if (rsi >= 72) score += 14.0 else if (rsi >= 60) score += 7.0
+            if (pos <= 0.12) score -= 12.0 else if (pos <= 0.25) score -= 5.0
+            if (pos >= 0.82) score += 10.0
+            score += (2.5 - bullishBars) * 3.0
+            if (macdNow < 0 && macdDelta < 0) score += 6.0
+            if (macdNow > 0 && macdDelta > 0) score -= 8.0
+            if (atrPct >= 4.0 && momPct < -1.5) score -= 6.0
         }
         return score.coerceIn(8.0, 92.0)
     }
@@ -1798,40 +1819,51 @@ class Repository(ctx: Context) {
         bars: List<Candle>,
         ai: AiEvalResult?,
     ): Pair<SignalMark, AiEvalResult?> {
-        // 与「信号预测最低阈值」共用：0 表示不逆转；>0 时低于阈值则逆转
         if (!s.signalReverseEnabled) return mark to ai
-        val thr = s.signalMinPredictPct
-        if (thr <= 0) return mark to ai
-        val algoScore = localSignalScorePct(bars, mark.side)
-        val useAi = s.hibt.aiEvaluate && ai?.winRatePct != null
-        val decisionScore = if (useAi) ai!!.winRatePct!! else algoScore
-        if (decisionScore + 1e-9 >= thr) {
-            if (ai == null) {
-                return mark to AiEvalResult(
-                    winRatePct = algoScore,
-                    summary = "算法评估 ${mark.side} 约${"%.0f".format(algoScore)}%（≥阈值${"%.0f".format(thr)}% 未逆转）",
-                    passThreshold = true,
-                    thresholdPct = thr,
-                )
-            }
-            return mark to ai
+        // 阈值：优先 signalMinPredictPct；为 0 时用默认 50（开启逆转就必须有评判线）
+        val thr = when {
+            s.signalMinPredictPct > 0 -> s.signalMinPredictPct
+            else -> s.signalReverseBelowPct.coerceIn(35.0, 70.0).let { if (it <= 0) 50.0 else it }
         }
+        val algoScore = localSignalScorePct(bars, mark.side)
+        val aiWr = ai?.winRatePct
+        val useAi = s.hibt.aiEvaluate && aiWr != null
+        // AI 可用：AI 为主、算法为辅（融合），更稳；AI 不可用：纯算法
+        val decisionScore = when {
+            useAi -> (aiWr!! * 0.72 + algoScore * 0.28).coerceIn(5.0, 95.0)
+            else -> algoScore
+        }
+        val srcLabel = if (useAi) "AI+算法" else "算法"
+        if (decisionScore + 1e-9 >= thr) {
+            val summary = if (useAi) {
+                "评估通过 ${mark.side} ${"%.0f".format(decisionScore)}%≥${"%.0f".format(thr)}% " +
+                    "(AI${"%.0f".format(aiWr!!)} 算法${"%.0f".format(algoScore)})"
+            } else {
+                "算法评估 ${mark.side} 约${"%.0f".format(algoScore)}%（≥阈值${"%.0f".format(thr)}% 未逆转）"
+            }
+            val merged = listOfNotNull(summary, ai?.summary?.takeIf { it.isNotBlank() }).joinToString(" | ")
+            return mark to AiEvalResult(
+                winRatePct = decisionScore,
+                summary = merged.take(220),
+                passThreshold = decisionScore + 1e-9 >= (if (s.hibt.aiEvaluate) s.hibt.aiMinWinRate else thr),
+                thresholdPct = thr,
+                error = ai?.error,
+            )
+        }
+        // 低胜率 → 逆转方向，做反手
         val revSide = if (mark.side == "B") "S" else "B"
         val revScore = (100.0 - decisionScore).coerceIn(8.0, 92.0)
-        // 逆转后视为已满足预测阈值；真实下单仍可再看 AI 下单阈值
         val orderThr = if (s.hibt.aiEvaluate) s.hibt.aiMinWinRate else thr
-        val baseSummary = if (useAi) {
-            "逆转: AI原${mark.side}${("%.0f".format(decisionScore))}%<$thr% → ${revSide} ${"%.0f".format(revScore)}%"
-        } else {
-            "逆转: 算法原${mark.side}${("%.0f".format(decisionScore))}%<$thr% → ${revSide} ${"%.0f".format(revScore)}%"
-        }
+        val baseSummary =
+            "逆转[$srcLabel]: 原${mark.side}${("%.0f".format(decisionScore))}%<${"%.0f".format(thr)}% → " +
+                "${revSide} ${"%.0f".format(revScore)}%"
         val mergedSummary = listOfNotNull(
             baseSummary,
             ai?.summary?.takeIf { it.isNotBlank() }?.let { "原评:$it" },
         ).joinToString(" | ")
         val newAi = AiEvalResult(
             winRatePct = revScore,
-            summary = mergedSummary,
+            summary = mergedSummary.take(240),
             passThreshold = revScore + 1e-9 >= orderThr,
             thresholdPct = orderThr,
             error = ai?.error,
@@ -1841,7 +1873,7 @@ class Repository(ctx: Context) {
             tag = listOf(mark.tag, "rev").filter { it.isNotBlank() }.joinToString("|"),
         )
         HibtWebSession.appendLog(
-            "信号评估逆转 ${mark.side}→$revSide ${"%.0f".format(decisionScore)}%→${"%.0f".format(revScore)}% thr=$thr",
+            "信号评估逆转 ${mark.side}→$revSide ${"%.0f".format(decisionScore)}%→${"%.0f".format(revScore)}% thr=$thr ($srcLabel)",
         )
         return newMark to newAi
     }

@@ -168,7 +168,7 @@ fun ConfigScreen(repo: Repository) {
         OutlinedTextField(
             value = signalMinPred,
             onValueChange = { signalMinPred = it.filter { c -> c.isDigit() || c == '.' } },
-            label = { Text("信号预测最低阈值(%) · 0=不限制") },
+            label = { Text("评估阈值(%) · 逆转开启时0≈50") },
             placeholder = { Text("例如 50") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
@@ -178,7 +178,7 @@ fun ConfigScreen(repo: Repository) {
             Switch(signalRev, { signalRev = it })
         }
         Text(
-            "同一阈值：开启逆转→低于阈值改反方向（通知/模拟/下单）；关闭逆转→低于阈值直接丢弃。AI开用AI胜率，关用算法分。0=不限制。",
+            "评估系统：对每条信号打分（不含历史回测）。开逆转→低于阈值改反手；关逆转→低于阈值丢弃。AI开时 AI72%+算法28%融合；关则纯算法。阈值填0时逆转默认按50%。",
             color = MaterialTheme.colorScheme.secondary,
             fontSize = 12.sp,
         )
