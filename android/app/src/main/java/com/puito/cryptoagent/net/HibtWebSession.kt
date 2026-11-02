@@ -101,6 +101,22 @@ object HibtWebSession {
 
     data class PlaceOutcome(val ok: Boolean, val message: String, val dryRun: Boolean)
 
+    /** UI 成功下单时固化的真实 place 请求模板 */
+    data class PlaceApiTemplate(
+        val url: String = "",
+        val method: String = "POST",
+        val body: String = "",
+        val contentType: String = "application/x-www-form-urlencoded",
+        val origin: String = "",
+        val referer: String = "",
+        val apiHost: String = "",
+        val path: String = "",
+        val capturedAt: Long = 0L,
+        val okSample: String = "",
+    )
+
+    @Volatile private var placeApiTemplate: PlaceApiTemplate? = null
+
     /**
      * 由 Application/Repository 注入：WebView 捕获 token/api 后写回原生设置。
      * (token, apiBase, origin)
@@ -150,6 +166,7 @@ object HibtWebSession {
                 if (lastOrderPageUrl.isNotBlank()) {
                     _ui.value = _ui.value.copy(orderPageLocked = lastOrderPageUrl)
                 }
+                loadPlaceApiTemplate()
             }
             val wv = WebView(appCtx)
             val cm = CookieManager.getInstance()
@@ -771,6 +788,7 @@ object HibtWebSession {
         }
     }
 
+
     private fun loadPlaceApiTemplate() {
         val j = prefs?.getString("place_api_template", null) ?: return
         runCatching {
@@ -785,7 +803,7 @@ object HibtWebSession {
                 referer = s("referer"),
                 apiHost = s("apiHost"),
                 path = s("path"),
-                capturedAt = o.get("capturedAt")?.asLong ?: 0L,
+                capturedAt = try { o.get("capturedAt").asLong } catch (_: Exception) { 0L },
                 okSample = s("okSample"),
             )
             if (tpl.url.isNotBlank() && tpl.body.isNotBlank()) {
@@ -811,19 +829,19 @@ object HibtWebSession {
             o.addProperty("okSample", tpl.okSample.take(120))
             prefs?.edit()?.putString("place_api_template", o.toString())?.apply()
         }
-        appendLog("已固化下单API ${tpl.path.ifBlank { tpl.url.take(48) }} bodyKeys=${tpl.body.take(80)}")
+        appendLog("已固化下单API ${tpl.path.ifBlank { tpl.url.take(48) }} body=${tpl.body.take(80)}")
     }
 
     fun hasPlaceApiTemplate(): Boolean = placeApiTemplate?.body?.isNotBlank() == true
 
     fun placeApiTemplateSummary(): String {
-        val t = placeApiTemplate ?: return "未捕获（请先成功一次 UI 下单）"
-        return "${t.path.ifBlank { t.url.take(40) }} · ${java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(t.capturedAt))}"
+        val t0 = placeApiTemplate ?: return "未捕获（请先成功一次 UI 下单）"
+        return "${t0.path.ifBlank { t0.url.take(40) }} · " +
+            java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+                .format(java.util.Date(t0.capturedAt))
     }
 
-    /**
-     * 用 UI 成功时固化的请求模板重放；只替换 amount/direction/symbol/timeUnit，并刷新 v。
-     */
+    /** 用固化模板重放下单，只替换金额/方向/币种/周期，并刷新 v */
     private fun replayCapturedPlace(
         directionUp: Boolean,
         amount: Double,
@@ -844,12 +862,7 @@ object HibtWebSession {
             symbol.contains("_") -> symbol.lowercase()
             else -> symbol.lowercase().replace("usdt", "_usdt")
         }
-        val unit = when (timeUnit) {
-            1 -> 5
-            else -> timeUnit
-        }.toString()
-
-        // 替换表单字段（保留其它未知字段）
+        val unit = (if (timeUnit == 1) 5 else timeUnit).toString()
         val form = linkedMapOf<String, String>()
         for (pair in tpl.body.split('&')) {
             if (pair.isBlank()) continue
@@ -857,7 +870,8 @@ object HibtWebSession {
             val k = if (eq >= 0) pair.substring(0, eq) else pair
             val v = if (eq >= 0) pair.substring(eq + 1) else ""
             try {
-                form[java.net.URLDecoder.decode(k, "UTF-8")] = java.net.URLDecoder.decode(v, "UTF-8")
+                form[java.net.URLDecoder.decode(k, "UTF-8")] =
+                    java.net.URLDecoder.decode(v, "UTF-8")
             } catch (_: Exception) {
                 form[k] = v
             }
@@ -867,17 +881,12 @@ object HibtWebSession {
         form["symbol"] = sym
         form["timeUnit"] = unit
         if (!form.containsKey("langCode")) form["langCode"] = "zh_CN"
-
         val body = form.entries.joinToString("&") { (k, v) ->
             java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
         }
-
-        // URL：去掉旧 v，附加新 v（优先会话里的加密 v，否则时间戳）
-        var baseUrl = tpl.url.substringBefore('?').ifBlank {
-            val host = tpl.apiHost.ifBlank { lastApiBase.ifBlank { "https://api.hibt0.com" } }
-            val path = tpl.path.ifBlank { "/event/event-order/place" }
-            host.trimEnd('/') + path
-        }
+        val host = tpl.apiHost.ifBlank { lastApiBase.ifBlank { "https://api.hibt0.com" } }
+        val path = tpl.path.ifBlank { "/event/event-order/place" }
+        val baseUrl = host.trimEnd('/') + path
         val vNow = when {
             lastVEnc.isNotBlank() -> lastVEnc
             lastV.isNotBlank() && !lastV.all { it.isDigit() } -> lastV
@@ -885,37 +894,26 @@ object HibtWebSession {
             lastV.isNotBlank() -> lastV
             else -> System.currentTimeMillis().toString()
         }
-        val url = if (baseUrl.contains("?")) {
-            // 不应走到
-            baseUrl
-        } else {
-            "$baseUrl?v=${java.net.URLEncoder.encode(vNow, "UTF-8")}"
-        }
-
+        val url = baseUrl + "?v=" + java.net.URLEncoder.encode(vNow, "UTF-8")
         val origin = tpl.origin.ifBlank { lastOrigin }.ifBlank { "https://m.hibt.com" }
         val referer = tpl.referer.ifBlank { lastReferer }.ifBlank { "$origin/" }
         val cookie = cookieHeaderFor(origin)
         val token = lastToken.trim()
         if (token.isBlank()) {
-            return PlaceOutcome(false, "固化API重放失败：无 token，请先 WebView 登录", dryRun = false)
+            return PlaceOutcome(false, "固化API重放失败：无 token", dryRun = false)
         }
-
         return try {
             val client = okhttp3.OkHttpClient.Builder()
                 .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
                 .readTimeout(25, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
+            val formBody = okhttp3.FormBody.Builder().apply {
+                for ((k, v) in form) add(k, v)
+            }.build()
             val reqBuilder = okhttp3.Request.Builder()
                 .url(url)
-                .post(
-                    okhttp3.RequestBody.create(
-                        body,
-                        okhttp3.MediaType.get(
-                            tpl.contentType.ifBlank { "application/x-www-form-urlencoded" },
-                        ),
-                    ),
-                )
-                .header("content-type", tpl.contentType.ifBlank { "application/x-www-form-urlencoded" })
+                .post(formBody)
+                .header("content-type", "application/x-www-form-urlencoded")
                 .header("origin", origin)
                 .header("referer", referer)
                 .header("x-auth-token", token)
@@ -927,7 +925,6 @@ object HibtWebSession {
                     "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
                 )
             if (cookie.isNotBlank()) reqBuilder.header("cookie", cookie)
-            // 与官网 H5 一致
             if (origin.contains("m.") || origin.contains("hibt1")) {
                 reqBuilder.header("platform", "h5").header("hc-platform", "h5")
             } else {
@@ -935,14 +932,17 @@ object HibtWebSession {
             }
             val resp = client.newCall(reqBuilder.build()).execute()
             val respBody = resp.body?.string().orEmpty()
-            val okBiz = resp.isSuccessful && (
-                respBody.contains(""code":0") ||
-                    respBody.contains(""code":200") ||
-                    respBody.contains(""success":true") ||
-                    (respBody.contains("成功") && !respBody.contains("失败") && !respBody.contains("参数错误") && !respBody.contains("登录失效"))
-                ) && !respBody.contains("参数错误") && !respBody.contains("登录失效")
+            val okBiz = resp.isSuccessful &&
+                !respBody.contains("参数错误") &&
+                !respBody.contains("登录失效") &&
+                (
+                    respBody.contains("\"code\":0") ||
+                        respBody.contains("\"code\":200") ||
+                        respBody.contains("\"success\":true") ||
+                        (respBody.contains("成功") && !respBody.contains("失败"))
+                    )
             appendLog(
-                "固化API重放 ${if (okBiz) "OK" else "FAIL"} ${resp.code} ${url.take(60)} " +
+                "固化API重放 ${if (okBiz) "OK" else "FAIL"} ${resp.code} " +
                     "amt=$amountStr dir=$dir tu=$unit ${respBody.take(100).replace("\n", " ")}",
             )
             PlaceOutcome(
@@ -956,11 +956,12 @@ object HibtWebSession {
         }
     }
 
+
     /**
      * 下单优先级：
-     * 1) WebView 平台 UI（成功则自动解析并固化真实 place API）
-     * 2) 固化模板重放（UI 超时/失败时）
-     * 3) 原生猜参降级（无模板时）
+     * 1) WebView 平台 UI（成功则固化真实 place API）
+     * 2) 固化模板重放（UI 超时/失败）
+     * 3) 原生猜参兜底
      */
     suspend fun placeOrder(
         directionUp: Boolean,
@@ -1040,7 +1041,7 @@ object HibtWebSession {
             // 仍走注入 dryRun，让页面脚本回报将要点击的按钮
         }
 
-        // —— 0) 优先平台 UI（成功时脚本会固化真实 place API 供超时重放）——
+        // —— 0) 优先平台 UI（成功时固化真实 place API）——
         if (!dryRun) {
             val tplHint = if (hasPlaceApiTemplate()) "已有固化API" else "尚无固化API(需UI成功一次)"
             appendLog("下单顺序: UI优先 → 固化API重放 → 原生猜参 · $tplHint")
@@ -1132,7 +1133,6 @@ object HibtWebSession {
         }
 
         val webMsg = webResult?.message.orEmpty()
-        // —— 2) UI 超时/失败：优先重放「曾经 UI 成功」固化的真实 place API ——
         if (hasPlaceApiTemplate()) {
             appendLog("UI未成交(${webMsg.take(50)})，重放固化下单API…")
             _ui.value = _ui.value.copy(status = "固化API重放中…")
@@ -1144,15 +1144,16 @@ object HibtWebSession {
                 PlaceOutcome(false, "固化API异常: ${e.message}", dryRun = false)
             }
             if (replayed.ok) {
-                _ui.value = _ui.value.copy(lastPlaceMsg = replayed.message, status = replayed.message.take(100))
+                _ui.value = _ui.value.copy(
+                    lastPlaceMsg = replayed.message,
+                    status = replayed.message.take(100),
+                )
                 return replayed
             }
             appendLog("固化API未成交: ${replayed.message.take(80)}")
         } else {
-            appendLog("UI未成交且无固化模板：请先手动/测试 UI 成功一次以解析真实下单API")
+            appendLog("UI未成交且无固化模板：请先 UI 成功一次以解析真实下单API")
         }
-
-        // —— 3) 最后：原生猜参（成功率低，仅兜底）——
         appendLog("UI/固化API均未成交(${webMsg.take(40)})，最后尝试原生猜参")
         val tokenNow = lastToken.ifBlank { token }
         if (tokenNow.isBlank()) {
@@ -1575,16 +1576,14 @@ object HibtWebSession {
                 try {
                   if (init && init.body != null) {
                     if (typeof init.body === 'string') bodyStr = init.body;
-                    else if (typeof URLSearchParams !== 'undefined' && init.body instanceof URLSearchParams) bodyStr = init.body.toString();
+                    else if (typeof URLSearchParams !== 'undefined' && init.body instanceof URLSearchParams)
+                      bodyStr = init.body.toString();
                     else bodyStr = String(init.body);
                   }
                 } catch(e){}
                 window.__CA_LAST_PLACE_REQ = {
-                  url: url,
-                  method: (init && init.method) || 'POST',
-                  body: bodyStr,
-                  headers: hdr,
-                  at: Date.now()
+                  url: url, method: (init && init.method) || 'POST',
+                  body: bodyStr, headers: hdr, at: Date.now()
                 };
               }
             } catch(e){}
@@ -1626,15 +1625,13 @@ object HibtWebSession {
                 try {
                   if (body == null) bodyStr = '';
                   else if (typeof body === 'string') bodyStr = body;
-                  else if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) bodyStr = body.toString();
+                  else if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams)
+                    bodyStr = body.toString();
                   else bodyStr = String(body);
                 } catch(e){}
                 window.__CA_LAST_PLACE_REQ = {
-                  url: url,
-                  method: this.__caMethod || 'POST',
-                  body: bodyStr,
-                  headers: this.__caH || {},
-                  at: Date.now()
+                  url: url, method: this.__caMethod || 'POST',
+                  body: bodyStr, headers: this.__caH || {}, at: Date.now()
                 };
               }
               var pend = window.__caPendingPlace;
