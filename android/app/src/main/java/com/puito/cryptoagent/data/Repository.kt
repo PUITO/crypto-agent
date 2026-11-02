@@ -124,7 +124,15 @@ class Repository(ctx: Context) {
                 liveSimMaxConsecutiveLosses = raw.liveSimMaxConsecutiveLosses,
                 liveSimMinTradesBeforeRetune = raw.liveSimMinTradesBeforeRetune,
                 liveSimAutoRetune = raw.liveSimAutoRetune,
-                hibt = try { raw.hibt } catch (_: Exception) { def.hibt },
+                hibt = try {
+                    val hh = raw.hibt
+                    // Gson 缺字段会把 Double 置 0；编辑框清空也可能写出 0
+                    hh.copy(
+                        defaultAmount = if (hh.defaultAmount >= 2.0) hh.defaultAmount else 3.0,
+                        aiMinWinRate = if (hh.aiMinWinRate > 0) hh.aiMinWinRate else 55.0,
+                        placeTimeoutSec = if (hh.placeTimeoutSec >= 10) hh.placeTimeoutSec else 45,
+                    )
+                } catch (_: Exception) { def.hibt },
             )
         } catch (_: Exception) {
             AppSettings()
@@ -2362,6 +2370,17 @@ class Repository(ctx: Context) {
         }
     }
 
+
+    /** 下单金额：配置无效(≤0/<2)时回退 3，避免日志/实盘出现 amount=0 */
+    private fun resolveOrderAmount(h: HibtSettings): Double {
+        val a = h.defaultAmount
+        return when {
+            a >= 2.0 -> a
+            a > 0 -> a.coerceAtLeast(2.0)
+            else -> 3.0
+        }
+    }
+
     private suspend fun maybeAutoOrder(
         s: AppSettings,
         m: SignalMark,
@@ -2398,10 +2417,15 @@ class Repository(ctx: Context) {
                 return
             }
         }
+        val orderAmt = resolveOrderAmount(h)
+        if (h.defaultAmount < 2.0) {
+            HibtWebSession.appendLog("配置金额无效(${h.defaultAmount})，已改用 $orderAmt 并写回设置")
+            saveSettings(s.copy(hibt = h.copy(defaultAmount = orderAmt)))
+        }
         val mode = if (h.dryRun) "DRY-RUN模拟" else "真实下单"
         val triggerMsg =
             ">>> 触发自动下单[$mode] ${s.symbol} ${m.side} tu=${unit}m iv=$intervalCode " +
-                "ai=${ai.winRatePct}%≥${ai.thresholdPct}% amt=${h.defaultAmount}"
+                "ai=${ai.winRatePct}%≥${ai.thresholdPct}% amt=$orderAmt"
         HibtWebSession.appendLog(triggerMsg)
         // 触发即通知，避免 WebView 卡住时用户完全无感知
         Notify.orderResult(
@@ -2414,13 +2438,13 @@ class Repository(ctx: Context) {
                 "AI达阈值，正在提交下单… 请保持 WebView 已登录并锁定合约页"
             },
             sideLabel = if (m.side == "B") "买涨 B" else "买跌 S",
-            amount = h.defaultAmount,
+            amount = orderAmt,
             timeUnit = unit,
         )
         val result = try {
             placePreferWeb(
                 directionUp = m.side == "B",
-                amount = h.defaultAmount,
+                amount = orderAmt,
                 symbol = s.symbol,
                 timeUnit = unit,
                 cfg = h,
@@ -2439,7 +2463,7 @@ class Repository(ctx: Context) {
             dryRun = result.dryRun,
             message = result.message,
             sideLabel = if (m.side == "B") "买涨 B" else "买跌 S",
-            amount = h.defaultAmount,
+            amount = orderAmt,
             timeUnit = unit,
         )
         if (result.dryRun || !result.ok) {
@@ -2457,6 +2481,10 @@ class Repository(ctx: Context) {
         timeUnit: Int,
         cfg: HibtSettings,
     ): HibtClient.OrderResult {
+        val safeAmount = if (amount >= 2.0) amount else resolveOrderAmount(cfg)
+        if (safeAmount != amount) {
+            HibtWebSession.appendLog("placePreferWeb 金额修正 $amount → $safeAmount")
+        }
         // 勿把「无 WebView」误标成 dryRun=true（用户设置可能是实盘）
         if (HibtWebSession.peek() == null) {
             HibtWebSession.appendLog("placePreferWeb: WebView=null，尝试 ensureAlive 重建")
@@ -2469,7 +2497,7 @@ class Repository(ctx: Context) {
             Notify.orderResult(
                 appCtx, ok = false, dryRun = cfg.dryRun, message = msg,
                 sideLabel = if (directionUp) "买涨" else "买跌",
-                amount = amount, timeUnit = timeUnit,
+                amount = safeAmount, timeUnit = timeUnit,
             )
             return HibtClient.OrderResult(false, msg, dryRun = cfg.dryRun, raw = msg)
         }
@@ -2479,7 +2507,7 @@ class Repository(ctx: Context) {
         val outcome = try {
             HibtWebSession.placeOrder(
                 directionUp = directionUp,
-                amount = amount,
+                amount = safeAmount,
                 symbol = symbol,
                 timeUnit = timeUnit,
                 dryRun = cfg.dryRun,
@@ -2509,7 +2537,7 @@ class Repository(ctx: Context) {
             dryRun = result.dryRun,
             message = result.message,
             sideLabel = if (directionUp) "买涨 B" else "买跌 S",
-            amount = amount,
+            amount = safeAmount,
             timeUnit = timeUnit,
         )
         return result
@@ -2523,7 +2551,12 @@ class Repository(ctx: Context) {
             ?: s.hibt.autoIntervals.firstOrNull()
             ?: s.interval
         val unit = eventTimeUnitMinutes(iv)
-        val amt = amount ?: s.hibt.defaultAmount
+        val amt = resolveOrderAmount(s.hibt.copy(defaultAmount = amount ?: s.hibt.defaultAmount))
+        if ((amount ?: s.hibt.defaultAmount) < 2.0) {
+            HibtWebSession.appendLog(
+                "下单金额修正: 配置=${amount ?: s.hibt.defaultAmount} → 使用 $amt",
+            )
+        }
         return placePreferWeb(up, amt, s.symbol, unit, s.hibt)
     }
 

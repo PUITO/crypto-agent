@@ -345,12 +345,26 @@ fun OrderScreen(repo: Repository) {
                 value = amountText,
                 onValueChange = { raw ->
                     amountText = filterDecimal(raw)
-                    amountText.toDoubleOrNull()?.let { v -> persist(h.copy(defaultAmount = v)) }
+                    // 编辑中不落盘 0/空，避免自动下单读到 amount=0
+                    amountText.toDoubleOrNull()?.takeIf { it >= 2.0 }?.let { v ->
+                        persist(h.copy(defaultAmount = v))
+                    }
                 },
-                label = { Text("默认下单金额") },
+                label = { Text("默认下单金额(≥2)") },
                 modifier = Modifier.fillMaxWidth().onFocusChanged {
                     numFocused = it.isFocused
-                    if (!it.isFocused) amountText.toDoubleOrNull()?.let { v -> persist(h.copy(defaultAmount = v)) }
+                    if (!it.isFocused) {
+                        val v = amountText.toDoubleOrNull()
+                        when {
+                            v != null && v >= 2.0 -> persist(h.copy(defaultAmount = v))
+                            else -> {
+                                // 无效则恢复为当前有效配置或 3
+                                val keep = if (h.defaultAmount >= 2.0) h.defaultAmount else 3.0
+                                amountText = formatSoftNum(keep)
+                                if (h.defaultAmount < 2.0) persist(h.copy(defaultAmount = keep))
+                            }
+                        }
+                    }
                 },
                 singleLine = true,
             )
