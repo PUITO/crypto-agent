@@ -1873,8 +1873,20 @@ object HibtWebSession {
           if (amtEl) { setInput(amtEl, amount); steps.push('金额='+amount); }
           else steps.push('未找到金额框');
 
-          if (selectTimeUnit(timeUnit)) steps.push('周期='+timeUnit);
-          else steps.push('未点到周期'+timeUnit);
+          // 周期必须点中目标档位，禁止留在页面默认 5m 误下
+          var periodOk = selectTimeUnit(timeUnit);
+          if (!periodOk) {
+            // 再试一次：延迟后重新扫（弹层动画）
+            openPeriodPicker();
+            periodOk = selectTimeUnit(timeUnit);
+          }
+          if (periodOk) steps.push('周期='+timeUnit+'m');
+          else steps.push('未点到周期'+timeUnit+'m');
+
+          if (!periodOk) {
+            finish(false, '周期未切换到'+timeUnit+'m(页面默认可能仍是5m)，拒绝提交，改走固化API/原生。步骤:'+steps.join('; '));
+            return;
+          }
 
           var dirLabel = selectDirection(direction);
           if (dirLabel) steps.push('方向='+dirLabel);
@@ -1886,7 +1898,6 @@ object HibtWebSession {
             return;
           }
           if (!sub) {
-            // 找不到提交按钮：不走无Cookie的XHR（易误报登录失效），交还原生Cookie路径
             finish(false, '未找到提交按钮，交还原生Cookie下单。步骤:'+steps.join('; '));
             return;
           }
