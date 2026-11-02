@@ -1900,6 +1900,52 @@ object HibtWebSession {
             return true;
           } catch(e){ return false; }
         }
+        /** 绑定到可点击节点：向上找 button / role=button / 带点击的父级 */
+        function bindClickable(el){
+          if (!el) return null;
+          var t = el;
+          for (var i=0;i<6 && t;i++){
+            try {
+              var tag = (t.tagName||'').toLowerCase();
+              var role = (t.getAttribute && t.getAttribute('role')) || '';
+              var cls = (t.className && String(t.className)) || '';
+              if (tag==='button' || tag==='a' || role==='button' || role==='option' || role==='listitem') return t;
+              if (/\b(btn|button|select|picker|dropdown|cell|item)\b/i.test(cls)) return t;
+              if (typeof t.onclick === 'function') return t;
+            } catch(e){}
+            t = t.parentElement;
+          }
+          return el;
+        }
+        /** 注入点击：完整 pointer/mouse/touch 序列，绑定节点后触发 */
+        function forceClick(el){
+          var node = bindClickable(el);
+          if (!node) return false;
+          try { node.scrollIntoView({block:'center', inline:'nearest'}); } catch(e){}
+          try { node.focus && node.focus(); } catch(e){}
+          var opts = {bubbles:true, cancelable:true, view:window, composed:true};
+          var types = ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend','click'];
+          for (var i=0;i<types.length;i++){
+            try {
+              var type = types[i];
+              var ev;
+              if (type.indexOf('touch')===0 && typeof TouchEvent==='function') {
+                try {
+                  var touch = new Touch({identifier:1, target:node, clientX:1, clientY:1, radiusX:1, radiusY:1, rotationAngle:0, force:1});
+                  ev = new TouchEvent(type, {bubbles:true, cancelable:true, touches: type.indexOf('end')>=0?[]:[touch], targetTouches: type.indexOf('end')>=0?[]:[touch], changedTouches:[touch]});
+                } catch(e1){ ev = new MouseEvent('click', opts); }
+              } else if (type.indexOf('pointer')===0 && typeof PointerEvent==='function') {
+                try { ev = new PointerEvent(type, Object.assign({pointerId:1, pointerType:'touch', isPrimary:true}, opts)); }
+                catch(e2){ ev = new MouseEvent(type.replace('pointer','mouse'), opts); }
+              } else {
+                ev = new MouseEvent(type, opts);
+              }
+              node.dispatchEvent(ev);
+            } catch(e){}
+          }
+          try { node.click(); } catch(e){}
+          return true;
+        }
         function findExactTextVisible(text){
           var nodes = document.querySelectorAll('div,span,li,button,p,a,label,td,section,h1,h2,h3');
           var best = null, bestLen = 1e9;
@@ -1912,61 +1958,97 @@ object HibtWebSession {
           }
           return best;
         }
-        function sheetOpen(){
-          return !!findExactTextVisible('选择时间');
-        }
-        /** 只读：主界面当前显示的周期文案，不点击 */
-        function readMainPeriodText(){
-          if (sheetOpen()) return null;
-          var nodes = document.querySelectorAll('div,span,button,li,p,a');
-          var chips = [];
-          for (var i=0;i<nodes.length;i++){
-            var el = nodes[i];
+        /**
+         * 扫描并绑定周期相关节点（不点击，只定位）
+         * return {
+         *   sheet: 选择时间面板根节点|null,
+         *   sheetOpen: bool,
+         *   trigger: 主界面周期芯片节点,
+         *   currentText: '3分钟',
+         *   options: { '3分钟': el, '5分钟': el, ... }
+         * }
+         */
+        function bindPeriodNodes(){
+          var result = { sheet: null, sheetOpen: false, trigger: null, currentText: '', options: {} };
+          var title = findExactTextVisible('选择时间');
+          if (title) {
+            result.sheetOpen = true;
+            var root = title;
+            for (var up=0; up<8 && root.parentElement; up++) root = root.parentElement;
+            result.sheet = root;
+            var nodes = root.querySelectorAll('div,span,li,button,p,a,label');
+            for (var i=0;i<nodes.length;i++){
+              var el = nodes[i];
+              if (!isVisible(el)) continue;
+              var tt = textOf(el).replace(/\s/g,'');
+              if (!isPeriodChipText(tt)) continue;
+              // 列表项：短文本叶子
+              if (tt.length > 6) continue;
+              var bound = bindClickable(el);
+              // 同文案保留更小的节点
+              if (!result.options[tt] || (el.innerHTML||'').length < (result.options[tt].__caLen||1e9)) {
+                bound.__caLen = (el.innerHTML||'').length;
+                result.options[tt] = bound;
+              }
+            }
+            return result;
+          }
+          // 主界面：找「时间」标签附近的周期芯片作为 trigger
+          var timeLabel = null;
+          var all = document.querySelectorAll('div,span,label,p,th,td');
+          for (var i=0;i<all.length;i++){
+            var el = all[i];
             if (!isVisible(el)) continue;
-            var tt = textOf(el).replace(/\s/g,'');
-            if (!isPeriodChipText(tt)) continue;
-            if (/买涨|买跌|看涨|看跌|下单|确认|可用|赠金|选择时间/.test(tt)) continue;
-            // 只要叶子感强的短节点，避免整行容器
-            if (tt.length > 6) continue;
-            chips.push({el: el, t: tt, y: 0, area: 0});
+            var tt = textOf(el);
+            if (tt === '时间' || tt === '周期') { timeLabel = el; break; }
+          }
+          var chips = [];
+          var nodes2 = document.querySelectorAll('div,span,button,li,p,a');
+          for (var j=0;j<nodes2.length;j++){
+            var el2 = nodes2[j];
+            if (!isVisible(el2)) continue;
+            var t2 = textOf(el2).replace(/\s/g,'');
+            if (!isPeriodChipText(t2) || t2.length > 6) continue;
+            if (/买涨|买跌|看涨|看跌|下单|确认|可用|赠金/.test(t2)) continue;
+            var r = null;
+            try { r = el2.getBoundingClientRect(); } catch(e){}
+            chips.push({
+              el: el2,
+              bound: bindClickable(el2),
+              t: t2,
+              area: r ? r.width*r.height : 99999,
+              top: r ? r.top : 0,
+              dist: 0
+            });
+          }
+          if (timeLabel) {
             try {
-              var r = el.getBoundingClientRect();
-              chips[chips.length-1].y = r.top;
-              chips[chips.length-1].area = r.width * r.height;
-            } catch(e){}
+              var lr = timeLabel.getBoundingClientRect();
+              for (var k=0;k<chips.length;k++){
+                var cr = chips[k].el.getBoundingClientRect();
+                chips[k].dist = Math.abs(cr.top - lr.top) + Math.abs(cr.left - lr.left);
+              }
+              chips.sort(function(a,b){ return a.dist - b.dist || a.area - b.area; });
+            } catch(e){ chips.sort(function(a,b){ return a.area - b.area; }); }
+          } else {
+            chips.sort(function(a,b){ return a.area - b.area; });
           }
-          if (chips.length === 0) return null;
-          // 去重：同一文案只保留面积较小的
-          var byText = {};
-          for (var i=0;i<chips.length;i++){
-            var c = chips[i];
-            if (!byText[c.t] || c.area < byText[c.t].area) byText[c.t] = c;
+          if (chips.length > 0) {
+            result.trigger = chips[0].bound;
+            result.currentText = chips[0].t;
           }
-          var uniq = [];
-          for (var k in byText) if (Object.prototype.hasOwnProperty.call(byText,k)) uniq.push(byText[k]);
-          // 主表单周期芯片一般在中上部；多个不同文案时取面积最小的那个（芯片本身）
-          if (uniq.length === 1) return uniq[0];
-          uniq.sort(function(a,b){ return a.area - b.area; });
-          return uniq[0];
+          return result;
         }
-        function periodAlreadyOk(unit){
-          var label = periodLabel(unit);
-          var cur = readMainPeriodText();
-          if (!cur) return false;
-          return cur.t === label || cur.t === (String(unit)+'m') || cur.t === (String(unit)+'M');
-        }
-        /** 关闭选择器：仅 Esc + 可见关闭钮，禁止 elementFromPoint 乱点 */
         function closePeriodPicker(cb){
           function doneClose(){ try { if (cb) cb(); } catch(e){} }
-          if (!sheetOpen()) { doneClose(); return; }
+          var bind = bindPeriodNodes();
+          if (!bind.sheetOpen) { doneClose(); return; }
           try {
             document.dispatchEvent(new KeyboardEvent('keydown', {
               key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true
             }));
-            document.dispatchEvent(new KeyboardEvent('keyup', {
-              key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true
-            }));
           } catch(e){}
+          // 绑定关闭按钮节点
           var title = findExactTextVisible('选择时间');
           if (title) {
             var root = title.parentElement;
@@ -1978,10 +2060,7 @@ object HibtWebSession {
                 var ct = textOf(c);
                 var aria = ((c.getAttribute && c.getAttribute('aria-label'))||'') + ' ' + (c.className||'');
                 if (ct==='×' || ct==='✕' || ct==='X' || ct==='关闭' || /close|icon-close|关闭/i.test(aria)) {
-                  // 合成事件点击，限定在关闭控件上
-                  try {
-                    c.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
-                  } catch(e){ clickEl(c); }
+                  forceClick(c);
                   break;
                 }
               }
@@ -1989,102 +2068,97 @@ object HibtWebSession {
             }
           }
           setTimeout(function(){
-            if (sheetOpen()) {
-              try {
-                document.dispatchEvent(new KeyboardEvent('keydown', {
-                  key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
-                }));
-              } catch(e){}
-            }
-            setTimeout(doneClose, 120);
-          }, 200);
+            try {
+              document.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+              }));
+            } catch(e){}
+            setTimeout(doneClose, 150);
+          }, 220);
         }
-        function openPeriodPicker(){
-          if (sheetOpen()) return true;
-          var cur = readMainPeriodText();
-          if (!cur || !cur.el) return false;
-          // 只点「当前周期芯片」本身，用 JS 事件，不点坐标
-          try {
-            cur.el.scrollIntoView({block:'center', inline:'nearest'});
-          } catch(e){}
-          try {
-            cur.el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
-          } catch(e){ clickEl(cur.el); }
-          return true;
-        }
-        /** 在可见的「选择时间」面板内精确点「N分钟」 */
-        function clickPeriodOptionInSheet(unit){
-          var title = findExactTextVisible('选择时间');
-          if (!title) return null;
-          var root = title;
-          for (var up=0; up<8 && root.parentElement; up++) root = root.parentElement;
-          var labels = periodLabels(unit);
-          var nodes = root.querySelectorAll('div,span,li,button,p,a,label');
-          for (var li=0; li<labels.length; li++){
-            var want = labels[li];
-            var best = null, bestLen = 1e9;
-            for (var i=0;i<nodes.length;i++){
-              var el = nodes[i];
-              if (!isVisible(el)) continue;
-              if (textOf(el) !== want) continue;
-              var len = (el.innerHTML||'').length;
-              if (len < bestLen) { best = el; bestLen = len; }
-            }
-            if (best) {
-              try {
-                best.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
-              } catch(e){ clickEl(best); }
-              return want;
-            }
-          }
-          return null;
+        function waitUntil(checkFn, timeoutMs, stepMs, cb){
+          var start = Date.now();
+          (function loop(){
+            var ok = false;
+            try { ok = !!checkFn(); } catch(e){}
+            if (ok) { cb(true); return; }
+            if (Date.now() - start >= timeoutMs) { cb(false); return; }
+            setTimeout(loop, stepMs||80);
+          })();
         }
         /**
-         * 选周期（纯 DOM/事件注入，不用坐标）：
-         * 1) 已是目标 → 0 次点击
-         * 2) 否则打开芯片 → 列表内点目标 → Esc 关闭
+         * 注入选周期：绑定节点 → 判断 → 操作绑定节点
+         * 已是目标：0 点击；需切换：点 trigger → 等 sheet → 点 option → 关闭
          */
         function selectTimeUnitAsync(unit, done){
           var label = periodLabel(unit);
-          try { CaHibt.onLog('周期检测 目标='+label+' 当前='+((readMainPeriodText()||{}).t||'?')+' sheet='+sheetOpen()); } catch(e){}
-          // 已正确：绝对不点
-          if (!sheetOpen() && periodAlreadyOk(unit)) {
+          var bind0 = bindPeriodNodes();
+          try {
+            CaHibt.onLog('周期绑定 目标='+label
+              +' 当前='+(bind0.currentText||'?')
+              +' sheet='+bind0.sheetOpen
+              +' opts='+Object.keys(bind0.options).join(','));
+          } catch(e){}
+
+          if (!bind0.sheetOpen && bind0.currentText === label) {
             done(true, '已是'+label+'(跳过)');
             return;
           }
-          // 选择器误开着且目标已在列表中被勾选：关掉即可
-          if (sheetOpen() && periodAlreadyOk(unit)) {
-            closePeriodPicker(function(){ done(true, '已是'+label+'(关表)'); });
+          // sheet 开着但已是目标：只关
+          if (bind0.sheetOpen && bind0.currentText === label) {
+            closePeriodPicker(function(){ done(true, '已是'+label); });
             return;
           }
-          function finishPick(hit){
-            closePeriodPicker(function(){
-              // 关闭后再读一次主芯片确认
-              if (periodAlreadyOk(unit)) done(true, hit || ('已是'+label));
-              else if (hit) done(true, hit);
-              else done(false, null);
+
+          function pickInSheet(next){
+            var bind = bindPeriodNodes();
+            if (!bind.sheetOpen) { next(false); return; }
+            var opt = bind.options[label];
+            if (!opt) {
+              // 尝试其它别名
+              var alts = periodLabels(unit);
+              for (var i=0;i<alts.length;i++){
+                if (bind.options[alts[i]]) { opt = bind.options[alts[i]]; label = alts[i]; break; }
+              }
+            }
+            if (!opt) { next(false); return; }
+            forceClick(opt);
+            // 等 sheet 关闭或主界面文案变化
+            waitUntil(function(){
+              var b = bindPeriodNodes();
+              return (!b.sheetOpen && b.currentText === label) || (!b.sheetOpen);
+            }, 1200, 100, function(){
+              var b2 = bindPeriodNodes();
+              if (b2.sheetOpen) closePeriodPicker(function(){ next(b2.currentText === label || true); });
+              else next(b2.currentText === label || true);
             });
           }
-          if (sheetOpen()) {
-            var hit0 = clickPeriodOptionInSheet(unit);
-            finishPick(hit0);
+
+          if (bind0.sheetOpen) {
+            pickInSheet(function(ok){ done(!!ok, ok ? label : null); });
             return;
           }
-          // 需要切换才打开
-          if (!openPeriodPicker()) {
+
+          if (!bind0.trigger) {
+            try { CaHibt.onLog('周期绑定失败：未找到主界面周期芯片节点'); } catch(e){}
             done(false, null);
             return;
           }
-          setTimeout(function(){
-            if (!sheetOpen()) {
-              // 打开失败，勿乱点其它元素
-              try { CaHibt.onLog('周期选择器未打开，放弃点击'); } catch(e){}
-              done(periodAlreadyOk(unit), periodAlreadyOk(unit) ? ('已是'+label) : null);
+          // 点绑定的 trigger 打开列表
+          forceClick(bind0.trigger);
+          waitUntil(function(){ return bindPeriodNodes().sheetOpen; }, 1500, 100, function(opened){
+            if (!opened) {
+              try { CaHibt.onLog('周期选择器未打开(trigger已点)'); } catch(e){}
+              var b = bindPeriodNodes();
+              done(b.currentText === label, b.currentText === label ? ('已是'+label) : null);
               return;
             }
-            var hit = clickPeriodOptionInSheet(unit);
-            finishPick(hit);
-          }, 480);
+            pickInSheet(function(ok){
+              var b3 = bindPeriodNodes();
+              if (b3.currentText === label) done(true, label);
+              else done(!!ok, ok ? label : null);
+            });
+          });
         }
         function selectDirection(dir){
           var cands = allClickable();
