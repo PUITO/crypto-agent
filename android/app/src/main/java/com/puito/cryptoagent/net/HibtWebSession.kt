@@ -1887,30 +1887,96 @@ object HibtWebSession {
         function isPeriodChipText(t){
           return /^\d+\s*分钟$/.test(t) || /^\d+m$/i.test(t);
         }
+        function sheetOpen(){
+          return !!findExactText('选择时间');
+        }
+        /** 主界面当前周期芯片（选择器关闭时通常只有 1 个「N分钟」） */
+        function currentMainPeriodChip(){
+          if (sheetOpen()) return null;
+          var nodes = document.querySelectorAll('div,span,button,li,p,a');
+          var chips = [];
+          for (var i=0;i<nodes.length;i++){
+            var el = nodes[i];
+            var tt = textOf(el);
+            if (!isPeriodChipText(tt)) continue;
+            if (/买涨|买跌|看涨|看跌|下单|确认|可用|赠金|选择时间/.test(tt)) continue;
+            try {
+              if (el.offsetParent === null && el.getClientRects().length===0) continue;
+            } catch(e){}
+            chips.push({el: el, t: tt.replace(/\s/g,'')});
+          }
+          if (chips.length === 0) return null;
+          if (chips.length === 1) return chips[0];
+          chips.sort(function(a,b){ return a.t.length - b.t.length; });
+          return chips[0];
+        }
+        function closePeriodPicker(cb){
+          function doneClose(){ try { if (cb) cb(); } catch(e){} }
+          if (!sheetOpen()) { doneClose(); return; }
+          try {
+            document.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true
+            }));
+          } catch(e){}
+          var title = findExactText('选择时间');
+          if (title) {
+            var root = title.parentElement;
+            for (var up=0; up<5 && root; up++){
+              var cands = root.querySelectorAll('button,div,span,i,a');
+              for (var i=0;i<cands.length;i++){
+                var c = cands[i];
+                var ct = textOf(c);
+                var aria = ((c.getAttribute && c.getAttribute('aria-label'))||'') + ' ' + (c.className||'');
+                if (ct==='×' || ct==='✕' || ct==='X' || ct==='关闭' || /close|icon-close|关闭/i.test(aria)) {
+                  clickEl(c);
+                  break;
+                }
+              }
+              root = root.parentElement;
+            }
+          }
+          setTimeout(function(){
+            if (sheetOpen()) {
+              try {
+                var mask = document.elementFromPoint(Math.floor(window.innerWidth/2), 12);
+                if (mask) clickEl(mask);
+              } catch(e){}
+            }
+            setTimeout(function(){
+              if (sheetOpen()) {
+                try {
+                  document.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+                  }));
+                } catch(e){}
+              }
+              doneClose();
+            }, 180);
+          }, 180);
+        }
         function openPeriodPicker(){
-          if (findExactText('选择时间')) return true;
-          // 点主界面「5分钟」芯片打开底部列表
+          if (sheetOpen()) return true;
+          var chip = currentMainPeriodChip();
+          if (chip && chip.el) {
+            try { chip.el.scrollIntoView({block:'center'}); } catch(e){}
+            clickEl(chip.el);
+            return true;
+          }
           var nodes = document.querySelectorAll('div,span,button,li,p,a');
           for (var i=0;i<nodes.length;i++){
             var el = nodes[i];
-            var t = textOf(el);
-            if (!isPeriodChipText(t)) continue;
-            if (/买涨|买跌|看涨|看跌|下单|确认|可用|赠金|选择时间/.test(t)) continue;
+            var tt = textOf(el);
+            if (!isPeriodChipText(tt)) continue;
+            if (/买涨|买跌|看涨|看跌|下单|确认|可用|赠金|选择时间/.test(tt)) continue;
             try { el.scrollIntoView({block:'center'}); } catch(e){}
             clickEl(el);
             return true;
           }
-          var cands = allClickable();
-          for (var i=0;i<cands.length;i++){
-            var t = textOf(cands[i]);
-            if (t && t.indexOf('分钟')>=0 && t.length<=8) {
-              clickEl(cands[i]);
-              return true;
-            }
-          }
           return false;
         }
-        function clickPeriodOption(unit){
+        /** 仅在「选择时间」列表已打开时点击选项，避免点到主界面芯片 */
+        function clickPeriodOptionInSheet(unit){
+          if (!sheetOpen()) return null;
           var labels = periodLabels(unit);
           for (var i=0;i<labels.length;i++){
             var el = findExactText(labels[i]);
@@ -1924,29 +1990,49 @@ object HibtWebSession {
           if (el2) { clickEl(el2); return textOf(el2)||labels[0]; }
           return null;
         }
-        /** 异步：打开「选择时间」→ 点「N分钟」 */
+        /**
+         * - 主界面已是目标周期 → 不打开选择器
+         * - 需要切换 → 打开列表点选项 → 关闭列表再下单
+         */
         function selectTimeUnitAsync(unit, done){
           var label = periodLabel(unit);
-          function tryClick(){
-            var hit = clickPeriodOption(unit);
-            if (hit) { done(true, hit); return true; }
-            return false;
+          if (!sheetOpen()) {
+            var cur = currentMainPeriodChip();
+            if (cur && (cur.t === label || cur.t === (String(unit)+'m') || cur.t === (String(unit)+'M'))) {
+              done(true, '已是'+label);
+              return;
+            }
           }
-          // 若列表已开，直接点
-          if (findExactText('选择时间') || findExactText('3分钟')) {
-            if (tryClick()) return;
+          function finishPick(hit){
+            closePeriodPicker(function(){
+              if (sheetOpen()) {
+                try { clickPeriodOptionInSheet(unit); } catch(e){}
+                closePeriodPicker(function(){ done(!!hit, hit); });
+              } else {
+                done(!!hit, hit);
+              }
+            });
+          }
+          if (sheetOpen()) {
+            finishPick(clickPeriodOptionInSheet(unit));
+            return;
           }
           openPeriodPicker();
           setTimeout(function(){
-            if (tryClick()) return;
-            openPeriodPicker();
+            if (!sheetOpen()) openPeriodPicker();
             setTimeout(function(){
-              if (tryClick()) return;
-              var el = findExactText(label);
-              if (el) { clickEl(el); done(true, label); }
-              else done(false, null);
-            }, 500);
-          }, 500);
+              var hit = clickPeriodOptionInSheet(unit);
+              if (!hit) {
+                closePeriodPicker(function(){
+                  var cur2 = currentMainPeriodChip();
+                  if (cur2 && cur2.t === label) done(true, '已是'+label);
+                  else done(false, null);
+                });
+                return;
+              }
+              finishPick(hit);
+            }, 450);
+          }, 450);
         }
         function selectDirection(dir){
           var cands = allClickable();
@@ -1978,12 +2064,12 @@ object HibtWebSession {
               finish(false, '周期未切换到'+timeUnit+'分钟(仍可能是5分钟)，拒绝提交。步骤:'+steps.join('; '));
               return;
             }
-            // 关闭可能残留的选择层（点空白或已选项）
-            try {
-              var closeBtn = findExactText('×') || findExactText('X');
-              // 不强制关，选项点击后官网一般会自动收起
-            } catch(e){}
-
+            if (typeof sheetOpen === 'function' && sheetOpen()) {
+              closePeriodPicker(function(){ afterPeriodContinue(); });
+              return;
+            }
+            afterPeriodContinue();
+            function afterPeriodContinue(){
             var dirLabel = selectDirection(direction);
             if (dirLabel) steps.push('方向='+dirLabel);
             else steps.push('未点到方向按钮');
@@ -2026,6 +2112,7 @@ object HibtWebSession {
                 p.done = true;
               }
             }, 12000);
+            }
           }
 
           selectTimeUnitAsync(timeUnit, afterPeriod);
