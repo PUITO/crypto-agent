@@ -1630,7 +1630,7 @@ object HibtWebSession {
           var vv = pickV(url);
           if (vv) {
             st.v = vv;
-            if (/^\d{10,}$/.test(vv)) st.vPlain = vv; else st.vEnc = vv;
+            if (/^\d{10,}${'$'}/.test(vv)) st.vPlain = vv; else st.vEnc = vv;
             try{ window.__CA_LAST_V = vv; }catch(e){}
           }
           var api = pickApi(url);
@@ -1979,8 +1979,8 @@ object HibtWebSession {
             for (var j=0;j<words.length;j++){
               var w = words[j];
               if (!w) continue;
-              if (/^\d+$/.test(w)) {
-                if (new RegExp('(^|[^0-9])'+w+'([^0-9]|$)').test(t)) return cands[i];
+              if (/^\d+${'$'}/.test(w)) {
+                if (new RegExp('(^|[^0-9])'+w+'([^0-9]|${'$'})').test(t)) return cands[i];
               } else if (t.indexOf(w)>=0) return cands[i];
             }
           }
@@ -2010,7 +2010,7 @@ object HibtWebSession {
           var s = String(raw||'').replace(/\s/g,'');
           var m = s.match(/(\d{1,3})\s*(分钟|分|Minute|minute|min|m)/i);
           if (m) return parseInt(m[1], 10);
-          m = s.match(/^(\d{1,3})$/);
+          m = s.match(/^(\d{1,3})${'$'}/);
           if (m) return parseInt(m[1], 10);
           return null;
         }
