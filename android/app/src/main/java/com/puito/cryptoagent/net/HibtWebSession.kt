@@ -1276,10 +1276,10 @@ object HibtWebSession {
 
     fun wakeIfNeeded(wv: WebView) = wakeWebView(wv)
 
-    /** 测试按钮：按方案2切换周期（3/5/10/15/30/60） */
+    /** 测试按钮：方案2自包含脚本（不依赖页面是否已注入） */
     fun testSelectPeriod(minutes: Int) {
         val wv = webView ?: run {
-            appendLog("测切周期: WebView 未启动")
+            appendLog("测切周期: WebView 未启动，请先打开 WebView")
             return
         }
         val m = when (minutes) {
@@ -1288,26 +1288,113 @@ object HibtWebSession {
         }
         main.post {
             wakeWebView(wv)
-            injectHooks(wv, force = false)
+            // 强制再注一次；同时下方脚本自包含，即使注入被跳过也能切周期
+            injectHooks(wv, force = true)
             val js = """
                 (function(){
                   var want = $m;
-                  function report(ok, extra){
-                    try { CaHibt.onLog('测切周期 ' + (ok?'OK':'FAIL') + ' 目标='+want+'m ' + (extra||'')); } catch(e){}
+                  function log(msg){ try { CaHibt.onLog(msg); } catch(e){} }
+                  function textOf(el){
+                    if(!el) return '';
+                    try { return (el.innerText||el.textContent||'').replace(/\s+/g,' ').trim(); } catch(e){ return ''; }
                   }
-                  if (typeof window.__caSelectTimeUnit === 'function') {
-                    window.__caSelectTimeUnit(want, function(ok, hit){
-                      var cur = (typeof window.__caReadPeriodMin==='function') ? window.__caReadPeriodMin() : null;
-                      report(!!ok, 'hit='+(hit||'')+' cur='+(cur!=null?cur:'?'));
+                  function extractMin(raw){
+                    var s = String(raw||'').replace(/\s/g,'');
+                    var m = s.match(/(\d{1,3})\s*(分钟|分|Minute|minute|min|m)/i);
+                    return m ? parseInt(m[1],10) : null;
+                  }
+                  function visible(el){
+                    if(!el) return false;
+                    try {
+                      var st = getComputedStyle(el);
+                      if(!st || st.display==='none' || st.visibility==='hidden' || +st.opacity===0) return false;
+                      var r = el.getBoundingClientRect();
+                      return !!(r && r.width>1 && r.height>1);
+                    } catch(e){ return false; }
+                  }
+                  function forceClick(el){
+                    if(!el) return false;
+                    try { el.scrollIntoView({block:'center', inline:'nearest'}); } catch(e){}
+                    var opts = {bubbles:true, cancelable:true, view:window};
+                    ['pointerdown','mousedown','mouseup','click'].forEach(function(t){
+                      try { el.dispatchEvent(new MouseEvent(t, opts)); } catch(e){}
                     });
-                  } else {
-                    report(false, '脚本未注入，请先打开 WebView 登录下单页');
+                    try { el.click(); } catch(e){}
+                    return true;
                   }
+                  function readMin(){
+                    var sel = document.querySelector('.picker-row .icon-select');
+                    if(sel){
+                      var row = sel.closest ? sel.closest('.picker-row') : sel.parentElement;
+                      var mm = extractMin(textOf(row));
+                      if(mm!=null) return mm;
+                    }
+                    var tr = document.querySelector('.order-drop-down');
+                    return extractMin(textOf(tr));
+                  }
+                  function closeSheet(cb){
+                    var sheet = document.querySelector('.order-type-picker');
+                    if(sheet && visible(sheet)){
+                      var x = sheet.querySelector('.icon-close');
+                      if(x) forceClick(x);
+                      try {
+                        document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',keyCode:27,bubbles:true}));
+                      } catch(e){}
+                    }
+                    setTimeout(function(){ try{cb&&cb()}catch(e){} }, 150);
+                  }
+                  function finish(ok, extra){
+                    log('测切周期 '+(ok?'OK':'FAIL')+' 目标='+want+'m '+(extra||''));
+                  }
+
+                  var trigger = document.querySelector('.order-drop-down');
+                  if(!trigger){
+                    finish(false, '无.order-drop-down，请进入事件合约下单页');
+                    return;
+                  }
+                  log('方案2测切 目标='+want+'m 当前='+(readMin()!=null?readMin()+'m':'?')+' 页='+(location.href||'').slice(0,60));
+
+                  forceClick(trigger);
+                  try {
+                    var sp = trigger.querySelector('span'); if(sp) forceClick(sp);
+                    var ic = trigger.querySelector('.icon-down'); if(ic) forceClick(ic);
+                  } catch(e){}
+
+                  var t0 = Date.now();
+                  (function waitSheet(){
+                    var sheet = document.querySelector('.order-type-picker');
+                    if(!(sheet && visible(sheet))){
+                      if(Date.now()-t0 < 2000){ setTimeout(waitSheet, 100); return; }
+                      finish(false, '弹层未打开');
+                      return;
+                    }
+                    var rows = sheet.querySelectorAll('.picker-row');
+                    var hit = null;
+                    for(var i=0;i<rows.length;i++){
+                      if(extractMin(textOf(rows[i]))===want){ hit = rows[i]; break; }
+                    }
+                    log('方案2 rows='+rows.length+' hit='+(hit?textOf(hit):'无'));
+                    if(!hit){
+                      closeSheet(function(){ finish(false, '无匹配选项'); });
+                      return;
+                    }
+                    forceClick(hit);
+                    try { var hs = hit.querySelector('span'); if(hs) forceClick(hs); } catch(e){}
+                    setTimeout(function(){
+                      var finalMin = readMin();
+                      var trigMin = extractMin(textOf(document.querySelector('.order-drop-down')));
+                      var ok = (finalMin===want) || (trigMin===want);
+                      if(ok) window.__caRealPeriodMin = want;
+                      closeSheet(function(){
+                        finish(ok, 'final='+(finalMin!=null?finalMin:'?')+' trigger='+(trigMin!=null?trigMin:'?'));
+                      });
+                    }, 300);
+                  })();
                 })();
             """.trimIndent()
             try {
                 wv.evaluateJavascript(js, null)
-                appendLog("测切周期: 已请求切换 ${m}m")
+                appendLog("测切周期: 已请求切换 ${m}m（自包含方案2）")
                 _ui.value = _ui.value.copy(status = "测切周期 → ${m}m…")
             } catch (e: Exception) {
                 appendLog("测切周期异常: ${e.message}")
@@ -1509,6 +1596,13 @@ object HibtWebSession {
         if (!force && now - lastInjectAt < 3_000) return
         lastInjectAt = now
         injectEver = true
+        if (force) {
+            // 允许重新执行完整注入（含方案2选周期），否则旧会话只有半截脚本
+            view.evaluateJavascript(
+                "try{window.__CA_HIBT_INJECTED__=0}catch(e){}",
+                null,
+            )
+        }
         view.evaluateJavascript(INJECT_JS, null)
     }
 
