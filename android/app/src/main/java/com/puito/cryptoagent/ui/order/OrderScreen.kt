@@ -220,6 +220,26 @@ fun OrderScreen(repo: Repository) {
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    Text(
+                        "测切周期（方案2：打开下拉点选项）",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        listOf(3, 5, 10, 15, 30, 60).forEach { m ->
+                            OutlinedButton(
+                                onClick = {
+                                    HibtWebSession.testSelectPeriod(m)
+                                    toast = "测切 ${m}m，看日志"
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.weight(1f),
+                            ) { Text("${m}m", fontSize = 11.sp) }
+                        }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(
                             onClick = { HibtWebSession.lockCurrentAsOrderPage(); toast = "已锁定当前页" },
