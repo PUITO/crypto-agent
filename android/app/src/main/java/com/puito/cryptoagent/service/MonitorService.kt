@@ -48,10 +48,15 @@ class MonitorService : Service() {
                 try {
                     val st = repo.settings()
                     if (!st.strategyRunning) {
-                        update("${st.symbol} · 策略暂停（无信号通知）")
+                        runCatching {
+                            HibtWebSession.keepAliveTick(this@MonitorService.applicationContext)
+                        }
+                        update("${st.symbol} · 策略暂停（无信号通知）·WebView保活")
                     } else {
-                        // 策略运行即 poll → 通知+AI（不再因 backgroundEnabled=false 停掉信号）
-                        runCatching { HibtWebSession.peek()?.let { HibtWebSession.wakeIfNeeded(it) } }
+                        // 策略运行即 poll；同时保活 WebView（长待机后自动恢复）
+                        runCatching {
+                            HibtWebSession.keepAliveTick(this@MonitorService.applicationContext)
+                        }
                         val fresh = repo.poll()
                         val stNow = repo.settings()
                         fresh.forEach {

@@ -117,6 +117,13 @@ object HibtWebSession {
 
     @Volatile private var placeApiTemplate: PlaceApiTemplate? = null
 
+    /** 后台保活：JS 最后一次存活时间 */
+    @Volatile private var lastJsAliveAt = 0L
+    @Volatile private var keepAlivePosted = false
+    @Volatile private var lastKeepRecoverAt = 0L
+    private val keepAliveIntervalMs = 25_000L
+    private val jsDeadAfterMs = 75_000L
+
     /**
      * 由 Application/Repository 注入：WebView 捕获 token/api 后写回原生设置。
      * (token, apiBase, origin)
@@ -243,6 +250,8 @@ object HibtWebSession {
             }
             webView = wv
             registerNetworkCallback(appCtx)
+            lastJsAliveAt = System.currentTimeMillis()
+            startKeepAliveLoop()
             _ui.value = _ui.value.copy(status = "WebView 已创建，请打开并登录")
             return wv
         }
@@ -251,7 +260,14 @@ object HibtWebSession {
     fun detachFromParent() {
         val wv = webView ?: return
         main.post {
-            (wv.parent as? ViewGroup)?.removeView(wv)
+            try {
+                (wv.parent as? ViewGroup)?.removeView(wv)
+            } catch (_: Exception) {}
+            // 隐藏不等于暂停：继续跑定时器，避免长待机后 JS 被系统掐死
+            wakeWebView(wv)
+            startKeepAliveLoop()
+            _ui.value = _ui.value.copy(status = "已隐藏(保活心跳中)")
+            appendLog("WebView 隐藏保活：已启动心跳")
         }
     }
 
@@ -296,6 +312,8 @@ object HibtWebSession {
         }
         val wv = obtain(context)
         main.post {
+            wakeWebView(wv)
+            startKeepAliveLoop()
             try {
                 lastOrigin = android.net.Uri.parse(home).let { u ->
                     "${u.scheme}://${u.host}".trimEnd('/')
@@ -341,8 +359,10 @@ object HibtWebSession {
      */
     fun stopWebView(clearLockedPage: Boolean = false) {
         main.post {
+            stopKeepAliveLoop()
             val wv = webView
             webView = null
+            lastJsAliveAt = 0L
             injectEver = false
             lastInjectAt = 0L
             lastToken = ""
@@ -1281,6 +1301,123 @@ object HibtWebSession {
             // 后台/VPN 场景下系统可能把 WebView 标成无网，导致接口一直转圈
             wv.setNetworkAvailable(true)
         } catch (_: Exception) {
+        }
+    }
+
+    /** 前台服务 / 隐藏后周期性调用：唤醒 + JS 心跳 + 失活自动恢复锁定页 */
+    fun keepAliveTick(context: Context? = null) {
+        main.post {
+            try {
+                var wv = webView
+                if (wv == null) {
+                    val ctx = context ?: appCtx
+                    if (ctx != null) {
+                        appendLog("keepAlive: WebView 空，ensureAlive 重建")
+                        wv = ensureAlive(ctx)
+                    }
+                }
+                wv ?: return@post
+                wakeWebView(wv)
+                startKeepAliveLoop()
+                // JS 心跳：能执行说明渲染进程仍活
+                wv.evaluateJavascript(
+                    "(function(){try{return 'ok:'+(document.readyState||'')+':'+(location.href||'').slice(0,80)}catch(e){return 'err:'+e}})()",
+                ) { r ->
+                    val s = r?.trim()?.trim('"')?.replace("\"", """) ?: ""
+                    if (s.startsWith("ok:") || s.contains("ok:")) {
+                        lastJsAliveAt = System.currentTimeMillis()
+                    } else if (s.startsWith("err") || s == "null" || s.isBlank()) {
+                        appendLog("keepAlive JS异常: ${s.take(60)}")
+                    } else {
+                        lastJsAliveAt = System.currentTimeMillis()
+                    }
+                }
+                val url = wv.url.orEmpty()
+                val blank = url.isBlank() || url == "about:blank"
+                val dead = lastJsAliveAt > 0L &&
+                    System.currentTimeMillis() - lastJsAliveAt > jsDeadAfterMs
+                val neverAlive = lastJsAliveAt == 0L && injectEver
+                if (blank || dead || neverAlive) {
+                    softRecoverLockedPage(wv, reason = when {
+                        blank -> "blank"
+                        dead -> "js-dead"
+                        else -> "no-heartbeat"
+                    })
+                } else {
+                    injectHooks(wv, force = false)
+                    // 轻量会话扫描，刷新 token（不强制开网钩）
+                    try {
+                        wv.evaluateJavascript(
+                            "try{if(window.__caScanSession)window.__caScanSession()}catch(e){}",
+                            null,
+                        )
+                    } catch (_: Exception) {}
+                }
+            } catch (e: Exception) {
+                appendLog("keepAliveTick: ${e.message}")
+            }
+        }
+    }
+
+    private fun startKeepAliveLoop() {
+        if (keepAlivePosted) return
+        keepAlivePosted = true
+        main.post(keepAliveRunnable)
+    }
+
+    private fun stopKeepAliveLoop() {
+        keepAlivePosted = false
+        try { main.removeCallbacks(keepAliveRunnable) } catch (_: Exception) {}
+    }
+
+    private val keepAliveRunnable = object : Runnable {
+        override fun run() {
+            if (webView == null) {
+                keepAlivePosted = false
+                return
+            }
+            try {
+                keepAliveTick(appCtx)
+            } catch (e: Exception) {
+                appendLog("keepAliveLoop: ${e.message}")
+            }
+            if (webView != null && keepAlivePosted) {
+                main.postDelayed(this, keepAliveIntervalMs)
+            } else {
+                keepAlivePosted = false
+            }
+        }
+    }
+
+    private fun softRecoverLockedPage(wv: WebView, reason: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastKeepRecoverAt < 45_000L) return
+        lastKeepRecoverAt = now
+        val target = lastOrderPageUrl.ifBlank {
+            lastOrigin.ifBlank { "https://m.hibt.com/" }.let { o ->
+                if (o.endsWith("/")) o else "$o/"
+            }
+        }
+        appendLog("WebView 失活恢复($reason) → $target")
+        _ui.value = _ui.value.copy(status = "后台恢复中($reason)…")
+        try {
+            wakeWebView(wv)
+            try { wv.stopLoading() } catch (_: Exception) {}
+            // 清掉可能的坏状态后再载锁定页
+            try { wv.clearHistory() } catch (_: Exception) {}
+            wv.loadUrl(target)
+            injectHooks(wv, force = true)
+            // 恢复后稍后再次扫描会话
+            main.postDelayed({
+                try {
+                    webView?.evaluateJavascript(
+                        "try{if(window.__caScanSession)window.__caScanSession()}catch(e){}",
+                        null,
+                    )
+                } catch (_: Exception) {}
+            }, 3_000L)
+        } catch (e: Exception) {
+            appendLog("softRecover失败: ${e.message}")
         }
     }
 
