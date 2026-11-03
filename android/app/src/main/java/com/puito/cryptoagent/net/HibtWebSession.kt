@@ -1862,40 +1862,19 @@ object HibtWebSession {
           }
           return null;
         }
-        /** 官网列表文案：3分钟 / 5分钟 / 10分钟 / 15分钟 / 30分钟 / 60分钟 */
-        function periodLabel(unit){
+        /** 官网真实 DOM：.order-drop-down 触发；.order-type-picker .picker-row 选项（中英：3分钟/3Minute） */
+        function periodMinutes(unit){
           var u = String(unit||'5');
-          if (u==='60' || u==='1h' || u==='1H') return '60分钟';
-          return u + '分钟';
+          if (u==='60' || u==='1h' || u==='1H') return 60;
+          var n = parseInt(u, 10);
+          return isNaN(n) ? 5 : n;
         }
-        function periodLabels(unit){
-          var u = String(unit||'5');
-          var lab = periodLabel(u);
-          return [lab, u+'m', u+'M', u+'分', String(u)];
-        }
-        function findExactText(text){
-          var nodes = document.querySelectorAll('div,span,li,button,p,a,label,td,section');
-          var best = null, bestLen = 1e9;
-          for (var i=0;i<nodes.length;i++){
-            var el = nodes[i];
-            if (textOf(el) !== text) continue;
-            var len = (el.innerHTML||'').length;
-            if (len < bestLen) { best = el; bestLen = len; }
-          }
-          return best;
-        }
-        function isPeriodChipText(t){
-          return /^\d+\s*分钟$/.test(t) || /^\d+m$/i.test(t);
-        }
-        /** 从节点文案提取周期，兼容「5分钟✓」「5 分钟」等 */
-        function extractPeriodText(raw){
+        function extractPeriodMinutes(raw){
           var s = String(raw||'').replace(/\s/g,'');
-          var m = s.match(/(\d{1,3})分钟/);
-          if (m) return m[1] + '分钟';
-          m = s.match(/^(\d{1,3})m$/i);
-          if (m) return m[1] + '分钟';
-          m = s.match(/(\d{1,3})m(?![a-z0-9])/i);
-          if (m) return m[1] + '分钟';
+          var m = s.match(/(\d{1,3})\s*(分钟|分|Minute|minute|min|m)/i);
+          if (m) return parseInt(m[1], 10);
+          m = s.match(/^(\d{1,3})$/);
+          if (m) return parseInt(m[1], 10);
           return null;
         }
         function isVisible(el){
@@ -1904,32 +1883,16 @@ object HibtWebSession {
             var st = window.getComputedStyle(el);
             if (!st || st.display==='none' || st.visibility==='hidden' || Number(st.opacity)===0) return false;
             var r = el.getBoundingClientRect();
-            if (!r || r.width < 2 || r.height < 2) return false;
+            if (!r || r.width < 1 || r.height < 1) return false;
             var vh = window.innerHeight || document.documentElement.clientHeight || 0;
             var vw = window.innerWidth || document.documentElement.clientWidth || 0;
             if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) return false;
             return true;
           } catch(e){ return false; }
         }
-        function bindClickable(el){
-          if (!el) return null;
-          var t = el;
-          for (var i=0;i<6 && t;i++){
-            try {
-              var tag = (t.tagName||'').toLowerCase();
-              var role = (t.getAttribute && t.getAttribute('role')) || '';
-              var cls = (t.className && String(t.className)) || '';
-              if (tag==='button' || tag==='a' || role==='button' || role==='option' || role==='listitem') return t;
-              if (/\b(btn|button|select|picker|dropdown|cell|item|option|row)\b/i.test(cls)) return t;
-              if (typeof t.onclick === 'function') return t;
-            } catch(e){}
-            t = t.parentElement;
-          }
-          return el;
-        }
         function forceClick(el){
-          var node = bindClickable(el);
-          if (!node) return false;
+          if (!el) return false;
+          var node = el;
           try { node.scrollIntoView({block:'center', inline:'nearest'}); } catch(e){}
           try { node.focus && node.focus(); } catch(e){}
           var opts = {bubbles:true, cancelable:true, view:window, composed:true};
@@ -1955,110 +1918,53 @@ object HibtWebSession {
           try { node.click(); } catch(e){}
           return true;
         }
-        function findExactTextVisible(text){
-          var nodes = document.querySelectorAll('div,span,li,button,p,a,label,td,section,h1,h2,h3');
-          var best = null, bestLen = 1e9;
-          for (var i=0;i<nodes.length;i++){
-            var el = nodes[i];
-            if (textOf(el) !== text) continue;
-            if (!isVisible(el)) continue;
-            var len = (el.innerHTML||'').length;
-            if (len < bestLen) { best = el; bestLen = len; }
-          }
-          return best;
-        }
         /**
-         * 扫描并绑定周期节点
-         * sheet 打开时：在「选择时间」面板内提取 3分钟/5分钟… 选项（允许行内带对勾）
-         * sheet 关闭时：绑定主界面 trigger 芯片
+         * 按 class 绑定节点（多语言安全）：
+         * trigger: .order-drop-down
+         * sheet: .order-type-picker / van-popup.order-type-picker
+         * options: .picker-row 按数字分钟匹配
+         * close: .icon-close
          */
         function bindPeriodNodes(){
-          var result = { sheet: null, sheetOpen: false, trigger: null, currentText: '', options: {} };
-          var title = findExactTextVisible('选择时间');
-          if (title) {
+          var result = {
+            sheet: null, sheetOpen: false, trigger: null,
+            currentText: '', currentMin: null, options: {}, closeBtn: null
+          };
+          // 1) 弹层：官方 class
+          var sheet = document.querySelector('.order-type-picker.van-popup, .van-popup.order-type-picker, .order-type-picker, [role="dialog"].order-type-picker');
+          if (sheet && isVisible(sheet)) {
+            result.sheet = sheet;
             result.sheetOpen = true;
-            var root = title;
-            for (var up=0; up<10 && root.parentElement; up++) {
-              root = root.parentElement;
-              // 找到同时包含多个「N分钟」的容器即可
-              var probe = root.innerText || '';
-              if (probe.indexOf('3分钟')>=0 && probe.indexOf('5分钟')>=0 && probe.indexOf('10分钟')>=0) break;
-            }
-            result.sheet = root;
-            var nodes = root.querySelectorAll('div,span,li,button,p,a,label,section');
-            for (var i=0;i<nodes.length;i++){
-              var el = nodes[i];
-              if (!isVisible(el)) continue;
-              var raw = textOf(el);
-              var extracted = extractPeriodText(raw);
-              if (!extracted) continue;
-              // 整页大容器可能一次提取出多个，跳过含多个周期的节点
-              var allMatches = String(raw).match(/\d+\s*分钟/g);
-              if (allMatches && allMatches.length > 1) continue;
-              var bound = bindClickable(el);
-              var len = (el.innerHTML||'').length;
-              if (!result.options[extracted] || len < (result.options[extracted].__caLen||1e9)) {
-                bound.__caLen = len;
-                result.options[extracted] = bound;
+            var closeEl = sheet.querySelector('.icon-close');
+            if (closeEl) result.closeBtn = closeEl;
+            var rows = sheet.querySelectorAll('.picker-row');
+            for (var i=0;i<rows.length;i++){
+              var row = rows[i];
+              if (!isVisible(row)) continue;
+              var min = extractPeriodMinutes(textOf(row));
+              if (min == null) continue;
+              result.options[String(min)] = row;
+              // 选中态：行内有 .icon-select
+              if (row.querySelector('.icon-select')) {
+                result.currentMin = min;
+                result.currentText = min + '分钟';
               }
             }
-            // 当前选中：带对勾的那一行
-            for (var i=0;i<nodes.length;i++){
-              var el = nodes[i];
-              if (!isVisible(el)) continue;
-              var raw = textOf(el);
-              if (raw.indexOf('✓')<0 && raw.indexOf('✔')<0 && raw.indexOf('√')<0 && raw.indexOf('check')<0) continue;
-              var extracted = extractPeriodText(raw);
-              if (extracted) { result.currentText = extracted; break; }
-            }
-            // 若没识别对勾，options 里有值即可
             return result;
           }
-          // 主界面 trigger
-          var timeLabel = null;
-          var all = document.querySelectorAll('div,span,label,p,th,td');
-          for (var i=0;i<all.length;i++){
-            var el = all[i];
-            if (!isVisible(el)) continue;
-            var tt = textOf(el);
-            if (tt === '时间' || tt === '周期') { timeLabel = el; break; }
+          // 2) 主界面触发器 .order-drop-down
+          var triggers = document.querySelectorAll('.order-drop-down');
+          var trigger = null;
+          for (var j=0;j<triggers.length;j++){
+            if (isVisible(triggers[j])) { trigger = triggers[j]; break; }
           }
-          var chips = [];
-          var nodes2 = document.querySelectorAll('div,span,button,li,p,a');
-          for (var j=0;j<nodes2.length;j++){
-            var el2 = nodes2[j];
-            if (!isVisible(el2)) continue;
-            var raw2 = textOf(el2);
-            var t2 = extractPeriodText(raw2);
-            if (!t2) continue;
-            var multi = String(raw2).match(/\d+\s*分钟/g);
-            if (multi && multi.length > 1) continue;
-            if (/买涨|买跌|看涨|看跌|下单|确认|可用|赠金/.test(raw2)) continue;
-            var r = null;
-            try { r = el2.getBoundingClientRect(); } catch(e){}
-            chips.push({
-              el: el2,
-              bound: bindClickable(el2),
-              t: t2,
-              area: r ? r.width*r.height : 99999,
-              dist: 0
-            });
-          }
-          if (timeLabel) {
-            try {
-              var lr = timeLabel.getBoundingClientRect();
-              for (var k=0;k<chips.length;k++){
-                var cr = chips[k].el.getBoundingClientRect();
-                chips[k].dist = Math.abs(cr.top - lr.top) + Math.abs(cr.left - lr.left);
-              }
-              chips.sort(function(a,b){ return a.dist - b.dist || a.area - b.area; });
-            } catch(e){ chips.sort(function(a,b){ return a.area - b.area; }); }
-          } else {
-            chips.sort(function(a,b){ return a.area - b.area; });
-          }
-          if (chips.length > 0) {
-            result.trigger = chips[0].bound;
-            result.currentText = chips[0].t;
+          if (trigger) {
+            result.trigger = trigger;
+            var min2 = extractPeriodMinutes(textOf(trigger));
+            if (min2 != null) {
+              result.currentMin = min2;
+              result.currentText = min2 + '分钟';
+            }
           }
           return result;
         }
@@ -2066,43 +1972,16 @@ object HibtWebSession {
           function doneClose(){ try { if (cb) cb(); } catch(e){} }
           var bind = bindPeriodNodes();
           if (!bind.sheetOpen) { doneClose(); return; }
+          if (bind.closeBtn) forceClick(bind.closeBtn);
           try {
             document.dispatchEvent(new KeyboardEvent('keydown', {
               key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true
             }));
           } catch(e){}
-          // 绑定右上角 X（截图中的关闭）
-          var title = findExactTextVisible('选择时间');
-          if (title) {
-            var row = title.parentElement;
-            for (var up=0; up<4 && row; up++){
-              var cands = row.querySelectorAll('button,div,span,i,a,svg');
-              for (var i=0;i<cands.length;i++){
-                var c = cands[i];
-                if (!isVisible(c)) continue;
-                var ct = textOf(c);
-                var aria = ((c.getAttribute && c.getAttribute('aria-label'))||'') + ' ' + (c.className||'');
-                if (ct==='×' || ct==='✕' || ct==='X' || ct==='关闭' || ct==='' && /close|icon/i.test(aria)) {
-                  forceClick(c);
-                  break;
-                }
-              }
-              // 标题行最右侧可点节点
-              try {
-                var kids = row.children;
-                if (kids && kids.length) forceClick(kids[kids.length-1]);
-              } catch(e){}
-              row = row.parentElement;
-            }
-          }
           setTimeout(function(){
-            try {
-              document.dispatchEvent(new KeyboardEvent('keydown', {
-                key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
-              }));
-            } catch(e){}
-            setTimeout(doneClose, 150);
-          }, 220);
+            if (bindPeriodNodes().sheetOpen && bind.closeBtn) forceClick(bind.closeBtn);
+            setTimeout(doneClose, 120);
+          }, 200);
         }
         function waitUntil(checkFn, timeoutMs, stepMs, cb){
           var startAt = Date.now();
@@ -2115,20 +1994,21 @@ object HibtWebSession {
           })();
         }
         function selectTimeUnitAsync(unit, done){
-          var label = periodLabel(unit);
+          var wantMin = periodMinutes(unit);
+          var label = wantMin + '分钟';
           var bind0 = bindPeriodNodes();
           try {
-            CaHibt.onLog('周期绑定 目标='+label
-              +' 当前='+(bind0.currentText||'?')
+            CaHibt.onLog('周期绑定 目标='+wantMin+'m 当前='+(bind0.currentMin!=null?bind0.currentMin+'m':'?')
               +' sheet='+bind0.sheetOpen
-              +' opts='+Object.keys(bind0.options).join('|'));
+              +' opts='+Object.keys(bind0.options).join('|')
+              +' trigger='+(bind0.trigger?'Y':'N'));
           } catch(e){}
 
-          if (!bind0.sheetOpen && bind0.currentText === label) {
+          if (!bind0.sheetOpen && bind0.currentMin === wantMin) {
             done(true, '已是'+label+'(跳过)');
             return;
           }
-          if (bind0.sheetOpen && bind0.currentText === label) {
+          if (bind0.sheetOpen && bind0.currentMin === wantMin) {
             closePeriodPicker(function(){ done(true, '已是'+label); });
             return;
           }
@@ -2136,31 +2016,26 @@ object HibtWebSession {
           function pickInSheet(next){
             var bind = bindPeriodNodes();
             if (!bind.sheetOpen) { next(false); return; }
-            var opt = bind.options[label];
+            var opt = bind.options[String(wantMin)];
             if (!opt) {
-              var alts = periodLabels(unit);
-              for (var i=0;i<alts.length;i++){
-                if (bind.options[alts[i]]) { opt = bind.options[alts[i]]; break; }
-              }
-            }
-            if (!opt) {
-              try { CaHibt.onLog('周期选项未绑定到节点 opts='+Object.keys(bind.options).join('|')); } catch(e){}
+              try { CaHibt.onLog('周期选项未找到 '+wantMin+'m opts='+Object.keys(bind.options).join('|')); } catch(e){}
               next(false);
               return;
             }
             forceClick(opt);
             waitUntil(function(){
               var b = bindPeriodNodes();
-              return !b.sheetOpen || b.currentText === label;
+              // 选中后弹层常自动关；或当前分钟已变
+              return !b.sheetOpen || b.currentMin === wantMin;
             }, 1500, 100, function(){
               var b2 = bindPeriodNodes();
               if (b2.sheetOpen) {
                 closePeriodPicker(function(){
                   var b3 = bindPeriodNodes();
-                  next(b3.currentText === label || !b3.sheetOpen);
+                  next(b3.currentMin === wantMin || !b3.sheetOpen);
                 });
               } else {
-                next(b2.currentText === label || true);
+                next(b2.currentMin === wantMin || true);
               }
             });
           }
@@ -2170,26 +2045,25 @@ object HibtWebSession {
             return;
           }
           if (!bind0.trigger) {
-            try { CaHibt.onLog('周期绑定失败：未找到主界面周期芯片'); } catch(e){}
+            try { CaHibt.onLog('周期绑定失败：未找到 .order-drop-down'); } catch(e){}
             done(false, null);
             return;
           }
           forceClick(bind0.trigger);
-          waitUntil(function(){ return bindPeriodNodes().sheetOpen; }, 1800, 100, function(opened){
+          waitUntil(function(){ return bindPeriodNodes().sheetOpen; }, 2000, 100, function(opened){
             if (!opened) {
-              try { CaHibt.onLog('周期选择器未打开'); } catch(e){}
+              try { CaHibt.onLog('周期弹层未打开(.order-type-picker)'); } catch(e){}
               var b = bindPeriodNodes();
-              done(b.currentText === label, b.currentText === label ? ('已是'+label) : null);
+              done(b.currentMin === wantMin, b.currentMin === wantMin ? ('已是'+label) : null);
               return;
             }
-            // sheet 已开，再扫一次选项（等列表渲染）
             setTimeout(function(){
               pickInSheet(function(ok){
                 var b3 = bindPeriodNodes();
-                if (b3.currentText === label) done(true, label);
+                if (b3.currentMin === wantMin) done(true, label);
                 else done(!!ok, ok ? label : null);
               });
-            }, 200);
+            }, 180);
           });
         }
         function selectDirection(dir){
@@ -2222,7 +2096,7 @@ object HibtWebSession {
               finish(false, '周期未切换到'+timeUnit+'分钟(仍可能是5分钟)，拒绝提交。步骤:'+steps.join('; '));
               return;
             }
-            if (typeof sheetOpen === 'function' && sheetOpen()) {
+            if (bindPeriodNodes().sheetOpen) {
               closePeriodPicker(function(){ afterPeriodContinue(); });
               return;
             }
