@@ -2038,7 +2038,10 @@ object HibtWebSession {
           }
           return null;
         }
-        /** 官网 DOM：.order-drop-down / .order-type-picker / .picker-row；优先注入赋值，不依赖打开弹层点击 */
+        /** 官网 DOM：.order-drop-down / .order-type-picker / .picker-row
+         * 原则：禁止只改文案；成功标准=picker-row 上出现 .icon-select 且分钟数一致。
+         * 手动点选会学习 Vue 字段并写入 window.__caLearnedPeriodKey。
+         */
         function periodMinutes(unit){
           var u = String(unit||'5');
           if (u==='60' || u==='1h' || u==='1H') return 60;
@@ -2097,160 +2100,203 @@ object HibtWebSession {
           }
           return null;
         }
-        function tryAssignVuePeriod(wantMin){
-          var seeds = [];
-          var t1 = document.querySelector('.order-drop-down');
-          var t2 = document.querySelector('.order-type-picker');
-          if (t1) seeds.push(t1);
-          if (t2) seeds.push(t2);
-          try {
-            document.querySelectorAll('[class*="order"]').forEach(function(el){ seeds.push(el); });
-          } catch(e){}
-          var keys = [
-            'timeUnit','time_unit','timeunit','duration','period','expireTime','expire_time',
-            'selectedTime','orderTime','minute','minutes','unit','activeTime','currentTime',
-            'optionTime','contractTime','second','seconds','times'
-          ];
-          var tried = [];
-          function trySet(obj, depth, path){
-            if (!obj || depth > 6) return false;
+        function snapshotVuePeriodFields(proxy){
+          var out = {};
+          var root = proxy;
+          if (!root) return out;
+          function walk(obj, depth, path){
+            if (!obj || depth > 4) return;
             try {
-              for (var ki=0; ki<keys.length; ki++){
-                var k = keys[ki];
-                if (obj[k] === undefined || obj[k] === null) continue;
-                var old = obj[k];
-                tried.push(path+'.'+k+'='+typeof old+':'+old);
-                try {
-                  if (typeof old === 'number') {
-                    obj[k] = wantMin;
-                    if (obj[k] === wantMin) return true;
-                    obj[k] = wantMin * 60; // 有的用秒
-                    if (obj[k] === wantMin * 60) return true;
-                    obj[k] = old;
-                  } else if (typeof old === 'string') {
-                    var candidates = [String(wantMin), wantMin+'Minute', wantMin+'分钟', wantMin+'m', wantMin+'min'];
-                    for (var ci=0; ci<candidates.length; ci++){
-                      obj[k] = candidates[ci];
-                      if (String(obj[k]).indexOf(String(wantMin)) >= 0) return true;
-                    }
-                    obj[k] = old;
+              var keys = Object.keys(obj);
+              for (var i=0;i<keys.length;i++){
+                var k = keys[i];
+                if (/^_/.test(k) || k==='${'$'}' ) continue;
+                var v = obj[k];
+                if (v == null) continue;
+                if (typeof v === 'number' || typeof v === 'string') {
+                  var s = String(v);
+                  if (/(time|period|duration|minute|expire|unit|second)/i.test(k) || /^\d{1,3}${'$'}/.test(s) || /Minute|分钟/.test(s)) {
+                    out[path+'.'+k] = s;
                   }
-                } catch(eSet){}
+                } else if (typeof v === 'object' && depth < 3) {
+                  try { walk(v, depth+1, path+'.'+k); } catch(e){}
+                }
               }
-              if (obj.${'$'}data && depth < 5) { if (trySet(obj.${'$'}data, depth+1, path+'.${'$'}data')) return true; }
-              if (obj.setupState && depth < 5) { if (trySet(obj.setupState, depth+1, path+'.setupState')) return true; }
+            } catch(e){}
+          }
+          try { walk(root, 0, 'vue'); } catch(e){}
+          try { if (root.${'$'}data) walk(root.${'$'}data, 0, 'data'); } catch(e){}
+          try { if (root.setupState) walk(root.setupState, 0, 'setup'); } catch(e){}
+          return out;
+        }
+        /** 手动/注入点选后：对比 Vue 字段变化，学习真实赋值键 */
+        function learnPeriodAssign(beforeSnap, afterSnap, wantMin){
+          var changes = [];
+          var learned = window.__caLearnedPeriodKey || null;
+          var allKeys = {};
+          Object.keys(beforeSnap||{}).forEach(function(k){ allKeys[k]=1; });
+          Object.keys(afterSnap||{}).forEach(function(k){ allKeys[k]=1; });
+          Object.keys(allKeys).forEach(function(k){
+            var a = beforeSnap[k], b = afterSnap[k];
+            if (String(a) !== String(b)) {
+              changes.push(k+':'+a+'→'+b);
+              // 新值包含目标分钟 → 候选学习键
+              if (b != null && String(b).indexOf(String(wantMin)) >= 0) {
+                learned = k;
+              }
+            }
+          });
+          if (learned) window.__caLearnedPeriodKey = learned;
+          try {
+            CaHibt.onLog('周期学习 changes='+changes.slice(0,12).join(';')
+              +' key='+(window.__caLearnedPeriodKey||'?'));
+          } catch(e){}
+          return changes.length > 0;
+        }
+        function applyLearnedPeriod(wantMin){
+          var keyPath = window.__caLearnedPeriodKey;
+          if (!keyPath) return false;
+          var trigger = document.querySelector('.order-drop-down');
+          var proxy = getVueProxy(trigger) || getVueProxy(document.querySelector('.order-type-picker'));
+          if (!proxy) return false;
+          var parts = String(keyPath).replace(/^vue\.|^data\.|^setup\./,'').split('.');
+          // 尝试在 proxy / ${'$'}data / setupState 上按最后一级键赋值
+          var leaf = parts[parts.length-1];
+          function trySetOn(obj){
+            if (!obj || obj[leaf] === undefined) return false;
+            var old = obj[leaf];
+            try {
+              if (typeof old === 'number') {
+                obj[leaf] = wantMin;
+                if (obj[leaf] === wantMin) return true;
+                obj[leaf] = wantMin * 60;
+                return obj[leaf] === wantMin * 60;
+              }
+              if (typeof old === 'string') {
+                var cands = [String(wantMin), wantMin+'Minute', wantMin+'分钟', wantMin+'m'];
+                for (var i=0;i<cands.length;i++){
+                  obj[leaf] = cands[i];
+                  if (String(obj[leaf]).indexOf(String(wantMin)) >= 0) return true;
+                }
+              }
             } catch(e){}
             return false;
           }
-          for (var i=0;i<seeds.length;i++){
-            var proxy = getVueProxy(seeds[i]);
-            if (proxy && trySet(proxy, 0, 'vue')) {
-              try { CaHibt.onLog('周期Vue赋值成功 min='+wantMin); } catch(e){}
-              return true;
-            }
-          }
-          try { CaHibt.onLog('周期Vue赋值未命中 tried='+tried.slice(0,8).join(';')); } catch(e){}
+          if (trySetOn(proxy)) return true;
+          try { if (trySetOn(proxy.${'$'}data)) return true; } catch(e){}
+          try { if (trySetOn(proxy.setupState)) return true; } catch(e){}
+          try { if (trySetOn(proxy.ctx)) return true; } catch(e){}
           return false;
         }
-        /** 不打开弹层：在 DOM 里找 .picker-row（含隐藏）直接点选 */
-        function trySilentPickRow(wantMin){
-          var sheets = document.querySelectorAll('.order-type-picker, .van-popup.order-type-picker, [role="dialog"].order-type-picker');
-          for (var s=0;s<sheets.length;s++){
-            var rows = sheets[s].querySelectorAll('.picker-row');
+        /** 真实当前周期：优先 .icon-select 所在行，其次 __caRealPeriodMin，最后 trigger 文案 */
+        function readSelectedPeriodMin(){
+          var sheets = document.querySelectorAll('.order-type-picker, .picker-row');
+          // 任意带 icon-select 的 picker-row
+          var selIcon = document.querySelector('.picker-row .icon-select, .order-type-picker .icon-select');
+          if (selIcon) {
+            var row = selIcon.closest ? selIcon.closest('.picker-row') : selIcon.parentElement;
+            if (row) {
+              var m = extractPeriodMinutes(textOf(row));
+              if (m != null) return m;
+            }
+          }
+          if (window.__caRealPeriodMin != null) return window.__caRealPeriodMin;
+          var trigger = document.querySelector('.order-drop-down');
+          if (trigger) {
+            var m2 = extractPeriodMinutes(textOf(trigger));
+            if (m2 != null) return m2;
+          }
+          return null;
+        }
+        function markRealPeriod(min, src){
+          window.__caRealPeriodMin = min;
+          try { CaHibt.onLog('周期真实选中='+min+'m src='+src); } catch(e){}
+        }
+        /** 安装一次：用户手动点 picker-row 时解析赋值路径 */
+        function installPeriodLearnHook(){
+          if (window.__caPeriodLearnInstalled) return;
+          window.__caPeriodLearnInstalled = 1;
+          document.addEventListener('click', function(ev){
+            try {
+              var t = ev.target;
+              var row = t && t.closest ? t.closest('.picker-row') : null;
+              if (!row) return;
+              var min = extractPeriodMinutes(textOf(row));
+              if (min == null) return;
+              var trigger = document.querySelector('.order-drop-down');
+              var proxy = getVueProxy(trigger) || getVueProxy(row);
+              var before = snapshotVuePeriodFields(proxy);
+              setTimeout(function(){
+                var after = snapshotVuePeriodFields(proxy);
+                learnPeriodAssign(before, after, min);
+                markRealPeriod(min, 'user-click');
+                // 同步 trigger 文案（平台自己也会改；这里仅辅助显示）
+                try {
+                  var sp = trigger && trigger.querySelector('span');
+                  if (sp) {
+                    var cur = textOf(sp);
+                    if (/Minute|minute|min/i.test(cur)) sp.textContent = min + 'Minute';
+                    else sp.textContent = min + '分钟';
+                  }
+                } catch(e){}
+              }, 80);
+            } catch(e){}
+          }, true);
+        }
+        installPeriodLearnHook();
+
+        function openPeriodSheet(done){
+          var sheet = document.querySelector('.order-type-picker');
+          if (sheet && isVisible(sheet)) { done(true); return; }
+          var trigger = document.querySelector('.order-drop-down');
+          if (!trigger) { done(false); return; }
+          forceClick(trigger);
+          try {
+            var sp = trigger.querySelector('span'); if (sp) forceClick(sp);
+            var ic = trigger.querySelector('.icon-down'); if (ic) forceClick(ic);
+          } catch(e){}
+          var startAt = Date.now();
+          (function wait(){
+            var sh = document.querySelector('.order-type-picker');
+            if (sh && isVisible(sh)) { done(true); return; }
+            if (Date.now() - startAt > 1800) { done(false); return; }
+            setTimeout(wait, 100);
+          })();
+        }
+        function clickPeriodRow(wantMin){
+          var sheet = document.querySelector('.order-type-picker');
+          var roots = [];
+          if (sheet) roots.push(sheet);
+          roots.push(document);
+          for (var r=0;r<roots.length;r++){
+            var rows = roots[r].querySelectorAll('.picker-row');
             for (var i=0;i<rows.length;i++){
-              var min = extractPeriodMinutes(textOf(rows[i]));
-              if (min === wantMin) {
+              if (extractPeriodMinutes(textOf(rows[i])) === wantMin) {
+                var proxy = getVueProxy(rows[i]) || getVueProxy(document.querySelector('.order-drop-down'));
+                var before = snapshotVuePeriodFields(proxy);
                 forceClick(rows[i]);
-                try { CaHibt.onLog('周期静默点选 row min='+wantMin); } catch(e){}
+                // 也点内部 span
+                try {
+                  var span = rows[i].querySelector('span');
+                  if (span) forceClick(span);
+                } catch(e){}
+                setTimeout(function(){
+                  var after = snapshotVuePeriodFields(proxy);
+                  learnPeriodAssign(before, after, wantMin);
+                }, 60);
+                markRealPeriod(wantMin, 'inject-row');
                 return true;
               }
             }
           }
-          // 全页兜底
-          var all = document.querySelectorAll('.picker-row');
-          for (var j=0;j<all.length;j++){
-            if (extractPeriodMinutes(textOf(all[j])) === wantMin) {
-              forceClick(all[j]);
-              try { CaHibt.onLog('周期全页静默点选 min='+wantMin); } catch(e){}
-              return true;
-            }
-          }
           return false;
-        }
-        function patchTriggerLabel(wantMin){
-          var trigger = document.querySelector('.order-drop-down');
-          if (!trigger) return false;
-          var spans = trigger.querySelectorAll('span');
-          var text = wantMin + 'Minute';
-          // 中文界面常见
-          var textZh = wantMin + '分钟';
-          for (var i=0;i<spans.length;i++){
-            var t = textOf(spans[i]);
-            if (extractPeriodMinutes(t) != null) {
-              try {
-                spans[i].textContent = /Minute|minute|min/i.test(t) ? text : textZh;
-              } catch(e){}
-              return true;
-            }
-          }
-          return false;
-        }
-        function readCurrentMin(){
-          var trigger = document.querySelector('.order-drop-down');
-          if (trigger && isVisible(trigger)) {
-            var m = extractPeriodMinutes(textOf(trigger));
-            if (m != null) return m;
-          }
-          // 弹层内 icon-select
-          var sel = document.querySelector('.order-type-picker .picker-row .icon-select');
-          if (sel) {
-            var row = sel.closest ? sel.closest('.picker-row') : sel.parentElement;
-            if (row) return extractPeriodMinutes(textOf(row));
-          }
-          return null;
-        }
-        function bindPeriodNodes(){
-          var result = {
-            sheet: null, sheetOpen: false, trigger: null,
-            currentText: '', currentMin: null, options: {}, closeBtn: null
-          };
-          var sheet = document.querySelector('.order-type-picker');
-          if (sheet && isVisible(sheet)) {
-            result.sheet = sheet;
-            result.sheetOpen = true;
-            var closeEl = sheet.querySelector('.icon-close');
-            if (closeEl) result.closeBtn = closeEl;
-            var rows = sheet.querySelectorAll('.picker-row');
-            for (var i=0;i<rows.length;i++){
-              var min = extractPeriodMinutes(textOf(rows[i]));
-              if (min == null) continue;
-              result.options[String(min)] = rows[i];
-              if (rows[i].querySelector('.icon-select')) {
-                result.currentMin = min;
-                result.currentText = min + '分钟';
-              }
-            }
-          }
-          var triggers = document.querySelectorAll('.order-drop-down');
-          for (var j=0;j<triggers.length;j++){
-            if (isVisible(triggers[j])) {
-              result.trigger = triggers[j];
-              var min2 = extractPeriodMinutes(textOf(triggers[j]));
-              if (min2 != null) {
-                result.currentMin = result.currentMin != null ? result.currentMin : min2;
-                result.currentText = (result.currentMin) + '分钟';
-              }
-              break;
-            }
-          }
-          if (result.currentMin == null) result.currentMin = readCurrentMin();
-          return result;
         }
         function closePeriodPicker(cb){
           function doneClose(){ try { if (cb) cb(); } catch(e){} }
-          var bind = bindPeriodNodes();
-          if (!bind.sheetOpen) { doneClose(); return; }
-          if (bind.closeBtn) forceClick(bind.closeBtn);
+          var sheet = document.querySelector('.order-type-picker');
+          if (!(sheet && isVisible(sheet))) { doneClose(); return; }
+          var closeEl = sheet.querySelector('.icon-close');
+          if (closeEl) forceClick(closeEl);
           try {
             document.dispatchEvent(new KeyboardEvent('keydown', {
               key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true
@@ -2265,82 +2311,85 @@ object HibtWebSession {
             try { ok = !!checkFn(); } catch(e){}
             if (ok) { cb(true); return; }
             if (Date.now() - startAt >= timeoutMs) { cb(false); return; }
-            setTimeout(loop, stepMs||80);
+            setTimeout(loop, stepMs||90);
           })();
         }
         /**
-         * 选周期：优先注入赋值（Vue / 静默点隐藏 row），不强制打开下拉。
-         * 仅在赋值失败时才尝试打开 .order-drop-down。
+         * 选周期：必须让平台真实选中（icon-select / 学习键赋值）。
+         * 禁止仅改 trigger 文案后判定成功。
          */
         function selectTimeUnitAsync(unit, done){
           var wantMin = periodMinutes(unit);
           var label = wantMin + '分钟';
-          var cur = readCurrentMin();
+          installPeriodLearnHook();
+          var cur = readSelectedPeriodMin();
           try {
-            CaHibt.onLog('周期注入 目标='+wantMin+'m 当前='+(cur!=null?cur+'m':'?')
-              +' trigger='+(document.querySelector('.order-drop-down')?'Y':'N')
-              +' sheetDom='+(document.querySelector('.order-type-picker')?'Y':'N'));
+            CaHibt.onLog('周期选择 目标='+wantMin+'m 当前='+(cur!=null?cur+'m':'?')
+              +' real='+(window.__caRealPeriodMin!=null?window.__caRealPeriodMin:'?')
+              +' learned='+(window.__caLearnedPeriodKey||'-'));
           } catch(e){}
 
-          if (cur === wantMin) {
-            done(true, '已是'+label+'(跳过)');
+          if (cur === wantMin && window.__caRealPeriodMin === wantMin) {
+            done(true, '已是'+label+'(确认)');
             return;
           }
-
-          // —— 1) Vue 状态直接赋值 ——
-          var vueOk = tryAssignVuePeriod(wantMin);
-          // —— 2) 静默点选 DOM 中已有 picker-row（不要求弹层可见）——
-          var silentOk = trySilentPickRow(wantMin);
-          patchTriggerLabel(wantMin);
-
-          setTimeout(function(){
-            var after = readCurrentMin();
-            if (after === wantMin || vueOk || silentOk) {
-              // 若弹层被静默点开，关掉
-              if (bindPeriodNodes().sheetOpen) {
-                closePeriodPicker(function(){ done(true, label+'(注入)'); });
-              } else {
-                done(true, label+(vueOk?'(Vue)':'(静默)'));
-              }
+          // 若仅文案像目标但 real 不是，继续强制重选
+          if (cur === wantMin && document.querySelector('.picker-row .icon-select')) {
+            // icon-select 已在目标上
+            var iconRow = document.querySelector('.picker-row .icon-select');
+            var row = iconRow && iconRow.closest ? iconRow.closest('.picker-row') : null;
+            if (row && extractPeriodMinutes(textOf(row)) === wantMin) {
+              markRealPeriod(wantMin, 'icon-select');
+              done(true, '已是'+label+'(icon)');
               return;
             }
+          }
 
-            // —— 3) 最后才尝试打开下拉再选 ——
-            var bind0 = bindPeriodNodes();
-            if (!bind0.trigger) {
-              try { CaHibt.onLog('周期注入失败且无 trigger'); } catch(e){}
-              done(false, null);
-              return;
+          // 1) 若已学习到键，先尝试直接赋值
+          var learnedOk = applyLearnedPeriod(wantMin);
+          if (learnedOk) {
+            markRealPeriod(wantMin, 'learned-key');
+          }
+
+          // 2) 打开选择器并点对应行（核心路径）
+          openPeriodSheet(function(opened){
+            if (opened) {
+              clickPeriodRow(wantMin);
+            } else {
+              // 弹层未开：仍尝试点隐藏 DOM 中的 row + 学习键
+              clickPeriodRow(wantMin);
+              applyLearnedPeriod(wantMin);
             }
-            forceClick(bind0.trigger);
-            // 同时点内部 span / icon-down
-            try {
-              var sp = bind0.trigger.querySelector('span');
-              if (sp) forceClick(sp);
-              var ic = bind0.trigger.querySelector('.icon-down');
-              if (ic) forceClick(ic);
-            } catch(e){}
-            waitUntil(function(){ return bindPeriodNodes().sheetOpen; }, 1200, 100, function(opened){
-              if (!opened) {
-                // 打开失败：若静默 row 存在再试一次
-                trySilentPickRow(wantMin);
-                patchTriggerLabel(wantMin);
-                var finalMin = readCurrentMin();
-                try { CaHibt.onLog('周期弹层未开，最终当前='+(finalMin!=null?finalMin:'?')); } catch(e){}
-                done(finalMin === wantMin, finalMin === wantMin ? label : null);
-                return;
+            waitUntil(function(){
+              // 成功条件：icon-select 在目标行，或 realPeriod 已是目标且 trigger 一致
+              var sel = document.querySelector('.picker-row .icon-select');
+              if (sel) {
+                var row = sel.closest ? sel.closest('.picker-row') : sel.parentElement;
+                if (row && extractPeriodMinutes(textOf(row)) === wantMin) return true;
               }
-              var opt = bindPeriodNodes().options[String(wantMin)];
-              if (opt) forceClick(opt);
-              else trySilentPickRow(wantMin);
-              setTimeout(function(){
-                closePeriodPicker(function(){
-                  var m = readCurrentMin();
-                  done(m === wantMin, m === wantMin ? label : null);
-                });
-              }, 300);
+              return window.__caRealPeriodMin === wantMin && readSelectedPeriodMin() === wantMin;
+            }, 2000, 100, function(ok){
+              closePeriodPicker(function(){
+                var finalMin = readSelectedPeriodMin();
+                // 再用学习键兜底一次
+                if (finalMin !== wantMin) {
+                  applyLearnedPeriod(wantMin);
+                  finalMin = readSelectedPeriodMin();
+                }
+                try {
+                  CaHibt.onLog('周期结果 目标='+wantMin+'m 最终='+(finalMin!=null?finalMin:'?')
+                    +' real='+(window.__caRealPeriodMin!=null?window.__caRealPeriodMin:'?')
+                    +' ok='+(finalMin===wantMin));
+                } catch(e){}
+                if (finalMin === wantMin) {
+                  markRealPeriod(wantMin, 'verified');
+                  done(true, label);
+                } else {
+                  done(false, null);
+                }
+              });
             });
-          }, 120);
+          });
         }
         function selectDirection(dir){
           var cands = allClickable();
