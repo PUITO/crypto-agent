@@ -1323,7 +1323,7 @@ object HibtWebSession {
                 wv.evaluateJavascript(
                     "(function(){try{return 'ok:'+(document.readyState||'')+':'+(location.href||'').slice(0,80)}catch(e){return 'err:'+e}})()",
                 ) { r ->
-                    val s = r?.trim()?.trim('"')?.replace("\"", """) ?: ""
+                    val s = (r ?: "").trim().trim('"')
                     if (s.startsWith("ok:") || s.contains("ok:")) {
                         lastJsAliveAt = System.currentTimeMillis()
                     } else if (s.startsWith("err") || s == "null" || s.isBlank()) {
