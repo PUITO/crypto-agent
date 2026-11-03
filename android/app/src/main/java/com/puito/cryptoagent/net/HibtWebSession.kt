@@ -1318,6 +1318,28 @@ object HibtWebSession {
         }
     }
 
+    /** 从 WebView CookieManager 取与手动操作一致的 Cookie，供原生下单 */
+    fun cookieHeaderFor(url: String = lastOrigin.ifBlank { "https://m.hibt1.com" }): String {
+        return try {
+            val u = when {
+                url.startsWith("http") -> url
+                else -> "https://m.hibt1.com"
+            }
+            android.webkit.CookieManager.getInstance().getCookie(u)?.trim().orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    fun snapshotForNativePlace(): Triple<String, String, String> {
+        // token, api, cookie
+        return Triple(
+            lastToken.trim(),
+            lastApiBase.ifBlank { "https://api-ws.taichuwuji.com" },
+            cookieHeaderFor(lastOrigin.ifBlank { "https://m.hibt1.com" }),
+        )
+    }
+
     private fun wakeWebView(wv: WebView) {
         try {
             wv.resumeTimers()
