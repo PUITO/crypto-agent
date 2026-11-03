@@ -48,6 +48,11 @@ object HibtWebSession {
         val loaded: Boolean = false,
         /** 已写回原生输入框的 token 预览时间戳 */
         val nativeTokenSyncedAt: Long = 0L,
+        /**
+         * WebView 心跳：none=未启动, alive=正常(<40s), stale=迟缓(40–75s), dead=失活(>75s或blank)
+         */
+        val heartbeat: String = "none",
+        val lastHeartbeatAt: Long = 0L,
     )
 
     private val main = Handler(Looper.getMainLooper())
@@ -252,7 +257,11 @@ object HibtWebSession {
             registerNetworkCallback(appCtx)
             lastJsAliveAt = System.currentTimeMillis()
             startKeepAliveLoop()
-            _ui.value = _ui.value.copy(status = "WebView 已创建，请打开并登录")
+            _ui.value = _ui.value.copy(
+                status = "WebView 已创建，请打开并登录",
+                heartbeat = "alive",
+                lastHeartbeatAt = lastJsAliveAt,
+            )
             return wv
         }
     }
@@ -390,6 +399,8 @@ object HibtWebSession {
             _ui.value = SessionUi(
                 status = if (clearLockedPage) "WebView 已停止（含锁定页）" else "WebView 已停止",
                 orderPageLocked = if (clearLockedPage) "" else lastOrderPageUrl,
+                heartbeat = "none",
+                lastHeartbeatAt = 0L,
             )
             appendLog("WebView 已停止并销毁")
         }
@@ -1331,6 +1342,7 @@ object HibtWebSession {
                     } else {
                         lastJsAliveAt = System.currentTimeMillis()
                     }
+                    publishHeartbeat()
                 }
                 val url = wv.url.orEmpty()
                 val blank = url.isBlank() || url == "about:blank"
@@ -1389,7 +1401,34 @@ object HibtWebSession {
         }
     }
 
+    fun publishHeartbeat() {
+        val wv = webView
+        val now = System.currentTimeMillis()
+        val hb = when {
+            wv == null -> "none"
+            else -> {
+                val url = wv.url.orEmpty()
+                val blank = url.isBlank() || url == "about:blank"
+                val age = if (lastJsAliveAt <= 0L) Long.MAX_VALUE else now - lastJsAliveAt
+                when {
+                    blank -> "dead"
+                    age <= 40_000L -> "alive"
+                    age <= jsDeadAfterMs -> "stale"
+                    else -> "dead"
+                }
+            }
+        }
+        val cur = _ui.value
+        if (cur.heartbeat != hb || now - cur.lastHeartbeatAt > 5_000L) {
+            _ui.value = cur.copy(
+                heartbeat = hb,
+                lastHeartbeatAt = if (hb == "alive") lastJsAliveAt.coerceAtLeast(1L) else now,
+            )
+        }
+    }
+
     private fun softRecoverLockedPage(wv: WebView, reason: String) {
+
         val now = System.currentTimeMillis()
         if (now - lastKeepRecoverAt < 45_000L) return
         lastKeepRecoverAt = now

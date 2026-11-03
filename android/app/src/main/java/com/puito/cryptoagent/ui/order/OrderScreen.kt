@@ -21,6 +21,9 @@ import com.puito.cryptoagent.data.Repository
 import com.puito.cryptoagent.net.HibtWebSession
 import com.puito.cryptoagent.util.HibtBundleParser
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Color
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -104,7 +107,35 @@ fun OrderScreen(repo: Repository) {
             // —— WebView 管理 ——
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("WebView 会话", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val hb = webUi.heartbeat
+                        val lamp = when (hb) {
+                            "alive" -> Color(0xFF22C55E) // green
+                            "stale" -> Color(0xFFF59E0B) // amber
+                            "dead" -> Color(0xFFEF4444) // red
+                            else -> Color(0xFF9CA3AF) // gray
+                        }
+                        val lampTip = when (hb) {
+                            "alive" -> "心跳正常"
+                            "stale" -> "心跳迟缓"
+                            "dead" -> "失活/恢复中"
+                            else -> "未启动"
+                        }
+                        Box(
+                            Modifier
+                                .size(10.dp)
+                                .background(lamp, CircleShape),
+                        )
+                        Text("WebView 会话", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            lampTip,
+                            fontSize = 11.sp,
+                            color = lamp,
+                        )
+                    }
                     Text(
                         "状态：${webUi.status}",
                         fontSize = 12.sp,
@@ -520,7 +551,23 @@ fun OrderScreen(repo: Repository) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text("HiBT WebView（返回=隐藏保活）", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                        val hb2 = webUi.heartbeat
+                        val lamp2 = when (hb2) {
+                            "alive" -> Color(0xFF22C55E)
+                            "stale" -> Color(0xFFF59E0B)
+                            "dead" -> Color(0xFFEF4444)
+                            else -> Color(0xFF9CA3AF)
+                        }
+                        Box(
+                            Modifier
+                                .size(10.dp)
+                                .background(lamp2, CircleShape),
+                        )
+                        Text(
+                            "HiBT WebView（返回=隐藏保活）",
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleSmall,
+                        )
                         TextButton(onClick = {
                             showWeb = false
                             HibtWebSession.detachFromParent()
