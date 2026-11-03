@@ -1961,7 +1961,7 @@ object HibtWebSession {
                   }
                 } catch(eSet){}
               }
-              if (obj.$data && depth < 5) { if (trySet(obj.$data, depth+1, path+'.$data')) return true; }
+              if (obj.${'$'}data && depth < 5) { if (trySet(obj.${'$'}data, depth+1, path+'.${'$'}data')) return true; }
               if (obj.setupState && depth < 5) { if (trySet(obj.setupState, depth+1, path+'.setupState')) return true; }
             } catch(e){}
             return false;
