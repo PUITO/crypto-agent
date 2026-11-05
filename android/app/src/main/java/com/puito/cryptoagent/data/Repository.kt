@@ -2907,48 +2907,49 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 lastFeedback = "上轮输出无法解析，请严格只输出JSON。样例见schema。上轮片段:\n${ans.take(200)}"
                 continue
             }
+            var cand: StrategyConfig = parsed
             // —— 强制实测：任何「采用本地/上轮参数」前必须在当前 bars 上回测 ——
             // 先实测 LLM 原始输出（即使参数与 best 相同，也不得跳过模拟）
             run {
-                val llmMarks0 = StrategyEngine.signals(bars, parsed)
+                val llmMarks0 = StrategyEngine.signals(bars, cand)
                 val llmSt0 = EventSim.backtest(bars, llmMarks0, s.symbol, s.interval).second
                 log.appendLine(
-                    "第${round}轮 LLM输出实测: ${llmSt0.trades}笔 胜率${"%.1f".format(llmSt0.winRate * 100)}% 参数${parsed.algoParams}",
+                    "第${round}轮 LLM输出实测: ${llmSt0.trades}笔 胜率${"%.1f".format(llmSt0.winRate * 100)}% 参数${cand.algoParams}",
                 )
             }
-            if (parsed.kind == StrategyKind.ALGO &&
-                algoParamsEqual(parsed.algoParams, bestCfg.algoParams)
+            if (cand.kind == StrategyKind.ALGO &&
+                algoParamsEqual(cand.algoParams, bestCfg.algoParams)
             ) {
-                log.appendLine("第${round}轮 LLM 参数与当前最优相同 ${parsed.algoParams} → 本地搜参（仍须实测）…")
+                log.appendLine("第${round}轮 LLM 参数与当前最优相同 ${cand.algoParams} → 本地搜参（仍须实测）…")
                 onProgress?.invoke("第${round}轮参数相同，本地搜参+实测…")
                 var (localCfg, localSt) = localTuneAlgoParams(
-                    bars, parsed, s.symbol, s.interval,
+                    bars, cand, s.symbol, s.interval,
                     trials = 40, targetWr = targetWr, targetTrades = targetTrades,
                     allowAlgoSwitch = false,
                 )
                 // 本地若仍回到同一组参数且未达标：再强制深搜一轮，禁止「未模拟就沿用」
-                val same = algoParamsEqual(localCfg.algoParams, parsed.algoParams)
+                val same = algoParamsEqual(localCfg.algoParams, cand.algoParams)
                 val under = targetWr != null && localSt.winRate * 100 < targetWr - 1e-6
                 if (same && under) {
                     log.appendLine("同参未达标，强制加搜 48 次…")
                     val (deep, deepSt) = localTuneAlgoParams(
-                        bars, parsed, s.symbol, s.interval,
+                        bars, cand, s.symbol, s.interval,
                         trials = 48, targetWr = targetWr, targetTrades = targetTrades,
                         allowAlgoSwitch = false,
                     )
                     localCfg = deep
                     localSt = deepSt
                 }
-                parsed = localCfg
+                cand = localCfg
                 log.appendLine(
                     "本地搜索实测: ${localSt.trades}笔 胜率${"%.1f".format(localSt.winRate * 100)}% 参数${localCfg.algoParams}",
                 )
-            } else if (parsed.kind == StrategyKind.ALGO) {
+            } else if (cand.kind == StrategyKind.ALGO) {
                 // LLM 改了参：先实测 LLM，再本地精修，二者都按实测分择优
-                val llmMarks = StrategyEngine.signals(bars, parsed)
+                val llmMarks = StrategyEngine.signals(bars, cand)
                 val llmSt = EventSim.backtest(bars, llmMarks, s.symbol, s.interval).second
                 val (localCfg, localSt) = localTuneAlgoParams(
-                    bars, parsed, s.symbol, s.interval,
+                    bars, cand, s.symbol, s.interval,
                     trials = 24, targetWr = targetWr, targetTrades = targetTrades,
                     allowAlgoSwitch = false,
                 )
@@ -2959,7 +2960,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                         "本地精修实测优于LLM: ${localSt.trades}笔/${"%.1f".format(localSt.winRate * 100)}% vs " +
                             "${llmSt.trades}笔/${"%.1f".format(llmSt.winRate * 100)}%",
                     )
-                    parsed = localCfg
+                    cand = localCfg
                 } else {
                     log.appendLine(
                         "保留LLM参数（实测更优或相当）: ${llmSt.trades}笔/${"%.1f".format(llmSt.winRate * 100)}%",
@@ -2967,11 +2968,11 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 }
             }
             // 统一：本轮候选最终以当前 bars 实测为准（禁止沿用历史胜率数字）
-            val marks = StrategyEngine.signals(bars, parsed)
+            val marks = StrategyEngine.signals(bars, cand)
             val (tlist, st) = EventSim.backtest(bars, marks, s.symbol, s.interval)
             log.appendLine(
-                "第${round}轮「${parsed.title}」实测: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% " +
-                    "参数${parsed.algoParams} 买${parsed.buyRules.size}/卖${parsed.sellRules.size}",
+                "第${round}轮「${cand.title}」实测: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% " +
+                    "参数${cand.algoParams} 买${cand.buyRules.size}/卖${cand.sellRules.size}",
             )
             onProgress?.invoke(
                 "第${round}轮 回测 ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}%",
@@ -2996,7 +2997,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             if (scoreOf(st.winRate, st.trades) >= scoreOf(bestWr, bestTrades) &&
                 (st.trades >= 1 || bestTrades < 1)
             ) {
-                bestCfg = parsed
+                bestCfg = cand
                 bestWr = st.winRate
                 bestTrades = st.trades
             }
@@ -3007,8 +3008,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             }
             lastFeedback = buildString {
                 appendLine("上轮策略:")
-                appendLine(strategyToJson(parsed))
-                appendLine("回测: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% kind=${parsed.kind} algo=${parsed.algoId}")
+                appendLine(strategyToJson(cand))
+                appendLine("回测: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% kind=${cand.kind} algo=${cand.algoId}")
                 appendLine("当前最优: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%")
                 if (targetWr != null || targetTrades != null) {
                     appendLine("目标: " + listOfNotNull(
@@ -3108,9 +3109,18 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             if (i >= 0) list[i] = bestCfg else list.add(bestCfg)
         }
         saveStrategies(list)
-        val report = log.toString() + "
-最终实测: 「${bestCfg.title}」 ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}% " +
-            (if (createNew) "【已新建】" else "【已更新】")
+        val report = buildString {
+            append(log.toString())
+            append("\n")
+            append("最终实测: ")
+            append(bestCfg.title)
+            append(" ")
+            append(bestTrades)
+            append("笔 胜率")
+            append("%.1f".format(bestWr * 100))
+            append("% ")
+            append(if (createNew) "【已新建】" else "【已更新】")
+        }
         onProgress?.invoke("完成实测 胜率${"%.1f".format(bestWr * 100)}%")
         Result.success(
             StrategyOptimizeResult(
