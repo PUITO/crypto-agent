@@ -65,7 +65,7 @@ fun HomeScreen(repo: Repository) {
     // 策略运行中定期刷新图表上的 1m 确认叠加信号（poll 写入 repo.signals）
     LaunchedEffect(s.strategyRunning) {
         while (s.strategyRunning) {
-            kotlinx.coroutines.delay(8_000)
+            kotlinx.coroutines.delay(4_000)
             tick++
         }
     }

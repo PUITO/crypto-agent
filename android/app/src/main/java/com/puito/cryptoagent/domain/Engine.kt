@@ -259,11 +259,13 @@ object EventSim {
     }
 
     /**
-     * 事件合约回测：
-     * - 信号仍由对应周期 K 线逻辑产生
-     * - 开仓：信号后最多约 1m 延迟（不再等下一根同周期 K，消除空白等待）
-     * - 平仓：开仓后持有 1 个合约周期 intervalMs
-     * - 开平仓时间绝不相同
+     * 事件合约回测（与实盘对齐，消除前视偏差）：
+     * - 信号用到信号棒收盘价 → 仅在该棒【收盘后】才可确认
+     * - 开仓时刻 = 信号棒收盘时刻（openTime + 周期），开仓价 = 该棒收盘价
+     *   （旧逻辑在棒内按 open→close 插值开仓 = 偷看未来收盘，会把回测胜率虚高到 70%+）
+     * - 不再等下一根同周期 K；收盘即可开，缩短延误
+     * - 平仓 = 开仓 + 1 个合约周期；到期价可用历史真实路径（决策未用到未来信息）
+     * - 未收盘的最后一根 K 上的信号不参与回测
      */
     fun backtest(
         candles: List<Candle>,
@@ -273,8 +275,10 @@ object EventSim {
     ): Pair<List<SimTrade>, Stats> {
         if (candles.size < 2) return emptyList<SimTrade>() to Stats()
         val ivMs = intervalMs(interval)
-        val entryDelayMs = minOf(60_000L, ivMs) // 尽量 1m 开仓
+        // 极小执行延迟（模拟下单耗时），默认 2s，远小于 1m
+        val execLagMs = 2_000L
         val idx = candles.withIndex().associate { (i, c) -> c.openTime to i }
+        val lastClosedIdx = candles.size - 2 // 最后一根视为可能未收盘
         val trades = mutableListOf<SimTrade>()
         var i = 0
         while (i < signals.size) {
@@ -287,31 +291,23 @@ object EventSim {
                 }
                 if (best < 0) null else best
             }
-            if (si == null) {
+            if (si == null || si > lastClosedIdx) {
                 i++; continue
             }
             val sigBar = candles[si]
-            val entryTime = sigBar.openTime + entryDelayMs
-            val frac = (entryDelayMs.toDouble() / ivMs.toDouble()).coerceIn(0.0, 1.0)
-            val entryPrice = sigBar.open + (sigBar.close - sigBar.open) * frac
-            val exitTime = entryTime + ivMs
-            // 到期价：落在某根周期 K 内则插值，否则最近 close
-            val exitPrice = run {
-                val eb = candles.firstOrNull { it.openTime <= exitTime && exitTime < it.openTime + ivMs }
-                    ?: candles.lastOrNull { it.openTime <= exitTime }
-                when {
-                    eb == null -> entryPrice
-                    exitTime >= eb.openTime + ivMs - 1 -> eb.close
-                    else -> {
-                        val f = ((exitTime - eb.openTime).toDouble() / ivMs).coerceIn(0.0, 1.0)
-                        eb.open + (eb.close - eb.open) * f
-                    }
-                }
+            // 确认时刻 = 信号棒收盘；开仓 = 确认后立刻（+execLag）
+            val confirmTime = sigBar.openTime + ivMs
+            val entryTime = confirmTime + execLagMs
+            val entryPrice = sigBar.close
+            if (entryPrice <= 0) {
+                i++; continue
             }
-            // 数据未覆盖到期则跳过（避免假平仓）
+            val exitTime = entryTime + ivMs
+            // 数据未覆盖到期则跳过
             if (candles.last().openTime + ivMs < exitTime) {
                 i++; continue
             }
+            val exitPrice = priceAt(candles, exitTime, ivMs) ?: entryPrice
             val long = sig.side == "B"
             val pnl = if (long) (exitPrice - entryPrice) / entryPrice * 100
             else (entryPrice - exitPrice) / entryPrice * 100
@@ -329,6 +325,7 @@ object EventSim {
                     win = pnl > 0,
                 ),
             )
+            // 持仓期间不再叠单（与实盘防追单一致）
             while (i < signals.size && signals[i].openTime < exitTime) i++
         }
         val wins = trades.count { it.win }
@@ -337,5 +334,22 @@ object EventSim {
             if (trades.isEmpty()) 0.0 else wins.toDouble() / trades.size,
             trades.sumOf { it.pnlPct },
         )
+    }
+
+    /** 历史路径上某时刻价格：落在某根已走完的 K 内用开收插值；否则最近收盘 */
+    private fun priceAt(candles: List<Candle>, timeMs: Long, ivMs: Long): Double? {
+        if (candles.isEmpty()) return null
+        val eb = candles.firstOrNull { it.openTime <= timeMs && timeMs < it.openTime + ivMs }
+            ?: candles.lastOrNull { it.openTime <= timeMs }
+            ?: return candles.last().close
+        return when {
+            timeMs >= eb.openTime + ivMs - 1 -> eb.close
+            timeMs <= eb.openTime -> eb.open
+            else -> {
+                // 仅用于已收盘历史棒的到期结算；不用于开仓决策
+                val f = ((timeMs - eb.openTime).toDouble() / ivMs).coerceIn(0.0, 1.0)
+                eb.open + (eb.close - eb.open) * f
+            }
+        }
     }
 }

@@ -1287,12 +1287,13 @@ class Repository(ctx: Context) {
 
     /** 收盘后允许的最大延迟；1m 主源更严，避免过期推送 */
     private fun maxLateMs(interval: String): Long = when (interval) {
-        "1m" -> 120_000L
-        "3m" -> 90_000L
-        "5m" -> 90_000L
-        "10m" -> 120_000L
-        "30m" -> 180_000L
-        "1h" -> 240_000L
+        // 收盘后仍可通知/开仓的最大迟到窗口（与轮询频率匹配）
+        "1m" -> 90_000L
+        "3m" -> 120_000L
+        "5m" -> 150_000L
+        "10m" -> 180_000L
+        "30m" -> 240_000L
+        "1h" -> 300_000L
         else -> 120_000L
     }
 
@@ -1419,7 +1420,7 @@ class Repository(ctx: Context) {
             .filter {
                 val last = lastNotifyAt[sideCooldownKey(it.side)] ?: 0L
                 // 冷却缩短为周期的 1/4，避免漏掉相邻新信号
-                now - last >= (cooldown / 2).coerceAtLeast(30_000L)
+                now - last >= (cooldown / 2).coerceAtLeast(15_000L)
             }
             .sortedByDescending { it.openTime } // 最新优先
             .onEach {
@@ -2172,10 +2173,14 @@ class Repository(ctx: Context) {
             )
             return
         }
-        // 1m 基准开仓：信号确认后立即开仓，不再等下一根同周期 K（消除 3m/5m/10m 空白等待）
+        // 开仓降延迟：
+        // - 1m 触发：收盘检出后立刻开（不等高周期收盘）
+        // - 高周期原生：信号棒收盘后开；已迟到则按 now 开
         val now = System.currentTimeMillis()
-        val entryTime = now.coerceAtLeast(m.openTime + 1)
-        val expiryTime = entryTime + ivMs // 合约时长仍为所选周期
+        val is1mTrig = m.tag == "1m" || source.contains("1m")
+        val confirmTime = if (is1mTrig) now else (m.openTime + ivMs)
+        val entryTime = maxOf(now, confirmTime)
+        val expiryTime = entryTime + ivMs
         val srcTag = source.ifBlank { "sig" }
         val posKey = "${s.symbol}|$intervalCode|$entryTime|${m.side}|$srcTag"
         if (posKey in liveSimKeys || pendingLiveSims.containsKey(posKey)) return
