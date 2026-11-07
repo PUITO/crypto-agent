@@ -2741,6 +2741,16 @@ class Repository(ctx: Context) {
             val marks = StrategyEngine.signals(data, cfg)
             return EventSim.backtest(data, marks, s.symbol, s.interval).second
         }
+        fun signalBS(cfg: StrategyConfig, data: List<Candle>): Pair<Int, Int> {
+            val marks = StrategyEngine.signals(data, cfg)
+            val b = marks.count { it.side == "B" }
+            val sCnt = marks.count { it.side == "S" }
+            return b to sCnt
+        }
+        fun fmtSig(cfg: StrategyConfig, data: List<Candle>): String {
+            val (b, sCnt) = signalBS(cfg, data)
+            return "信号买涨${b}/买跌${sCnt}"
+        }
         val existing = strategies()
         val base = baseId?.let { id -> existing.find { it.id == id } }
         val createNew = base == null
@@ -3005,9 +3015,16 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             }
             val stTrain = measureOn(cand, trainBars)
             val st = measureOn(cand, testBars) // 本轮主指标=样本外
+            val sigTrain = fmtSig(cand, trainBars)
+            val sigTest = fmtSig(cand, testBars)
             log.appendLine(
-                "第${round}轮「${cand.title}」训练:${stTrain.trades}笔/${"%.1f".format(stTrain.winRate * 100)}% " +
-                    "样本外:${st.trades}笔/${"%.1f".format(st.winRate * 100)}% 参数${cand.algoParams}",
+                "第${round}轮「${cand.title}」训练:${stTrain.trades}笔/${"%.1f".format(stTrain.winRate * 100)}%($sigTrain) " +
+                    "样本外:${st.trades}笔/${"%.1f".format(st.winRate * 100)}%($sigTest) " +
+                    when (cand.kind) {
+                        StrategyKind.ALGO -> "算法${cand.algoId}${cand.algoParams}"
+                        StrategyKind.MODEL -> "模型${cand.modelId}"
+                        else -> "规则条数买${cand.buyRules.size}/卖${cand.sellRules.size}(≠成交笔数)"
+                    },
             )
             onProgress?.invoke(
                 "第${round}轮 回测 ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}%",
@@ -3124,11 +3141,13 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         bestTrades = finalOos.trades
         bestTrainWr = finalTrain.winRate
         bestTrainTrades = finalTrain.trades
+        val (sigB, sigS) = signalBS(bestCfg, testBars)
         log.appendLine(
-            "最终样本外: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}% · " +
+            "最终样本外: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}% · ${fmtSig(bestCfg, testBars)} · " +
                 "训练: ${bestTrainTrades}笔/${"%.1f".format(bestTrainWr * 100)}% · " +
                 "全样本参考: ${finalFull.trades}笔/${"%.1f".format(finalFull.winRate * 100)}%",
         )
+        log.appendLine("说明: 「笔」=模拟成交笔数；「信号买涨/买跌」=策略发出的方向信号数；规则条数≠成交笔数")
         if (finalTrain.winRate - finalOos.winRate > 0.12 && finalTrain.trades >= 8) {
             log.appendLine(
                 "警告: 训练胜率高于样本外 ${"%.1f".format((finalTrain.winRate - finalOos.winRate) * 100)} 个百分点，疑似过拟合",
@@ -3140,10 +3159,13 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             )
         }
         bestCfg = bestCfg.copy(
+            // 算法/模型策略不展示规则条数，避免「买1/卖1」误解
+            buyRules = if (bestCfg.kind == StrategyKind.RULES) bestCfg.buyRules else emptyList(),
+            sellRules = if (bestCfg.kind == StrategyKind.RULES) bestCfg.sellRules else emptyList(),
             lastWinRatePct = if (bestTrades > 0) bestWr * 100.0 else -1.0,
             lastEvalTrades = bestTrades,
             lastEvalReturnPct = finalOos.totalReturnPct,
-            lastEvalDetail = "样本外 ${s.interval} ${bestTrades}笔/${"%.1f".format(bestWr * 100)}% | 训练 ${bestTrainTrades}笔/${"%.1f".format(bestTrainWr * 100)}%",
+            lastEvalDetail = "样本外 ${s.interval} ${bestTrades}笔/${"%.1f".format(bestWr * 100)}% 信号买涨${sigB}/买跌${sigS} | 训练 ${bestTrainTrades}笔/${"%.1f".format(bestTrainWr * 100)}%",
             lastEvalAtMs = System.currentTimeMillis(),
         )
 
@@ -3452,10 +3474,17 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 title = title,
                 enabled = keepEnabled,
                 kind = finalKind,
-                buyRules = if (finalKind == StrategyKind.RULES && buy.isEmpty())
-                    listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)) else buy,
-                sellRules = if (finalKind == StrategyKind.RULES && sell.isEmpty())
-                    listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) else sell,
+                // ALGO/MODEL 不依赖规则条数；清空避免界面误显示「买1/卖1」
+                buyRules = when {
+                    finalKind != StrategyKind.RULES -> emptyList()
+                    buy.isEmpty() -> listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14))
+                    else -> buy
+                },
+                sellRules = when {
+                    finalKind != StrategyKind.RULES -> emptyList()
+                    sell.isEmpty() -> listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14))
+                    else -> sell
+                },
                 algoId = algoId,
                 algoParams = algoParams,
                 algoNote = algoNote,

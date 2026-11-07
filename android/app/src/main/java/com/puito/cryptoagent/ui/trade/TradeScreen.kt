@@ -399,7 +399,7 @@ if (goalDialog != null) {
                                     when (cfg.kind) {
                                         StrategyKind.MODEL -> "模型 · ${ModelIds.label(cfg.modelId)}"
                                         StrategyKind.ALGO -> "算法 · ${AlgoIds.label(cfg.algoId)}"
-                                        else -> "买${cfg.buyRules.size} / 卖${cfg.sellRules.size}"
+                                        else -> "规则买${cfg.buyRules.size}/卖${cfg.sellRules.size}"
                                     },
                                     fontSize = 11.sp,
                                 )

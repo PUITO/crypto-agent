@@ -369,7 +369,7 @@ private fun buildStrategyTuneDraft(repo: Repository, mode: String): String {
                 com.puito.cryptoagent.data.StrategyKind.ALGO ->
                     "优化策略「${cfg.title}」算法${cfg.algoId} 参数${cfg.algoParams} ${cfg.algoNote}。"
                 else ->
-                    "优化策略「${cfg.title}」指标规则 买${cfg.buyRules.size}卖${cfg.sellRules.size}。"
+                    "优化策略「${cfg.title}」指标规则(规则条数买${cfg.buyRules.size}/卖${cfg.sellRules.size}，非成交笔数)。"
             }
         } ?: "优化当前策略。"
         base + simHint + "直接改 algoParams/规则阈值，轮次4，目标胜率55%，最少15笔。"
