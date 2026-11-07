@@ -2728,10 +2728,18 @@ class Repository(ctx: Context) {
         } catch (e: Exception) {
             return@withContext Result.failure(e)
         }
-        if (bars.size < 80) {
+        if (bars.size < 100) {
             return@withContext Result.failure(
-                IllegalStateException("历史K线不足(${bars.size})，请在设置提高「训练/优化数据宽度」后重试"),
+                IllegalStateException("历史K线不足(${bars.size})，样本外评估至少需要约100根，请在设置提高「训练/优化数据宽度」"),
             )
+        }
+        // 防过拟合：70% 训练搜参 / 30% 样本外验收
+        val split = (bars.size * 0.70).toInt().coerceIn(60, bars.size - 30)
+        val trainBars = bars.subList(0, split)
+        val testBars = bars.subList(split, bars.size)
+        fun measureOn(cfg: StrategyConfig, data: List<Candle>): Stats {
+            val marks = StrategyEngine.signals(data, cfg)
+            return EventSim.backtest(data, marks, s.symbol, s.interval).second
         }
         val existing = strategies()
         val base = baseId?.let { id -> existing.find { it.id == id } }
@@ -2743,18 +2751,25 @@ class Repository(ctx: Context) {
         )
         var bestWr = -1.0
         var bestTrades = 0
+        var bestTrainWr = -1.0
+        var bestTrainTrades = 0
         val log = StringBuilder()
         log.appendLine(
-            "标的 ${s.symbol} 周期 ${s.interval} 训练宽度 ${bars.size}/${barLimit} 根 · 迭代 $effectiveRounds 轮",
+            "标的 ${s.symbol} 周期 ${s.interval} 总K=${bars.size} 训练=${trainBars.size} 样本外=${testBars.size} · 迭代 $effectiveRounds 轮",
         )
+        log.appendLine("说明: 搜参看训练集，落盘胜率只看样本外；目标>65%极易过拟合")
         if (base != null) {
-            val (t0, st0) = EventSim.backtest(
-                bars, StrategyEngine.signals(bars, base), s.symbol, s.interval,
+            val stTrain = measureOn(base, trainBars)
+            val stTest = measureOn(base, testBars)
+            bestWr = stTest.winRate
+            bestTrades = stTest.trades
+            bestTrainWr = stTrain.winRate
+            bestTrainTrades = stTrain.trades
+            log.appendLine(
+                "基准「${base.title}」训练: ${stTrain.trades}笔/${"%.1f".format(stTrain.winRate * 100)}% · " +
+                    "样本外: ${stTest.trades}笔/${"%.1f".format(stTest.winRate * 100)}%",
             )
-            bestWr = st0.winRate
-            bestTrades = st0.trades
-            log.appendLine("基准「${base.title}」回测: ${st0.trades}笔 胜率${"%.1f".format(st0.winRate * 100)}%")
-            onProgress?.invoke("基准回测 胜率${"%.1f".format(st0.winRate * 100)}%")
+            onProgress?.invoke("基准 样本外${"%.1f".format(stTest.winRate * 100)}%(${stTest.trades}笔)")
         }
 
         val goal = userGoal?.trim().orEmpty()
@@ -2781,7 +2796,7 @@ class Repository(ctx: Context) {
             buildString {
                 append("训练 $effectiveRounds 轮")
                 targetWr?.let { append(" · 胜率≥${"%.0f".format(it)}%") }
-                targetTrades?.let { append(" · ≥${it}笔") }
+                append(" · ≥${targetTrades}笔")
             },
         )
         val lockKind = base?.kind
