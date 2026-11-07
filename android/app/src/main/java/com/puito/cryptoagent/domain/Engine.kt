@@ -176,6 +176,13 @@ object AlgoEngine {
             val s1 = a.last() - a[a.size - 2]
             val s2 = b.last() - b[b.size - 2]
             val s3 = c.last() - c[c.size - 2]
+            // 过滤几乎为零的斜率噪声（过拟合常见来源）
+            val minSlopePct = p(params, "minSlopePct", 0.00002)
+            val ref = kotlin.math.abs(a.last()).coerceAtLeast(1e-9)
+            val strong = kotlin.math.abs(s1) / ref >= minSlopePct &&
+                kotlin.math.abs(s2) / ref >= minSlopePct * 0.5 &&
+                kotlin.math.abs(s3) / ref >= minSlopePct * 0.5
+            if (!strong) continue
             if (i - lastSig <= cooldown) continue
             when {
                 s1 > 0 && s2 > 0 && s3 > 0 -> {

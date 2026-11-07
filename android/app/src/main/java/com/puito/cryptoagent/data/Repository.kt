@@ -2758,14 +2758,25 @@ class Repository(ctx: Context) {
         }
 
         val goal = userGoal?.trim().orEmpty()
-        val targetWr = minWinRatePct
-        val targetTrades = minTrades
+        val userTargetWr = minWinRatePct
+        // 事件合约方向接近抛硬币；>65% 的样本内目标几乎必然过拟合
+        val targetWr = userTargetWr?.let { it.coerceAtMost(65.0) }
+        if (userTargetWr != null && userTargetWr > 65.0) {
+            log.appendLine(
+                "用户目标胜率 ${"%.0f".format(userTargetWr)}% 过高已封顶为 65%（防过拟合；实盘参考样本外）",
+            )
+        }
+        // 样本外最少笔数：用户指定或按测试集长度推算（约每 15 根至少 1 笔）
+        val targetTrades = (minTrades ?: (testBars.size / 15).coerceIn(8, 40)).let { n ->
+            n.coerceAtLeast(8)
+        }
         if (goal.isNotBlank()) {
             log.appendLine("用户需求: $goal")
             onProgress?.invoke("需求: ${goal.take(40)}")
         }
-        if (targetWr != null) log.appendLine("目标胜率 ≥ ${"%.1f".format(targetWr)}%")
-        if (targetTrades != null) log.appendLine("最少成交 ≥ $targetTrades 笔")
+        if (userTargetWr != null) log.appendLine("用户目标胜率 ≥ ${"%.1f".format(userTargetWr)}%（内部验收≤65% 且看样本外）")
+        if (targetWr != null) log.appendLine("内部目标胜率 ≥ ${"%.1f".format(targetWr)}%（样本外）")
+        log.appendLine("样本外最少成交 ≥ $targetTrades 笔")
         onProgress?.invoke(
             buildString {
                 append("训练 $effectiveRounds 轮")
@@ -2873,8 +2884,10 @@ op: GT,GTE,LT,LTE  period:2-200  同侧OR
         for (round in 1..maxRounds) {
             onProgress?.invoke("第${round}/${maxRounds}轮：请求 LLM…")
             val sys = """
-你是量化策略工程师。唯一优化目标：最大化事件合约回测胜率（在最少笔数约束下）。
-必须通过改当前算法的 algoParams 数值来提胜率；禁止更换 algoId/kind；禁止只改标题/说明。
+你是量化策略工程师。目标：提高事件合约【可泛化】胜率，避免过拟合。
+注意：样本内 70%+ 胜率在实盘常掉到 45-55%；优先稳定样本外表现与足够成交笔数。
+必须通过改当前算法的 algoParams 数值；禁止更换 algoId/kind；禁止只改标题/说明。
+皮尔逊三曲线：勿把 minCorr 推到极端(>0.95)或 cooldown 过大来刷虚高胜率；保持 p1<p2<p3 分离、窗口与成交笔数平衡。
 $schema
 禁止编造未给出的数据；不要解释，只输出JSON。
 """.trimIndent()
@@ -2908,32 +2921,31 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 continue
             }
             var cand: StrategyConfig = parsed
-            // —— 强制实测：任何「采用本地/上轮参数」前必须在当前 bars 上回测 ——
-            // 先实测 LLM 原始输出（即使参数与 best 相同，也不得跳过模拟）
+            // 搜参用训练集；落盘/选优只看样本外实测
             run {
-                val llmMarks0 = StrategyEngine.signals(bars, cand)
-                val llmSt0 = EventSim.backtest(bars, llmMarks0, s.symbol, s.interval).second
+                val tr = measureOn(cand, trainBars)
+                val te = measureOn(cand, testBars)
                 log.appendLine(
-                    "第${round}轮 LLM输出实测: ${llmSt0.trades}笔 胜率${"%.1f".format(llmSt0.winRate * 100)}% 参数${cand.algoParams}",
+                    "第${round}轮 LLM输出 训练:${tr.trades}笔/${"%.1f".format(tr.winRate * 100)}% " +
+                        "样本外:${te.trades}笔/${"%.1f".format(te.winRate * 100)}% 参数${cand.algoParams}",
                 )
             }
             if (cand.kind == StrategyKind.ALGO &&
                 algoParamsEqual(cand.algoParams, bestCfg.algoParams)
             ) {
-                log.appendLine("第${round}轮 LLM 参数与当前最优相同 ${cand.algoParams} → 本地搜参（仍须实测）…")
-                onProgress?.invoke("第${round}轮参数相同，本地搜参+实测…")
+                log.appendLine("第${round}轮参数与最优相同 → 训练集本地搜参…")
+                onProgress?.invoke("第${round}轮同参，训练搜参…")
                 var (localCfg, localSt) = localTuneAlgoParams(
-                    bars, cand, s.symbol, s.interval,
+                    trainBars, cand, s.symbol, s.interval,
                     trials = 40, targetWr = targetWr, targetTrades = targetTrades,
                     allowAlgoSwitch = false,
                 )
-                // 本地若仍回到同一组参数且未达标：再强制深搜一轮，禁止「未模拟就沿用」
                 val same = algoParamsEqual(localCfg.algoParams, cand.algoParams)
-                val under = targetWr != null && localSt.winRate * 100 < targetWr - 1e-6
-                if (same && under) {
-                    log.appendLine("同参未达标，强制加搜 48 次…")
+                val underTrain = targetWr != null && localSt.winRate * 100 < targetWr - 1e-6
+                if (same && underTrain) {
+                    log.appendLine("训练同参未达标，强制加搜 48…")
                     val (deep, deepSt) = localTuneAlgoParams(
-                        bars, cand, s.symbol, s.interval,
+                        trainBars, cand, s.symbol, s.interval,
                         trials = 48, targetWr = targetWr, targetTrades = targetTrades,
                         allowAlgoSwitch = false,
                     )
@@ -2941,65 +2953,76 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                     localSt = deepSt
                 }
                 cand = localCfg
+                val te = measureOn(cand, testBars)
                 log.appendLine(
-                    "本地搜索实测: ${localSt.trades}笔 胜率${"%.1f".format(localSt.winRate * 100)}% 参数${localCfg.algoParams}",
+                    "本地搜参 训练:${localSt.trades}笔/${"%.1f".format(localSt.winRate * 100)}% " +
+                        "样本外:${te.trades}笔/${"%.1f".format(te.winRate * 100)}% 参数${cand.algoParams}",
                 )
             } else if (cand.kind == StrategyKind.ALGO) {
-                // LLM 改了参：先实测 LLM，再本地精修，二者都按实测分择优
-                val llmMarks = StrategyEngine.signals(bars, cand)
-                val llmSt = EventSim.backtest(bars, llmMarks, s.symbol, s.interval).second
+                val llmTrain = measureOn(cand, trainBars)
                 val (localCfg, localSt) = localTuneAlgoParams(
-                    bars, cand, s.symbol, s.interval,
+                    trainBars, cand, s.symbol, s.interval,
                     trials = 24, targetWr = targetWr, targetTrades = targetTrades,
                     allowAlgoSwitch = false,
                 )
-                val llmScore = llmSt.winRate * 100 + minOf(llmSt.trades, 40) * 0.25
-                val locScore = localSt.winRate * 100 + minOf(localSt.trades, 40) * 0.25
-                if (locScore > llmScore + 0.5) {
+                // 择优看样本外，而非训练虚高
+                val llmOos = measureOn(cand, testBars)
+                val locOos = measureOn(localCfg, testBars)
+                fun oosScore(st: Stats): Double {
+                    var sc = st.winRate * 1000.0
+                    if (st.trades < targetTrades) sc -= (targetTrades - st.trades) * 25.0
+                    else sc += minOf(st.trades - targetTrades, 20) * 0.5
+                    if (st.trades < 5) sc -= 500.0
+                    return sc
+                }
+                if (oosScore(locOos) > oosScore(llmOos) + 1.0) {
                     log.appendLine(
-                        "本地精修实测优于LLM: ${localSt.trades}笔/${"%.1f".format(localSt.winRate * 100)}% vs " +
-                            "${llmSt.trades}笔/${"%.1f".format(llmSt.winRate * 100)}%",
+                        "本地精修样本外更优: ${locOos.trades}笔/${"%.1f".format(locOos.winRate * 100)}% vs " +
+                            "LLM ${llmOos.trades}笔/${"%.1f".format(llmOos.winRate * 100)}% (训练LLM ${llmTrain.trades}笔)",
                     )
                     cand = localCfg
                 } else {
                     log.appendLine(
-                        "保留LLM参数（实测更优或相当）: ${llmSt.trades}笔/${"%.1f".format(llmSt.winRate * 100)}%",
+                        "保留LLM（样本外）: ${llmOos.trades}笔/${"%.1f".format(llmOos.winRate * 100)}% " +
+                            "(训练 ${llmTrain.trades}笔/${"%.1f".format(llmTrain.winRate * 100)}%)",
                     )
                 }
             }
-            // 统一：本轮候选最终以当前 bars 实测为准（禁止沿用历史胜率数字）
-            val marks = StrategyEngine.signals(bars, cand)
-            val (tlist, st) = EventSim.backtest(bars, marks, s.symbol, s.interval)
+            val stTrain = measureOn(cand, trainBars)
+            val st = measureOn(cand, testBars) // 本轮主指标=样本外
             log.appendLine(
-                "第${round}轮「${cand.title}」实测: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% " +
-                    "参数${cand.algoParams} 买${cand.buyRules.size}/卖${cand.sellRules.size}",
+                "第${round}轮「${cand.title}」训练:${stTrain.trades}笔/${"%.1f".format(stTrain.winRate * 100)}% " +
+                    "样本外:${st.trades}笔/${"%.1f".format(st.winRate * 100)}% 参数${cand.algoParams}",
             )
             onProgress?.invoke(
                 "第${round}轮 回测 ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}%",
             )
             // 未指定目标时禁止「提前结束」，必须跑满轮次；有目标才可提前达标退出
+            // 达标与评分一律基于样本外 st（本轮已 measureOn testBars）
             fun meets(stWr: Double, stTrades: Int): Boolean {
-                if (targetWr == null && targetTrades == null) return false
                 val okWr = targetWr == null || stWr * 100 >= targetWr - 1e-6
-                val okTr = targetTrades == null || stTrades >= targetTrades
-                return okWr && okTr && stTrades >= 3
+                val okTr = stTrades >= targetTrades
+                return okWr && okTr
             }
-            // 评分：用户只关心胜率——胜率权重大；笔数仅作软约束（过少扣分，达标加分）
+            // 样本外胜率主导，但笔数不足重罚（防止 5 笔里 4 胜 = 80% 假象）
             fun scoreOf(stWr: Double, stTrades: Int): Double {
-                var sc = stWr * 1000.0 // 胜率主导
-                val minT = targetTrades ?: 8
-                if (stTrades < 3) sc -= 400.0
-                else if (stTrades < minT) sc -= (minT - stTrades) * 12.0
-                else sc += minOf(stTrades - minT, 30) * 0.3
-                if (meets(stWr, stTrades)) sc += 5000.0
+                var sc = stWr * 1000.0
+                val minT = targetTrades
+                if (stTrades < 5) sc -= 800.0
+                else if (stTrades < minT) sc -= (minT - stTrades) * 35.0
+                else sc += minOf(stTrades - minT, 30) * 1.0
+                // 过高训练/样本外落差不在此处；选优已只用样本外
+                if (meets(stWr, stTrades)) sc += 3000.0
                 return sc
             }
             if (scoreOf(st.winRate, st.trades) >= scoreOf(bestWr, bestTrades) &&
-                (st.trades >= 1 || bestTrades < 1)
+                (st.trades >= 5 || bestTrades < 5)
             ) {
                 bestCfg = cand
                 bestWr = st.winRate
                 bestTrades = st.trades
+                bestTrainWr = stTrain.winRate
+                bestTrainTrades = stTrain.trades
             }
             if (meets(st.winRate, st.trades)) {
                 metTarget = true
@@ -3009,8 +3032,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             lastFeedback = buildString {
                 appendLine("上轮策略:")
                 appendLine(strategyToJson(cand))
-                appendLine("回测: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% kind=${cand.kind} algo=${cand.algoId}")
-                appendLine("当前最优: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%")
+                appendLine("样本外: ${st.trades}笔 胜率${"%.1f".format(st.winRate * 100)}% · 训练: ${stTrain.trades}笔/${"%.1f".format(stTrain.winRate * 100)}%")
+                appendLine("当前最优(样本外): ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}% (训练 ${bestTrainTrades}笔/${"%.1f".format(bestTrainWr * 100)}%)")
                 if (targetWr != null || targetTrades != null) {
                     appendLine("目标: " + listOfNotNull(
                         targetWr?.let { "胜率≥${"%.0f".format(it)}%" },
@@ -3033,19 +3056,17 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         if (bestCfg.kind == StrategyKind.ALGO) {
             onProgress?.invoke("最终本地深搜（主攻胜率）…")
             log.appendLine("—— 最终本地深搜（同算法只调参，胜率优先；未达标保留最接近版本）——")
-            val (deepCfg, deepSt) = localTuneAlgoParams(
-                bars, bestCfg, s.symbol, s.interval,
+            val (deepCfg, deepTrainSt) = localTuneAlgoParams(
+                trainBars, bestCfg, s.symbol, s.interval,
                 trials = 64, targetWr = targetWr, targetTrades = targetTrades,
-                allowAlgoSwitch = false, // 禁止换算法，避免策略混淆
+                allowAlgoSwitch = false,
             )
-            // 对比前再实测当前 best（防止沿用过期胜率）
-            val bestMeasured = EventSim.backtest(
-                bars, StrategyEngine.signals(bars, bestCfg), s.symbol, s.interval,
-            ).second
+            val deepSt = measureOn(deepCfg, testBars)
+            val bestMeasured = measureOn(bestCfg, testBars)
             bestWr = bestMeasured.winRate
             bestTrades = bestMeasured.trades
             log.appendLine(
-                "深搜前最优实测: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}%",
+                "深搜前最优样本外: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}% · 深搜训练:${deepTrainSt.trades}笔 样本外:${deepSt.trades}笔/${"%.1f".format(deepSt.winRate * 100)}%",
             )
             val betterWr = deepSt.winRate > bestWr + 1e-9
             val meetDeep = targetWr != null && deepSt.winRate * 100 >= targetWr - 1e-6 &&
@@ -3079,25 +3100,35 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             log.appendLine("警告: 有效成交不足，仍保存当前最优结构供手工调整")
         }
 
-        // —— 收尾强制实测：保存前必须用当前 bars 再评估一次，禁止沿用历史胜率 ——
-        onProgress?.invoke("最终实测评估…")
-        val finalMarks = StrategyEngine.signals(bars, bestCfg)
-        val finalSt = EventSim.backtest(bars, finalMarks, s.symbol, s.interval).second
-        bestWr = finalSt.winRate
-        bestTrades = finalSt.trades
+        // —— 收尾：样本外胜率落盘；全样本仅作参考 ——
+        onProgress?.invoke("最终样本外评估…")
+        val finalOos = measureOn(bestCfg, testBars)
+        val finalTrain = measureOn(bestCfg, trainBars)
+        val finalFull = measureOn(bestCfg, bars)
+        bestWr = finalOos.winRate
+        bestTrades = finalOos.trades
+        bestTrainWr = finalTrain.winRate
+        bestTrainTrades = finalTrain.trades
         log.appendLine(
-            "最终实测: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}% 参数${bestCfg.algoParams}",
+            "最终样本外: ${bestTrades}笔 胜率${"%.1f".format(bestWr * 100)}% · " +
+                "训练: ${bestTrainTrades}笔/${"%.1f".format(bestTrainWr * 100)}% · " +
+                "全样本参考: ${finalFull.trades}笔/${"%.1f".format(finalFull.winRate * 100)}%",
         )
+        if (finalTrain.winRate - finalOos.winRate > 0.12 && finalTrain.trades >= 8) {
+            log.appendLine(
+                "警告: 训练胜率高于样本外 ${"%.1f".format((finalTrain.winRate - finalOos.winRate) * 100)} 个百分点，疑似过拟合",
+            )
+        }
         if (targetWr != null && bestWr * 100 < targetWr - 1e-6) {
             log.appendLine(
-                "最终实测未达目标胜率 ${"%.1f".format(targetWr)}%（已写入实测结果，未假装沿用历史高胜率）",
+                "样本外未达内部目标 ${"%.1f".format(targetWr)}%（已按样本外结果落盘，不以训练虚高为准）",
             )
         }
         bestCfg = bestCfg.copy(
             lastWinRatePct = if (bestTrades > 0) bestWr * 100.0 else -1.0,
             lastEvalTrades = bestTrades,
-            lastEvalReturnPct = finalSt.totalReturnPct,
-            lastEvalDetail = "优化实测 ${s.interval} ${bestTrades}笔/${"%.1f".format(bestWr * 100)}%",
+            lastEvalReturnPct = finalOos.totalReturnPct,
+            lastEvalDetail = "样本外 ${s.interval} ${bestTrades}笔/${"%.1f".format(bestWr * 100)}% | 训练 ${bestTrainTrades}笔/${"%.1f".format(bestTrainWr * 100)}%",
             lastEvalAtMs = System.currentTimeMillis(),
         )
 
@@ -3211,12 +3242,12 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         fun score(st: Stats): Double {
             var sc = st.winRate * 1000.0
             val minT = targetTrades ?: 8
-            if (st.trades < 3) sc -= 400.0
-            else if (st.trades < minT) sc -= (minT - st.trades) * 12.0
-            else sc += minOf(st.trades - minT, 30) * 0.3
+            if (st.trades < 5) sc -= 800.0
+            else if (st.trades < minT) sc -= (minT - st.trades) * 35.0
+            else sc += minOf(st.trades - minT, 30) * 1.0
             val okWr = targetWr == null || st.winRate * 100 >= targetWr - 1e-6
-            val okTr = targetTrades == null || st.trades >= (targetTrades ?: 0)
-            if (okWr && okTr && st.trades >= 3) sc += 5000.0
+            val okTr = st.trades >= minT
+            if (okWr && okTr) sc += 3000.0
             return sc
         }
         var bestCfg = cfg
