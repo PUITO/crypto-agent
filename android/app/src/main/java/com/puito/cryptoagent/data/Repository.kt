@@ -500,6 +500,43 @@ class Repository(ctx: Context) {
             modelNote = "少而准：训练后自动校准阈值/冷却；勿追求每根K信号",
             modelTrainReport = "未训练",
         ),
+        StrategyConfig(
+            id = UUID.randomUUID().toString(),
+            title = "卡尔曼趋势",
+            enabled = false,
+            kind = StrategyKind.MODEL,
+            modelId = ModelIds.KALMAN_V1,
+            modelParams = mapOf(
+                "q" to 1e-5, "r" to 1e-3, "velTh" to 0.00015,
+                "cooldown" to 10.0, "sameSideGap" to 16.0,
+                "posBuyMax" to 0.78, "posSellMin" to 0.22,
+            ),
+            modelNote = "本地卡尔曼跟踪斜率，边沿触发，手机可直接跑",
+        ),
+        StrategyConfig(
+            id = UUID.randomUUID().toString(),
+            title = "多因子共识",
+            enabled = false,
+            kind = StrategyKind.MODEL,
+            modelId = ModelIds.ENSEMBLE_V1,
+            modelParams = mapOf(
+                "cooldown" to 12.0, "sameSideGap" to 18.0,
+                "minEdge" to 0.08, "votes" to 2.0,
+            ),
+            modelNote = "动量+回归+趋势质量≥2票同向才开仓",
+        ),
+        StrategyConfig(
+            id = UUID.randomUUID().toString(),
+            title = "状态切换",
+            enabled = false,
+            kind = StrategyKind.MODEL,
+            modelId = ModelIds.REGIME_V1,
+            modelParams = mapOf(
+                "cooldown" to 10.0, "sameSideGap" to 16.0,
+                "erLen" to 20.0, "erTrend" to 0.42, "minEdge" to 0.07,
+            ),
+            modelNote = "趋势跟动量、震荡做回归，减少追涨杀跌",
+        ),
     )
 
     /** 反射读取可能被 Gson 置空的枚举，避免 NPE */
@@ -2876,6 +2913,8 @@ class Repository(ctx: Context) {
 modelId 固定 LOGREG_V1。
 modelParams 必须偏严格：
 - threshold: 0.62~0.72（越高信号越少越准，默认0.64）
+- 本地模型可选 modelId: LOGREG_V1 | KALMAN_V1 | ENSEMBLE_V1 | REGIME_V1
+- Kronos 等大模型请用 REMOTE_HTTP 接自建推理（手机无法直接跑 PyTorch Kronos）
 - cooldown: 8~24（两次信号最少间隔K线数）
 - minEdge: 0.03~0.08（额外边距，越大越稀）
 - confirmBars: 1~2
@@ -3493,7 +3532,10 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             val modelNote = o.get("modelNote")?.asString?.take(200) ?: ""
             val modelIdRaw = o.get("modelId")?.asString?.uppercase() ?: ModelIds.LOGREG_V1
             val modelId = when {
-                modelIdRaw.contains("REMOTE") || modelIdRaw.contains("HTTP") -> ModelIds.REMOTE_HTTP
+                modelIdRaw.contains("REMOTE") || modelIdRaw.contains("HTTP") || modelIdRaw.contains("KRONOS") -> ModelIds.REMOTE_HTTP
+                modelIdRaw.contains("KALMAN") || modelIdRaw.contains("卡尔曼") -> ModelIds.KALMAN_V1
+                modelIdRaw.contains("ENSEMBLE") || modelIdRaw.contains("共识") || modelIdRaw.contains("多因子") -> ModelIds.ENSEMBLE_V1
+                modelIdRaw.contains("REGIME") || modelIdRaw.contains("状态") -> ModelIds.REGIME_V1
                 modelIdRaw.contains("LOGREG") || modelIdRaw.isBlank() -> ModelIds.LOGREG_V1
                 else -> modelIdRaw
             }

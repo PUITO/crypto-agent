@@ -73,6 +73,11 @@ object ModelEngine {
             // 在线 AI 不在本地逐 K 打分；方向由 Chat/预览接口提供
             return emptyList()
         }
+        when (cfg.modelId) {
+            ModelIds.KALMAN_V1 -> return kalmanSignals(candles, cfg)
+            ModelIds.ENSEMBLE_V1 -> return ensembleSignals(candles, cfg)
+            ModelIds.REGIME_V1 -> return regimeSignals(candles, cfg)
+        }
         if (ModelIds.isOfflinePack(cfg.modelId) && cfg.modelWeights.isEmpty()) {
             return emptyList()
         }
@@ -190,6 +195,167 @@ object ModelEngine {
         val feats = buildFeatureMatrix(candles, lookback.coerceIn(2, 20))
         val f = feats.getOrNull(candles.lastIndex) ?: return null
         return featureNames.mapIndexed { i, n -> n to f[i] }.toMap()
+    }
+
+
+    // ---------- 本地金融小模型（无需下载权重，手机可跑）----------
+
+    /**
+     * 卡尔曼一维水平+速度：跟踪收盘价，速度突破 + 边沿触发。
+     * 比皮尔逊更稳：自适应噪声、天然 smoothing，不易同向扎堆。
+     */
+    private fun kalmanSignals(candles: List<Candle>, cfg: StrategyConfig): List<SignalMark> {
+        val q = p(cfg.modelParams, "q", 1e-5) // process noise
+        val r = p(cfg.modelParams, "r", 1e-3) // measurement noise
+        val velTh = p(cfg.modelParams, "velTh", 0.00015) // 相对速度阈值
+        val cooldown = p(cfg.modelParams, "cooldown", 10.0).toInt().coerceIn(4, 60)
+        val sameGap = p(cfg.modelParams, "sameSideGap", 16.0).toInt().coerceIn(6, 80)
+        val maxPosB = p(cfg.modelParams, "posBuyMax", 0.78)
+        val minPosS = p(cfg.modelParams, "posSellMin", 0.22)
+        val closes = candles.map { it.close }
+        val n = closes.size
+        if (n < 50) return emptyList()
+        // state: x=level, v=velocity; P covariance simplified 2x2 diagonal-ish
+        var x = closes[0]
+        var v = 0.0
+        var p11 = 1.0
+        var p22 = 1.0
+        val out = mutableListOf<SignalMark>()
+        var lastSig = -999
+        var lastSide = ""
+        var prevB = false
+        var prevS = false
+        val win = 24
+        for (i in 1 until n - 1) { // skip last forming
+            // predict
+            x += v
+            p11 += p22 + q
+            p22 += q
+            val z = closes[i]
+            val y = z - x
+            val s = p11 + r
+            val k1 = p11 / s
+            val k2 = p22 / s
+            x += k1 * y
+            v += k2 * y
+            p11 *= (1 - k1)
+            p22 *= (1 - k2)
+            if (i < 30) continue
+            val ref = kotlin.math.abs(x).coerceAtLeast(1e-9)
+            val vel = v / ref
+            val hi = closes.subList((i - win).coerceAtLeast(0), i + 1).maxOrNull() ?: z
+            val lo = closes.subList((i - win).coerceAtLeast(0), i + 1).minOrNull() ?: z
+            val pos = if (hi > lo) ((z - lo) / (hi - lo)).coerceIn(0.0, 1.0) else 0.5
+            val wantB = vel > velTh && pos <= maxPosB
+            val wantS = vel < -velTh && pos >= minPosS
+            val edgeB = wantB && !prevB
+            val edgeS = wantS && !prevS
+            prevB = wantB
+            prevS = wantS
+            if (i - lastSig < cooldown) continue
+            when {
+                edgeB && !(lastSide == "B" && i - lastSig < sameGap) -> {
+                    out.add(SignalMark(candles[i].openTime, "B", z, tag = "kalman"))
+                    lastSig = i; lastSide = "B"
+                }
+                edgeS && !(lastSide == "S" && i - lastSig < sameGap) -> {
+                    out.add(SignalMark(candles[i].openTime, "S", z, tag = "kalman"))
+                    lastSig = i; lastSide = "S"
+                }
+            }
+        }
+        return out
+    }
+
+    /**
+     * 多因子共识：动量 / 均值回归 / 趋势质量 至少 2 票同向且幅度够，才开仓。
+     */
+    private fun ensembleSignals(candles: List<Candle>, cfg: StrategyConfig): List<SignalMark> {
+        val cooldown = p(cfg.modelParams, "cooldown", 12.0).toInt().coerceIn(4, 60)
+        val sameGap = p(cfg.modelParams, "sameSideGap", 18.0).toInt().coerceIn(6, 80)
+        val edge = p(cfg.modelParams, "minEdge", 0.08).coerceIn(0.03, 0.2)
+        val needVotes = p(cfg.modelParams, "votes", 2.0).toInt().coerceIn(2, 3)
+        val m = FinancialFactorEngine.scores(candles, FinancialFactorEngine.MOMENTUM_TS, cfg.financeParams)
+        val r = FinancialFactorEngine.scores(candles, FinancialFactorEngine.MEAN_REVERSION, cfg.financeParams)
+        val tq = FinancialFactorEngine.scores(candles, FinancialFactorEngine.TREND_QUALITY, cfg.financeParams)
+        val out = mutableListOf<SignalMark>()
+        var lastSig = -999
+        var lastSide = ""
+        var prevB = false
+        var prevS = false
+        for (i in 40 until candles.size - 1) {
+            val scores = listOf(m[i], r[i], tq[i]).filter { !it.isNaN() }
+            if (scores.size < 2) continue
+            val bull = scores.count { it >= 0.5 + edge }
+            val bear = scores.count { it <= 0.5 - edge }
+            val wantB = bull >= needVotes
+            val wantS = bear >= needVotes
+            val edgeB = wantB && !prevB
+            val edgeS = wantS && !prevS
+            prevB = wantB
+            prevS = wantS
+            if (i - lastSig < cooldown) continue
+            val z = candles[i].close
+            when {
+                edgeB && !(lastSide == "B" && i - lastSig < sameGap) -> {
+                    out.add(SignalMark(candles[i].openTime, "B", z, tag = "ens"))
+                    lastSig = i; lastSide = "B"
+                }
+                edgeS && !(lastSide == "S" && i - lastSig < sameGap) -> {
+                    out.add(SignalMark(candles[i].openTime, "S", z, tag = "ens"))
+                    lastSig = i; lastSide = "S"
+                }
+            }
+        }
+        return out
+    }
+
+    /**
+     * 状态切换：效率比率判趋势/震荡；
+     * 趋势 → 动量因子；震荡 → 均值回归（减少高点追多）。
+     */
+    private fun regimeSignals(candles: List<Candle>, cfg: StrategyConfig): List<SignalMark> {
+        val cooldown = p(cfg.modelParams, "cooldown", 10.0).toInt().coerceIn(4, 60)
+        val sameGap = p(cfg.modelParams, "sameSideGap", 16.0).toInt().coerceIn(6, 80)
+        val erLen = p(cfg.modelParams, "erLen", 20.0).toInt().coerceIn(10, 40)
+        val erTrend = p(cfg.modelParams, "erTrend", 0.42)
+        val edge = p(cfg.modelParams, "minEdge", 0.07)
+        val closes = candles.map { it.close }
+        val mom = FinancialFactorEngine.scores(candles, FinancialFactorEngine.MOMENTUM_TS, cfg.financeParams)
+        val mr = FinancialFactorEngine.scores(candles, FinancialFactorEngine.MEAN_REVERSION, cfg.financeParams)
+        val out = mutableListOf<SignalMark>()
+        var lastSig = -999
+        var lastSide = ""
+        var prevB = false
+        var prevS = false
+        for (i in (erLen + 5) until candles.size - 1) {
+            val start = closes[i - erLen]
+            val end = closes[i]
+            var path = 0.0
+            for (k in (i - erLen + 1)..i) path += kotlin.math.abs(closes[k] - closes[k - 1])
+            val er = if (path < 1e-12) 0.0 else kotlin.math.abs(end - start) / path
+            val sc = if (er >= erTrend) mom[i] else mr[i]
+            if (sc.isNaN()) continue
+            val wantB = sc >= 0.5 + edge
+            val wantS = sc <= 0.5 - edge
+            val edgeB = wantB && !prevB
+            val edgeS = wantS && !prevS
+            prevB = wantB
+            prevS = wantS
+            if (i - lastSig < cooldown) continue
+            val z = candles[i].close
+            when {
+                edgeB && !(lastSide == "B" && i - lastSig < sameGap) -> {
+                    out.add(SignalMark(candles[i].openTime, "B", z, tag = "regime"))
+                    lastSig = i; lastSide = "B"
+                }
+                edgeS && !(lastSide == "S" && i - lastSig < sameGap) -> {
+                    out.add(SignalMark(candles[i].openTime, "S", z, tag = "regime"))
+                    lastSig = i; lastSide = "S"
+                }
+            }
+        }
+        return out
     }
 
     /**
