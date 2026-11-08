@@ -479,7 +479,7 @@ class Repository(ctx: Context) {
             algoId = AlgoIds.PEARSON_TRIPLE,
             algoParams = mapOf(
                 "p1" to 6.0, "p2" to 14.0, "p3" to 28.0,
-                "window" to 36.0, "minCorr" to 0.62, "cooldown" to 4.0,
+                "window" to 36.0, "minCorr" to 0.62, "cooldown" to 8.0, "sameSideGap" to 16.0,
                 "entryMode" to 1.0, "pullback" to 1.0,
                 "rsiBuyMax" to 58.0, "rsiSellMin" to 42.0,
                 "posBuyMax" to 0.72, "posSellMin" to 0.28,
@@ -2777,7 +2777,7 @@ class Repository(ctx: Context) {
         log.appendLine(
             "标的 ${s.symbol} 周期 ${s.interval} 总K=${bars.size} 训练=${trainBars.size} 样本外=${testBars.size} · 迭代 $effectiveRounds 轮",
         )
-        log.appendLine("说明: 搜参看训练集，落盘胜率只看样本外；目标>72%极易过拟合；优先防追涨杀跌的可靠入场")
+        log.appendLine("说明: 搜参看训练集，落盘胜率只看样本外；目标可设50~80；优先稀疏高质量信号，禁止同向扎堆")
         if (base != null) {
             val stTrain = measureOn(base, trainBars)
             val stTest = measureOn(base, testBars)
@@ -2793,12 +2793,15 @@ class Repository(ctx: Context) {
         }
 
         val goal = userGoal?.trim().orEmpty()
-        val userTargetWr = minWinRatePct
-        // 事件合约方向接近抛硬币；>65% 的样本内目标几乎必然过拟合
-        val targetWr = userTargetWr?.let { it.coerceAtMost(72.0) }
+        val userTargetWr = minWinRatePct?.coerceIn(50.0, 80.0)
+        // 用户可设 50~80；>72 仅警告不过拟合风险，不再强行压低目标
+        val targetWr = userTargetWr
+        if (minWinRatePct != null && minWinRatePct !in 50.0..80.0) {
+            log.appendLine("目标胜率已限制在 50%~80%（输入 ${"%.0f".format(minWinRatePct)}%）")
+        }
         if (userTargetWr != null && userTargetWr > 72.0) {
             log.appendLine(
-                "用户目标胜率 ${"%.0f".format(userTargetWr)}% 过高已封顶为 72%（防过拟合；以样本外为准）",
+                "提示: 目标 ${"%.0f".format(userTargetWr)}% 偏高，请以样本外为准；信号过密会被降权",
             )
         }
         // 样本外最少笔数：用户指定或按测试集长度推算（约每 15 根至少 1 笔）
@@ -2809,7 +2812,7 @@ class Repository(ctx: Context) {
             log.appendLine("用户需求: $goal")
             onProgress?.invoke("需求: ${goal.take(40)}")
         }
-        if (userTargetWr != null) log.appendLine("用户目标胜率 ≥ ${"%.1f".format(userTargetWr)}%（内部验收≤72% 且看样本外）")
+        if (userTargetWr != null) log.appendLine("用户目标胜率 ≥ ${"%.1f".format(userTargetWr)}%（范围50~80，看样本外）")
         if (targetWr != null) log.appendLine("内部目标胜率 ≥ ${"%.1f".format(targetWr)}%（样本外）")
         log.appendLine("样本外最少成交 ≥ $targetTrades 笔")
         onProgress?.invoke(
@@ -3241,7 +3244,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 p["p3"] = p3.toDouble()
                 p["window"] = (p["window"] ?: 36.0).coerceIn(12.0, 80.0)
                 p["minCorr"] = (p["minCorr"] ?: 0.62).coerceIn(0.40, 0.92)
-                p["cooldown"] = (p["cooldown"] ?: 4.0).coerceIn(1.0, 24.0)
+                p["cooldown"] = (p["cooldown"] ?: 6.0).coerceIn(2.0, 30.0)
+                p["sameSideGap"] = (p["sameSideGap"] ?: (p["cooldown"]!! * 2.5)).coerceIn(6.0, 48.0)
                 p["minSlopePct"] = (p["minSlopePct"] ?: 0.00003).coerceIn(0.000005, 0.001)
                 p["rsiBuyMax"] = (p["rsiBuyMax"] ?: 58.0).coerceIn(45.0, 75.0)
                 p["rsiSellMin"] = (p["rsiSellMin"] ?: 42.0).coerceIn(25.0, 55.0)
@@ -3296,13 +3300,25 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         targetTrades: Int? = null,
         allowAlgoSwitch: Boolean = false,
     ): Pair<StrategyConfig, Stats> {
-        // 胜率绝对优先；笔数不足只软惩罚
-        fun score(st: Stats): Double {
+        // 胜率优先，但惩罚信号过密/同向扎堆（虚高常见来源）
+        fun score(st: Stats, marks: List<SignalMark> = emptyList()): Double {
             var sc = st.winRate * 1000.0
             val minT = targetTrades ?: 8
             if (st.trades < 5) sc -= 800.0
             else if (st.trades < minT) sc -= (minT - st.trades) * 35.0
-            else sc += minOf(st.trades - minT, 30) * 1.0
+            else sc += minOf(st.trades - minT, 20) * 0.8
+            // 密度：信号数/K线 过高降权
+            if (bars.isNotEmpty() && marks.isNotEmpty()) {
+                val dens = marks.size.toDouble() / bars.size
+                if (dens > 0.12) sc -= (dens - 0.12) * 2500.0
+                if (dens > 0.20) sc -= 400.0
+                // 同向连续：相邻同侧计一次扎堆
+                var streakPen = 0
+                for (i in 1 until marks.size) {
+                    if (marks[i].side == marks[i - 1].side) streakPen++
+                }
+                sc -= streakPen * 25.0
+            }
             val okWr = targetWr == null || st.winRate * 100 >= targetWr - 1e-6
             val okTr = st.trades >= minT
             if (okWr && okTr) sc += 3000.0
@@ -3313,7 +3329,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             val marks = StrategyEngine.signals(bars, cfg)
             EventSim.backtest(bars, marks, symbol, interval).second
         }
-        var bestScore = score(bestSt)
+        var bestScore = score(bestSt, StrategyEngine.signals(bars, cfg))
         val rnd = kotlin.random.Random(System.currentTimeMillis())
         // 永远不切换算法类型：即使用户误开 allowAlgoSwitch，优化已有策略时也只锁当前 algoId
         val algoChoices = listOf(cfg.algoId.ifBlank { AlgoIds.PEARSON_TRIPLE })
@@ -3339,7 +3355,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                     }
                     p["window"] = listOf(28.0, 32.0, 36.0, 40.0, 44.0, 48.0, 54.0).random(rnd)
                     p["minCorr"] = listOf(0.52, 0.58, 0.62, 0.66, 0.70, 0.74, 0.78).random(rnd)
-                    p["cooldown"] = listOf(3.0, 4.0, 5.0, 6.0, 8.0, 10.0).random(rnd)
+                    p["cooldown"] = listOf(4.0, 6.0, 8.0, 10.0, 12.0, 14.0).random(rnd)
+                    p["sameSideGap"] = listOf(8.0, 10.0, 12.0, 16.0, 20.0, 24.0).random(rnd)
                     // 防追参数：优先 entryMode=1 回调入场
                     p["entryMode"] = listOf(1.0, 1.0, 1.0, 0.0, 2.0).random(rnd)
                     p["pullback"] = listOf(1.0, 1.0, 1.0, 0.0).random(rnd)
@@ -3371,7 +3388,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             )
             val marks = StrategyEngine.signals(bars, cand)
             val st = EventSim.backtest(bars, marks, symbol, interval).second
-            val sc = score(st)
+            val sc = score(st, marks)
             if (sc > bestScore && (st.trades >= 1 || bestSt.trades < 1)) {
                 bestScore = sc
                 bestCfg = cand

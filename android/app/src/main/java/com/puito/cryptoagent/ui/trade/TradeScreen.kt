@@ -275,7 +275,7 @@ if (goalDialog != null) {
                         OutlinedTextField(
                             value = tuneTargetWr,
                             onValueChange = { tuneTargetWr = it.filter { c -> c.isDigit() || c == '.' } },
-                            label = { Text("目标胜率 %") },
+                            label = { Text("目标胜率%(50-80)") },
                             placeholder = { Text("55") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,

@@ -176,6 +176,12 @@ object AlgoEngine {
         val rsi = Indicators.rsi(closes, 14)
         val out = mutableListOf<SignalMark>()
         var lastSig = -999
+        var lastSide = ""
+        var prevWantB = false
+        var prevWantS = false
+        // 同向最小间隔：避免「一串相同信号」刷虚高胜率
+        val sameSideGap = p(params, "sameSideGap", (cooldown * 2).toDouble().coerceAtLeast(8.0))
+            .toInt().coerceIn(4, 60)
 
         for (i in window until candles.size) {
             // 未收盘最后一根不发信号（与回测一致，避免用到未完成 K）
@@ -253,15 +259,30 @@ object AlgoEngine {
             // 硬性防追：再砍掉明显高位多、低位空
             val chaseB = pos >= 0.88 || rsiNow >= 72.0
             val chaseS = pos <= 0.12 || rsiNow <= 28.0
+            val rawB = wantB && !chaseB && !wantS
+            val rawS = wantS && !chaseS && !wantB
+            // 边沿触发：条件刚成立才发信号，避免条件持续满足时每隔 cooldown 再喷一串同向
+            val edgeB = rawB && !prevWantB
+            val edgeS = rawS && !prevWantS
+            prevWantB = rawB
+            prevWantS = rawS
             if (i - lastSig <= cooldown) continue
             when {
-                wantB && !chaseB && !wantS -> {
+                edgeB -> {
+                    if (lastSide == "B" && i - lastSig < sameSideGap) continue
                     out.add(SignalMark(candles[i].openTime, "B", price))
                     lastSig = i
+                    lastSide = "B"
+                    prevWantB = true
+                    prevWantS = false
                 }
-                wantS && !chaseS && !wantB -> {
+                edgeS -> {
+                    if (lastSide == "S" && i - lastSig < sameSideGap) continue
                     out.add(SignalMark(candles[i].openTime, "S", price))
                     lastSig = i
+                    lastSide = "S"
+                    prevWantS = true
+                    prevWantB = false
                 }
             }
         }
