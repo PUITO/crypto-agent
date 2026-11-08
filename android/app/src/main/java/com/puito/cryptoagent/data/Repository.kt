@@ -478,10 +478,14 @@ class Repository(ctx: Context) {
             kind = StrategyKind.ALGO,
             algoId = AlgoIds.PEARSON_TRIPLE,
             algoParams = mapOf(
-                "p1" to 5.0, "p2" to 10.0, "p3" to 20.0,
-                "window" to 30.0, "minCorr" to 0.55, "cooldown" to 2.0,
+                "p1" to 6.0, "p2" to 14.0, "p3" to 28.0,
+                "window" to 36.0, "minCorr" to 0.62, "cooldown" to 4.0,
+                "entryMode" to 1.0, "pullback" to 1.0,
+                "rsiBuyMax" to 58.0, "rsiSellMin" to 42.0,
+                "posBuyMax" to 0.72, "posSellMin" to 0.28,
+                "minSlopePct" to 0.00003,
             ),
-            algoNote = "三EMA皮尔逊相关+同向斜率共振",
+            algoNote = "皮尔逊共振+中长定势+回调入场(防追涨杀跌)",
         ),
         StrategyConfig(
             id = UUID.randomUUID().toString(),
@@ -570,7 +574,8 @@ class Repository(ctx: Context) {
             buyRules = buy.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)) },
             sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
             algoId = algoId,
-            algoParams = algoParams,
+            algoParams = if (kind == StrategyKind.ALGO && algoId == AlgoIds.PEARSON_TRIPLE)
+                normalizeAlgoParams(algoId, algoParams) else algoParams,
             algoNote = algoNote,
             modelId = modelId,
             modelParams = modelParams,
@@ -2772,7 +2777,7 @@ class Repository(ctx: Context) {
         log.appendLine(
             "标的 ${s.symbol} 周期 ${s.interval} 总K=${bars.size} 训练=${trainBars.size} 样本外=${testBars.size} · 迭代 $effectiveRounds 轮",
         )
-        log.appendLine("说明: 搜参看训练集，落盘胜率只看样本外；目标>65%极易过拟合")
+        log.appendLine("说明: 搜参看训练集，落盘胜率只看样本外；目标>72%极易过拟合；优先防追涨杀跌的可靠入场")
         if (base != null) {
             val stTrain = measureOn(base, trainBars)
             val stTest = measureOn(base, testBars)
@@ -2790,10 +2795,10 @@ class Repository(ctx: Context) {
         val goal = userGoal?.trim().orEmpty()
         val userTargetWr = minWinRatePct
         // 事件合约方向接近抛硬币；>65% 的样本内目标几乎必然过拟合
-        val targetWr = userTargetWr?.let { it.coerceAtMost(65.0) }
-        if (userTargetWr != null && userTargetWr > 65.0) {
+        val targetWr = userTargetWr?.let { it.coerceAtMost(72.0) }
+        if (userTargetWr != null && userTargetWr > 72.0) {
             log.appendLine(
-                "用户目标胜率 ${"%.0f".format(userTargetWr)}% 过高已封顶为 65%（防过拟合；实盘参考样本外）",
+                "用户目标胜率 ${"%.0f".format(userTargetWr)}% 过高已封顶为 72%（防过拟合；以样本外为准）",
             )
         }
         // 样本外最少笔数：用户指定或按测试集长度推算（约每 15 根至少 1 笔）
@@ -2804,7 +2809,7 @@ class Repository(ctx: Context) {
             log.appendLine("用户需求: $goal")
             onProgress?.invoke("需求: ${goal.take(40)}")
         }
-        if (userTargetWr != null) log.appendLine("用户目标胜率 ≥ ${"%.1f".format(userTargetWr)}%（内部验收≤65% 且看样本外）")
+        if (userTargetWr != null) log.appendLine("用户目标胜率 ≥ ${"%.1f".format(userTargetWr)}%（内部验收≤72% 且看样本外）")
         if (targetWr != null) log.appendLine("内部目标胜率 ≥ ${"%.1f".format(targetWr)}%（样本外）")
         log.appendLine("样本外最少成交 ≥ $targetTrades 笔")
         onProgress?.invoke(
@@ -2879,14 +2884,17 @@ modelParams 必须偏严格：
 1) kind=ALGO  算法配置（推荐）
 algoId 只能是:
 - TREND_FOLLOW 顺势/单边: params fast,slow,consecutive,cooldown
-- PEARSON_TRIPLE 皮尔逊三曲线: params p1,p2,p3,window,minCorr,cooldown
+- PEARSON_TRIPLE 皮尔逊三曲线(可靠版): p1,p2,p3,window,minCorr,cooldown,entryMode,pullback,rsiBuyMax,rsiSellMin,posBuyMax,posSellMin
+  entryMode:1=中长定势+回调入场(推荐) 0=旧齐斜率追势 2=极端反转
+  必须避免高位追多、低位追空；优先提高样本外可靠度而非训练虚高
 - BREAKOUT 突破: params lookback,cooldown
 algoNote 用中文写意图；algoParams 全是数字。
 例:
 {"title":"顺势","kind":"ALGO","algoId":"TREND_FOLLOW","algoParams":{"fast":12,"slow":26,"consecutive":3,"cooldown":3},"algoNote":"单边顺势","buyRules":[],"sellRules":[]}
-{"title":"三曲线","kind":"ALGO","algoId":"PEARSON_TRIPLE","algoParams":{"p1":5,"p2":10,"p3":20,"window":30,"minCorr":0.55,"cooldown":2},"algoNote":"皮尔逊共振","buyRules":[],"sellRules":[]}
+{"title":"三曲线可靠","kind":"ALGO","algoId":"PEARSON_TRIPLE","algoParams":{"p1":6,"p2":14,"p3":28,"window":36,"minCorr":0.62,"cooldown":4,"entryMode":1,"pullback":1,"rsiBuyMax":58,"rsiSellMin":42,"posBuyMax":0.72,"posSellMin":0.28},"algoNote":"回调入场防追","buyRules":[],"sellRules":[]}
 【PEARSON 硬性要求】
-- 必须输出完整 algoParams：p1,p2,p3,window,minCorr,cooldown（六个数字全给）
+- 必须输出完整 algoParams（含 entryMode/pullback/rsi/pos 防追字段）
+- entryMode 默认 1；禁止为刷胜率改回纯追势且去掉过滤
 - 必须满足 p1 < p2 < p3，且间距≥3（禁止 6/14/26 原样照抄若上轮已是该组）
 - minCorr 建议在 0.50~0.90 之间探索，不要只在 0.90+ 微调
 - window 建议 24~54；cooldown 2~12
@@ -2917,7 +2925,8 @@ op: GT,GTE,LT,LTE  period:2-200  同侧OR
 你是量化策略工程师。目标：提高事件合约【可泛化】胜率，避免过拟合。
 注意：样本内 70%+ 胜率在实盘常掉到 45-55%；优先稳定样本外表现与足够成交笔数。
 必须通过改当前算法的 algoParams 数值；禁止更换 algoId/kind；禁止只改标题/说明。
-皮尔逊三曲线：勿把 minCorr 推到极端(>0.95)或 cooldown 过大来刷虚高胜率；保持 p1<p2<p3 分离、窗口与成交笔数平衡。
+皮尔逊：用 entryMode=1 + pullback + rsi/pos 过滤实现「趋势中的回调入场」，禁止高点追多低点追空。
+勿把 minCorr>0.90 或 cooldown 过大刷虚高；p1<p2<p3；优化目标是样本外稳定≥55%且笔数充足。
 $schema
 禁止编造未给出的数据；不要解释，只输出JSON。
 """.trimIndent()
@@ -3079,7 +3088,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                     if (!meets(st.winRate, st.trades)) {
                         appendLine("【唯一目标】提高回测胜率。必须改当前算法的 algoParams 至少2个数字，禁止只改文案。")
                         appendLine("禁止更换 algoId / kind（保持当前算法类型不变）。")
-                        appendLine("PEARSON：拉开/收紧 p1<p2<p3；minCorr 0.45~0.92；window/cooldown 同步改。")
+                        appendLine("PEARSON：保持 entryMode=1；调 rsiBuyMax/posBuyMax 防追多，rsiSellMin/posSellMin 防追空；p1<p2<p3。")
                         appendLine("禁止与上轮完全相同的 algoParams。未达标则取最接近目标胜率的版本即可。")
                     }
                 } else {
@@ -3222,17 +3231,24 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
         val p = raw.toMutableMap()
         when (algoId) {
             AlgoIds.PEARSON_TRIPLE -> {
-                var p1 = (p["p1"] ?: 5.0).toInt().coerceIn(2, 40)
-                var p2 = (p["p2"] ?: 10.0).toInt().coerceIn(p1 + 1, 60)
-                var p3 = (p["p3"] ?: 20.0).toInt().coerceIn(p2 + 1, 100)
+                var p1 = (p["p1"] ?: 6.0).toInt().coerceIn(2, 40)
+                var p2 = (p["p2"] ?: 14.0).toInt().coerceIn(p1 + 1, 60)
+                var p3 = (p["p3"] ?: 28.0).toInt().coerceIn(p2 + 1, 100)
                 if (p2 <= p1) p2 = (p1 + 4).coerceAtMost(60)
                 if (p3 <= p2) p3 = (p2 + 8).coerceAtMost(100)
                 p["p1"] = p1.toDouble()
                 p["p2"] = p2.toDouble()
                 p["p3"] = p3.toDouble()
-                p["window"] = (p["window"] ?: 30.0).coerceIn(12.0, 80.0)
-                p["minCorr"] = (p["minCorr"] ?: 0.6).coerceIn(0.35, 0.98)
-                p["cooldown"] = (p["cooldown"] ?: 2.0).coerceIn(0.0, 20.0)
+                p["window"] = (p["window"] ?: 36.0).coerceIn(12.0, 80.0)
+                p["minCorr"] = (p["minCorr"] ?: 0.62).coerceIn(0.40, 0.92)
+                p["cooldown"] = (p["cooldown"] ?: 4.0).coerceIn(1.0, 24.0)
+                p["minSlopePct"] = (p["minSlopePct"] ?: 0.00003).coerceIn(0.000005, 0.001)
+                p["rsiBuyMax"] = (p["rsiBuyMax"] ?: 58.0).coerceIn(45.0, 75.0)
+                p["rsiSellMin"] = (p["rsiSellMin"] ?: 42.0).coerceIn(25.0, 55.0)
+                p["posBuyMax"] = (p["posBuyMax"] ?: 0.72).coerceIn(0.45, 0.90)
+                p["posSellMin"] = (p["posSellMin"] ?: 0.28).coerceIn(0.10, 0.55)
+                p["pullback"] = (p["pullback"] ?: 1.0).coerceIn(0.0, 1.0)
+                p["entryMode"] = (p["entryMode"] ?: 1.0).coerceIn(0.0, 2.0)
             }
             AlgoIds.TREND_FOLLOW -> {
                 var fast = (p["fast"] ?: 12.0).toInt().coerceIn(3, 40)
@@ -3308,25 +3324,30 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             when (algoId) {
                 AlgoIds.PEARSON_TRIPLE -> {
                     when (trial % 8) {
-                        0 -> { p["p1"] = 4.0; p["p2"] = 10.0; p["p3"] = 22.0 }
-                        1 -> { p["p1"] = 5.0; p["p2"] = 12.0; p["p3"] = 26.0 }
-                        2 -> { p["p1"] = 6.0; p["p2"] = 14.0; p["p3"] = 30.0 }
+                        0 -> { p["p1"] = 5.0; p["p2"] = 12.0; p["p3"] = 26.0 }
+                        1 -> { p["p1"] = 6.0; p["p2"] = 14.0; p["p3"] = 28.0 }
+                        2 -> { p["p1"] = 7.0; p["p2"] = 16.0; p["p3"] = 32.0 }
                         3 -> { p["p1"] = 8.0; p["p2"] = 18.0; p["p3"] = 36.0 }
-                        4 -> { p["p1"] = 3.0; p["p2"] = 9.0; p["p3"] = 21.0 }
-                        5 -> { p["p1"] = 7.0; p["p2"] = 16.0; p["p3"] = 32.0 }
-                        6 -> { p["p1"] = 5.0; p["p2"] = 15.0; p["p3"] = 35.0 }
+                        4 -> { p["p1"] = 4.0; p["p2"] = 11.0; p["p3"] = 24.0 }
+                        5 -> { p["p1"] = 6.0; p["p2"] = 15.0; p["p3"] = 34.0 }
+                        6 -> { p["p1"] = 5.0; p["p2"] = 13.0; p["p3"] = 30.0 }
                         else -> {
-                            p["p1"] = (3 + rnd.nextInt(9)).toDouble()
-                            p["p2"] = p["p1"]!! + 4 + rnd.nextInt(12)
-                            p["p3"] = p["p2"]!! + 6 + rnd.nextInt(16)
+                            p["p1"] = (4 + rnd.nextInt(6)).toDouble()
+                            p["p2"] = p["p1"]!! + 5 + rnd.nextInt(10)
+                            p["p3"] = p["p2"]!! + 8 + rnd.nextInt(14)
                         }
                     }
-                    p["window"] = listOf(20.0, 24.0, 28.0, 32.0, 36.0, 42.0, 48.0, 54.0, 60.0).random(rnd)
-                    // 覆盖低相关增样本 → 高相关提质量
-                    p["minCorr"] = listOf(
-                        0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.88, 0.90, 0.92,
-                    ).random(rnd)
-                    p["cooldown"] = listOf(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0).random(rnd)
+                    p["window"] = listOf(28.0, 32.0, 36.0, 40.0, 44.0, 48.0, 54.0).random(rnd)
+                    p["minCorr"] = listOf(0.52, 0.58, 0.62, 0.66, 0.70, 0.74, 0.78).random(rnd)
+                    p["cooldown"] = listOf(3.0, 4.0, 5.0, 6.0, 8.0, 10.0).random(rnd)
+                    // 防追参数：优先 entryMode=1 回调入场
+                    p["entryMode"] = listOf(1.0, 1.0, 1.0, 0.0, 2.0).random(rnd)
+                    p["pullback"] = listOf(1.0, 1.0, 1.0, 0.0).random(rnd)
+                    p["rsiBuyMax"] = listOf(52.0, 55.0, 58.0, 60.0, 62.0, 65.0).random(rnd)
+                    p["rsiSellMin"] = listOf(35.0, 38.0, 40.0, 42.0, 45.0, 48.0).random(rnd)
+                    p["posBuyMax"] = listOf(0.55, 0.62, 0.68, 0.72, 0.78).random(rnd)
+                    p["posSellMin"] = listOf(0.22, 0.28, 0.32, 0.38, 0.45).random(rnd)
+                    p["minSlopePct"] = listOf(0.00002, 0.00003, 0.00005, 0.00008).random(rnd)
                 }
                 AlgoIds.TREND_FOLLOW -> {
                     p["fast"] = listOf(6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0).random(rnd)

@@ -140,20 +140,47 @@ object AlgoEngine {
      * 皮尔逊三曲线：三条 EMA 在窗口内两两相关且同向倾斜时开单。
      * 相关高 = 趋势一致；同向斜率 = 共振方向。
      */
+    /**
+     * 皮尔逊三曲线（可靠版）：
+     * 1) 三 EMA 窗口相关高 → 结构同向（趋势/共振）
+     * 2) 中长周期斜率定方向（主趋势）
+     * 3) 防追涨杀跌：禁止在区间高位追多、低位追空（RSI + 位置 + 相对中轨回调）
+     * 默认偏「趋势中的回调入场」，而不是三线齐拐就追价。
+     *
+     * 参数：
+     * p1/p2/p3, window, minCorr, cooldown, minSlopePct
+     * rsiBuyMax(默认58) rsiSellMin(默认42)  —— 超买不追多、超卖不追空
+     * posBuyMax(默认0.72) posSellMin(默认0.28) —— 区间位置过滤
+     * pullback(默认1) 1=要求价在中轨附近/下方才多，在中轨附近/上方才空
+     * entryMode 0=齐斜率追势(旧) 1=中长定势+短线回调(推荐) 2=仅极端反转
+     */
     private fun pearsonTriple(candles: List<Candle>, params: Map<String, Double>): List<SignalMark> {
-        val p1 = p(params, "p1", 5.0).toInt().coerceIn(2, 50)
-        val p2 = p(params, "p2", 10.0).toInt().coerceIn(p1 + 1, 80)
-        val p3 = p(params, "p3", 20.0).toInt().coerceIn(p2 + 1, 120)
-        val window = p(params, "window", 30.0).toInt().coerceIn(10, 120)
-        val minCorr = p(params, "minCorr", 0.55)
-        val cooldown = p(params, "cooldown", 2.0).toInt().coerceIn(0, 30)
+        val p1 = p(params, "p1", 6.0).toInt().coerceIn(2, 50)
+        val p2 = p(params, "p2", 14.0).toInt().coerceIn(p1 + 1, 80)
+        val p3 = p(params, "p3", 28.0).toInt().coerceIn(p2 + 1, 120)
+        val window = p(params, "window", 36.0).toInt().coerceIn(12, 120)
+        val minCorr = p(params, "minCorr", 0.62).coerceIn(0.3, 0.99)
+        val cooldown = p(params, "cooldown", 4.0).toInt().coerceIn(0, 40)
+        val minSlopePct = p(params, "minSlopePct", 0.00003)
+        val rsiBuyMax = p(params, "rsiBuyMax", 58.0).coerceIn(40.0, 80.0)
+        val rsiSellMin = p(params, "rsiSellMin", 42.0).coerceIn(20.0, 60.0)
+        val posBuyMax = p(params, "posBuyMax", 0.72).coerceIn(0.4, 0.95)
+        val posSellMin = p(params, "posSellMin", 0.28).coerceIn(0.05, 0.6)
+        val usePullback = p(params, "pullback", 1.0) >= 0.5
+        val entryMode = p(params, "entryMode", 1.0).toInt().coerceIn(0, 2)
+
         val closes = candles.map { it.close }
         val c1 = Indicators.ema(closes, p1)
         val c2 = Indicators.ema(closes, p2)
         val c3 = Indicators.ema(closes, p3)
+        val rsi = Indicators.rsi(closes, 14)
         val out = mutableListOf<SignalMark>()
         var lastSig = -999
+
         for (i in window until candles.size) {
+            // 未收盘最后一根不发信号（与回测一致，避免用到未完成 K）
+            if (i >= candles.size - 1) continue
+
             val a = DoubleArray(window)
             val b = DoubleArray(window)
             val c = DoubleArray(window)
@@ -173,24 +200,67 @@ object AlgoEngine {
             val r23 = pearson(b, c)
             val avg = (r12 + r13 + r23) / 3.0
             if (avg < minCorr) continue
+
             val s1 = a.last() - a[a.size - 2]
             val s2 = b.last() - b[b.size - 2]
             val s3 = c.last() - c[c.size - 2]
-            // 过滤几乎为零的斜率噪声（过拟合常见来源）
-            val minSlopePct = p(params, "minSlopePct", 0.00002)
             val ref = kotlin.math.abs(a.last()).coerceAtLeast(1e-9)
-            val strong = kotlin.math.abs(s1) / ref >= minSlopePct &&
-                kotlin.math.abs(s2) / ref >= minSlopePct * 0.5 &&
-                kotlin.math.abs(s3) / ref >= minSlopePct * 0.5
-            if (!strong) continue
+            val strong2 = kotlin.math.abs(s2) / ref >= minSlopePct * 0.5
+            val strong3 = kotlin.math.abs(s3) / ref >= minSlopePct * 0.4
+            if (!strong2 || !strong3) continue
+
+            val price = closes[i]
+            val e2 = b.last()
+            val e1 = a.last()
+            val rsiNow = rsi.getOrNull(i) ?: 50.0
+            val winBars = candles.subList(i - window + 1, i + 1)
+            val hi = winBars.maxOf { it.high }
+            val lo = winBars.minOf { it.low }
+            val pos = if (hi > lo) ((price - lo) / (hi - lo)).coerceIn(0.0, 1.0) else 0.5
+
+            // 主趋势：中长 EMA 同向
+            val trendUp = s2 > 0 && s3 > 0
+            val trendDn = s2 < 0 && s3 < 0
+            if (!trendUp && !trendDn) continue
+
+            // 短线：旧模式要求三线齐；推荐模式允许短线回撤后再顺势
+            val shortUp = s1 > 0
+            val shortDn = s1 < 0
+            val shortStrong = kotlin.math.abs(s1) / ref >= minSlopePct * 0.3
+
+            // 回调：价相对中轨
+            val nearOrBelowMid = price <= e2 * 1.002
+            val nearOrAboveMid = price >= e2 * 0.998
+            val reclaimFast = price >= e1 * 0.999 // 短线止跌回抽
+
+            val wantB = when (entryMode) {
+                0 -> trendUp && shortUp && shortStrong // 旧：齐涨追多
+                2 -> trendDn && rsiNow <= 32.0 && pos <= 0.25 // 极端反转抄底
+                else -> { // 1 推荐：多头结构 + 未过热 + 回调区
+                    trendUp && rsiNow <= rsiBuyMax && pos <= posBuyMax &&
+                        (!usePullback || (nearOrBelowMid && (shortUp || reclaimFast)))
+                }
+            }
+            val wantS = when (entryMode) {
+                0 -> trendDn && shortDn && shortStrong
+                2 -> trendUp && rsiNow >= 68.0 && pos >= 0.75
+                else -> {
+                    trendDn && rsiNow >= rsiSellMin && pos >= posSellMin &&
+                        (!usePullback || (nearOrAboveMid && (shortDn || price <= e1 * 1.001)))
+                }
+            }
+
+            // 硬性防追：再砍掉明显高位多、低位空
+            val chaseB = pos >= 0.88 || rsiNow >= 72.0
+            val chaseS = pos <= 0.12 || rsiNow <= 28.0
             if (i - lastSig <= cooldown) continue
             when {
-                s1 > 0 && s2 > 0 && s3 > 0 -> {
-                    out.add(SignalMark(candles[i].openTime, "B", closes[i]))
+                wantB && !chaseB && !wantS -> {
+                    out.add(SignalMark(candles[i].openTime, "B", price))
                     lastSig = i
                 }
-                s1 < 0 && s2 < 0 && s3 < 0 -> {
-                    out.add(SignalMark(candles[i].openTime, "S", closes[i]))
+                wantS && !chaseS && !wantB -> {
+                    out.add(SignalMark(candles[i].openTime, "S", price))
                     lastSig = i
                 }
             }
