@@ -2223,15 +2223,16 @@ class Repository(ctx: Context) {
         val posKey = "${s.symbol}|$intervalCode|$entryTime|${m.side}|$srcTag"
         if (posKey in liveSimKeys || pendingLiveSims.containsKey(posKey)) return
 
+        // 开仓价 = 当前时刻市价（ticker/book/1s/成交），禁止信号K收盘、禁止 m.price
         val entryPrice = try {
-            binance.priceAtLive(s.symbol, entryTime)
+            binance.priceNow(s.symbol)
         } catch (e: Exception) {
             HibtWebSession.appendLog("模拟开仓取价失败(Binance实时): ${e.message}")
             null
         }
         if (entryPrice == null || entryPrice <= 0) {
             HibtWebSession.appendLog(
-                "模拟开仓失败 ${m.side} $intervalCode: 无实时价(ticker/1s/agg) t=$entryTime，拒用K线收盘",
+                "模拟开仓失败 ${m.side} $intervalCode: 无当前市价，已拒绝用K线价冒充 t=$entryTime",
             )
             return
         }
@@ -2271,16 +2272,16 @@ class Repository(ctx: Context) {
             val expiry = p.entryTime + ivMs
             if (now < expiry) continue // 未到期
 
-            // 到期价：实时秒级链路（ticker/1s/agg），禁止 1m OHLC 冒充
+            // 平仓价 = 到期时刻的秒级成交价；取不到则暂缓，绝不写当前价/K线收盘冒充
             val exitPrice = try {
                 binance.priceAtLive(s.symbol, expiry)
             } catch (e: Exception) {
                 HibtWebSession.appendLog("模拟平仓取价失败(Binance实时): ${e.message}")
                 null
             }
-            if (exitPrice == null) {
+            if (exitPrice == null || exitPrice <= 0) {
                 HibtWebSession.appendLog(
-                    "模拟平仓暂缓 ${p.side} ${p.interval}: 无实时到期价 t=$expiry",
+                    "模拟平仓暂缓 ${p.side} ${p.interval}: 等待到期秒级价 t=$expiry now=$now",
                 )
                 continue
             }

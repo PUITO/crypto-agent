@@ -51,8 +51,10 @@ class BinanceClient(
     }
 
     /**
-     * 实时盘开/平仓专用：禁止用 1m OHLC 冒充成交价。
-     * 顺序：若时刻接近现在 → ticker；否则 1s → 扩大窗口 aggTrades → 再 ticker。
+     * 实时盘开/平仓专用：**禁止 1m/高周期 OHLC**。
+     * - 目标时刻距现在 ≤45s：强制当前市价（ticker / bookTicker / 最近成交）
+     * - 更早的到期时刻：1s K → aggTrades 窗口（真实成交），失败返回 null 由上层重试
+     *   （绝不用「现在的 lastPrice」冒充历史到期价）
      */
     suspend fun priceAtLive(
         symbol: String,
@@ -61,21 +63,50 @@ class BinanceClient(
         val sym = symbol.uppercase()
         val now = System.currentTimeMillis()
         val delta = kotlin.math.abs(now - timeMs)
-        // 开仓/刚到期：必须用当前市场价
-        if (delta <= 30_000L) {
-            lastPrice(sym)?.let { return@withContext it }
+        if (delta <= 45_000L) {
+            priceNow(sym)?.let { return@withContext it }
         }
         priceAt1s(sym, timeMs)?.let { return@withContext it }
-        priceAtAggTrade(sym, timeMs, windowMs = 5_000L)?.let { return@withContext it }
-        priceAtAggTrade(sym, timeMs, windowMs = 15_000L)?.let { return@withContext it }
-        // 仍失败：退回最新成交（比错误的 1m 收盘更接近实盘）
-        lastPrice(sym)
+        priceAtAggTrade(sym, timeMs, windowMs = 3_000L)?.let { return@withContext it }
+        priceAtAggTrade(sym, timeMs, windowMs = 10_000L)?.let { return@withContext it }
+        priceAtAggTrade(sym, timeMs, windowMs = 30_000L)?.let { return@withContext it }
+        // 到期已过较久仍无秒级数据：不瞎用当前价，交给上层暂缓平仓
+        if (delta <= 120_000L) {
+            priceNow(sym)?.let { return@withContext it }
+        }
+        null
     }
 
-    /** 最新成交价：ticker → 最近 1s K 收盘（图表实时刷新 / 即时开仓） */
-    suspend fun lastPrice(symbol: String): Double? = withContext(Dispatchers.IO) {
+    /**
+     * 开仓瞬间市价：ticker → 买卖中间价 → 最近 1s 收盘 → 近 2s 成交均价。
+     * 专供实时开仓，不用任何已收盘高周期 K。
+     */
+    suspend fun priceNow(symbol: String): Double? = withContext(Dispatchers.IO) {
         val sym = symbol.uppercase()
-        tickerPrice(sym) ?: latest1sClose(sym)
+        tickerPrice(sym)
+            ?: bookMidPrice(sym)
+            ?: latest1sClose(sym)
+            ?: priceAtAggTrade(sym, System.currentTimeMillis(), windowMs = 2_000L)
+    }
+
+    /** 最新成交价（图表刷新等） */
+    suspend fun lastPrice(symbol: String): Double? = priceNow(symbol)
+
+    private fun bookMidPrice(sym: String): Double? {
+        val url = "$baseUrl/api/v3/ticker/bookTicker?symbol=$sym"
+        val req = Request.Builder().url(url).get().build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return null
+            val body = resp.body?.string() ?: return null
+            return try {
+                val o = org.json.JSONObject(body)
+                val bid = o.optString("bidPrice").toDoubleOrNull() ?: return null
+                val ask = o.optString("askPrice").toDoubleOrNull() ?: return null
+                if (bid > 0 && ask > 0) (bid + ask) / 2.0 else null
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 
     /**
