@@ -29,10 +29,11 @@ class BinanceClient(
         }
 
     /**
-     * 按精确时刻取价（模拟开/平仓基层数据）：
-     * 1) 优先 1s K 线（若端点支持）
-     * 2) 其次 aggTrades 在 ±1.5s 内最近成交（秒级）
-     * 3) 回退 1m K 线 open/close
+     * 按精确时刻取价：
+     * 1) 近 20s：强制 ticker / 最新 1s（实时成交价）
+     * 2) 1s K
+     * 3) aggTrades ±3s
+     * 4) 最后才 1m（仅历史回测可接受；实时路径请用 priceAtLive）
      */
     suspend fun priceAt(
         symbol: String,
@@ -41,13 +42,34 @@ class BinanceClient(
     ): Double? = withContext(Dispatchers.IO) {
         val sym = symbol.uppercase()
         val now = System.currentTimeMillis()
-        // 近 3 秒内：优先 ticker / 最新 1s，模拟「即时成交价」
-        if (kotlin.math.abs(now - timeMs) <= 3_000L) {
+        if (kotlin.math.abs(now - timeMs) <= 20_000L) {
             lastPrice(sym)?.let { return@withContext it }
         }
         priceAt1s(sym, timeMs)?.let { return@withContext it }
         priceAtAggTrade(sym, timeMs)?.let { return@withContext it }
         priceAt1m(sym, timeMs, preferClose)
+    }
+
+    /**
+     * 实时盘开/平仓专用：禁止用 1m OHLC 冒充成交价。
+     * 顺序：若时刻接近现在 → ticker；否则 1s → 扩大窗口 aggTrades → 再 ticker。
+     */
+    suspend fun priceAtLive(
+        symbol: String,
+        timeMs: Long,
+    ): Double? = withContext(Dispatchers.IO) {
+        val sym = symbol.uppercase()
+        val now = System.currentTimeMillis()
+        val delta = kotlin.math.abs(now - timeMs)
+        // 开仓/刚到期：必须用当前市场价
+        if (delta <= 30_000L) {
+            lastPrice(sym)?.let { return@withContext it }
+        }
+        priceAt1s(sym, timeMs)?.let { return@withContext it }
+        priceAtAggTrade(sym, timeMs, windowMs = 5_000L)?.let { return@withContext it }
+        priceAtAggTrade(sym, timeMs, windowMs = 15_000L)?.let { return@withContext it }
+        // 仍失败：退回最新成交（比错误的 1m 收盘更接近实盘）
+        lastPrice(sym)
     }
 
     /** 最新成交价：ticker → 最近 1s K 收盘（图表实时刷新 / 即时开仓） */
@@ -156,9 +178,10 @@ class BinanceClient(
         }
     }
 
-    private fun priceAtAggTrade(sym: String, timeMs: Long): Double? {
-        val start = (timeMs - 1_500L).coerceAtLeast(0L)
-        val end = timeMs + 1_500L
+    private fun priceAtAggTrade(sym: String, timeMs: Long, windowMs: Long = 1_500L): Double? {
+        val w = windowMs.coerceIn(500L, 30_000L)
+        val start = (timeMs - w).coerceAtLeast(0L)
+        val end = timeMs + w
         val url =
             "$baseUrl/api/v3/aggTrades?symbol=$sym&startTime=$start&endTime=$end&limit=20"
         return try {
