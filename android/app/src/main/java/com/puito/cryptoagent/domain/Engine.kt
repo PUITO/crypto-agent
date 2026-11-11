@@ -91,6 +91,7 @@ object AlgoEngine {
         return when (cfg.algoId) {
             AlgoIds.PEARSON_TRIPLE -> pearsonTriple(candles, cfg.algoParams)
             AlgoIds.BREAKOUT -> breakout(candles, cfg.algoParams)
+            AlgoIds.VOLUME_TREND -> volumeTrend(candles, cfg.algoParams)
             else -> trendFollow(candles, cfg.algoParams)
         }
     }
@@ -132,6 +133,127 @@ object AlgoEngine {
                     bearStreak = 0
                 }
             }
+        }
+        return out
+    }
+
+
+    /**
+     * 量能单边顺势（VOLUME_TREND）
+     *
+     * 设计目标：在单边行情里用「量能放大」确认真实推进，只做当前趋势方向，
+     * 允许同向追单；震荡里量能不足则少开仓。
+     *
+     * 逻辑：
+     * 1) EMA 快慢线锁定唯一方向（regime），反向需连续 biasFlipBars 才翻转
+     * 2) 当前 K 量能 ≥ 量能均线 × volMult
+     * 3) 实体方向与趋势一致，且实体幅度 ≥ minBodyPct%
+     * 4) 可选 MACD 柱同向且增强
+     * 5) allowChase=1 时同向用 chaseCooldown（更短），异向/首单用 cooldown
+     *
+     * 参数（均可控）：
+     * - fast/slow: EMA 周期（默认 8/21）
+     * - volPeriod: 量能均线（默认 20）
+     * - volMult: 量能倍数阈值（默认 1.4，越大越苛刻）
+     * - macdConfirm: 1=要求 MACD 柱确认，0=关闭
+     * - consecutive: 趋势方向需连续确认的根数（默认 2）
+     * - biasFlipBars: 反向翻转所需连续根数（默认 3，越大越粘单边）
+     * - minBodyPct: 最小实体百分比（默认 0.03 即 0.03%）
+     * - cooldown: 普通冷却（默认 5）
+     * - chaseCooldown: 同向追单冷却（默认 2）
+     * - allowChase: 1=允许同向追单，0=同向也要等满 cooldown
+     */
+    private fun volumeTrend(candles: List<Candle>, params: Map<String, Double>): List<SignalMark> {
+        val fastN = p(params, "fast", 8.0).toInt().coerceIn(3, 60)
+        val slowN = p(params, "slow", 21.0).toInt().coerceIn(fastN + 1, 120)
+        val volPeriod = p(params, "volPeriod", 20.0).toInt().coerceIn(5, 100)
+        val volMult = p(params, "volMult", 1.4).coerceIn(1.0, 5.0)
+        val useMacd = p(params, "macdConfirm", 1.0) >= 0.5
+        val need = p(params, "consecutive", 2.0).toInt().coerceIn(1, 8)
+        val flipNeed = p(params, "biasFlipBars", 3.0).toInt().coerceIn(1, 12)
+        val minBodyPct = p(params, "minBodyPct", 0.03).coerceIn(0.0, 1.0)
+        val cooldown = p(params, "cooldown", 5.0).toInt().coerceIn(0, 40)
+        val chaseCd = p(params, "chaseCooldown", 2.0).toInt().coerceIn(0, 30)
+        val allowChase = p(params, "allowChase", 1.0) >= 0.5
+
+        val closes = candles.map { it.close }
+        val vols = candles.map { it.volume.coerceAtLeast(0.0) }
+        val fast = Indicators.ema(closes, fastN)
+        val slow = Indicators.ema(closes, slowN)
+        val volMa = Indicators.sma(vols, volPeriod)
+        val macd = if (useMacd) Indicators.macdHist(closes) else emptyList()
+
+        val out = mutableListOf<SignalMark>()
+        var regime = 0 // 1=只做多 -1=只做空
+        var alignStreak = 0
+        var flipStreak = 0
+        var lastSig = -999
+        var lastSide = ""
+
+        val start = maxOf(slowN, volPeriod, 35)
+        for (i in start until candles.size) {
+            // 未收盘最后一根不发（与回测一致）
+            if (i >= candles.size - 1) continue
+            val f = fast.getOrNull(i) ?: continue
+            val s = slow.getOrNull(i) ?: continue
+            val vma = volMa.getOrNull(i) ?: continue
+            val vol = vols[i]
+            val c = candles[i]
+            val price = c.close
+            if (price <= 0 || vma <= 0) continue
+
+            val struct = when {
+                f > s -> 1
+                f < s -> -1
+                else -> 0
+            }
+            if (struct == 0) {
+                alignStreak = 0
+                continue
+            }
+            if (regime == 0) {
+                regime = struct
+                alignStreak = 1
+                flipStreak = 0
+            } else if (struct == regime) {
+                alignStreak++
+                flipStreak = 0
+            } else {
+                // 结构反向：累计翻转
+                flipStreak++
+                if (flipStreak >= flipNeed) {
+                    regime = struct
+                    alignStreak = 1
+                    flipStreak = 0
+                } else {
+                    // 仍锁在旧单边，本根不新开反向
+                    continue
+                }
+            }
+            if (alignStreak < need) continue
+
+            val volOk = vol >= vma * volMult
+            val bodyPct = kotlin.math.abs(c.close - c.open) / price * 100.0
+            val bodyOk = bodyPct >= minBodyPct
+            val dirOk = if (regime == 1) c.close >= c.open else c.close <= c.open
+            val macdOk = if (!useMacd) {
+                true
+            } else {
+                val h = macd.getOrNull(i)
+                val hp = macd.getOrNull(i - 1)
+                if (h == null) false
+                else if (regime == 1) h > 0 && (hp == null || h >= hp)
+                else h < 0 && (hp == null || h <= hp)
+            }
+            if (!(volOk && bodyOk && dirOk && macdOk)) continue
+
+            val side = if (regime == 1) "B" else "S"
+            val cd = if (allowChase && lastSide == side) chaseCd else cooldown
+            if (i - lastSig <= cd) continue
+
+            out.add(SignalMark(c.openTime, side, price, tag = "vol"))
+            lastSig = i
+            lastSide = side
         }
         return out
     }

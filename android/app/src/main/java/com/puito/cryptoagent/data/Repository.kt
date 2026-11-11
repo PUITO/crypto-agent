@@ -489,6 +489,21 @@ class Repository(ctx: Context) {
         ),
         StrategyConfig(
             id = UUID.randomUUID().toString(),
+            title = "量能单边顺势",
+            enabled = false,
+            kind = StrategyKind.ALGO,
+            algoId = AlgoIds.VOLUME_TREND,
+            algoParams = mapOf(
+                "fast" to 8.0, "slow" to 21.0,
+                "volPeriod" to 20.0, "volMult" to 1.4,
+                "macdConfirm" to 1.0, "consecutive" to 2.0,
+                "biasFlipBars" to 3.0, "minBodyPct" to 0.03,
+                "cooldown" to 5.0, "chaseCooldown" to 2.0, "allowChase" to 1.0,
+            ),
+            algoNote = "量能放大确认+EMA单边锁定，可同向追单；参数全可控",
+        ),
+        StrategyConfig(
+            id = UUID.randomUUID().toString(),
             title = "逻辑回归模型",
             enabled = false,
             kind = StrategyKind.MODEL,
@@ -611,7 +626,7 @@ class Repository(ctx: Context) {
             buyRules = buy.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)) },
             sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
             algoId = algoId,
-            algoParams = if (kind == StrategyKind.ALGO && algoId == AlgoIds.PEARSON_TRIPLE)
+            algoParams = if (kind == StrategyKind.ALGO)
                 normalizeAlgoParams(algoId, algoParams) else algoParams,
             algoNote = algoNote,
             modelId = modelId,
@@ -663,6 +678,7 @@ class Repository(ctx: Context) {
             val algoIdRaw = o.get("algoId")?.asString?.uppercase()?.replace("-", "_") ?: AlgoIds.TREND_FOLLOW
             val algoId = when {
                 algoIdRaw.contains("PEARSON") -> AlgoIds.PEARSON_TRIPLE
+                algoIdRaw.contains("VOLUME") || algoIdRaw.contains("量能") -> AlgoIds.VOLUME_TREND
                 algoIdRaw.contains("BREAK") -> AlgoIds.BREAKOUT
                 algoIdRaw in AlgoIds.all -> algoIdRaw
                 else -> AlgoIds.TREND_FOLLOW
@@ -2868,7 +2884,7 @@ class Repository(ctx: Context) {
             } else if (lockKind == StrategyKind.ALGO) {
                 appendLine("【类型锁定】当前为 kind=ALGO，禁止改成 RULES/MODEL；只改 algoId/algoParams。")
             } else if (goal.isNotBlank()) {
-                appendLine("可优先 kind=ALGO（TREND_FOLLOW/PEARSON_TRIPLE/BREAKOUT）。")
+                appendLine("可优先 kind=ALGO（TREND_FOLLOW/PEARSON_TRIPLE/BREAKOUT/VOLUME_TREND）。")
                 appendLine("必须在 JSON 里给出可执行的 algoParams 或 buyRules/sellRules，禁止空参数。")
             }
             if (targetWr != null || targetTrades != null) {
@@ -2920,6 +2936,8 @@ modelParams 必须偏严格：
 1) kind=ALGO  算法配置（推荐）
 algoId 只能是:
 - TREND_FOLLOW 顺势/单边: params fast,slow,consecutive,cooldown
+- VOLUME_TREND 量能单边顺势: fast,slow,volPeriod,volMult,macdConfirm,consecutive,biasFlipBars,minBodyPct,cooldown,chaseCooldown,allowChase
+  只做EMA锁定的单边；量能≥均线×volMult才开；allowChase=1允许同向追单
 - PEARSON_TRIPLE 皮尔逊三曲线(可靠版): p1,p2,p3,window,minCorr,cooldown,entryMode,pullback,rsiBuyMax,rsiSellMin,posBuyMax,posSellMin
   entryMode:1=中长定势+回调入场(推荐) 0=旧齐斜率追势 2=极端反转
   必须避免高位追多、低位追空；优先提高样本外可靠度而非训练虚高
@@ -2927,6 +2945,7 @@ algoId 只能是:
 algoNote 用中文写意图；algoParams 全是数字。
 例:
 {"title":"顺势","kind":"ALGO","algoId":"TREND_FOLLOW","algoParams":{"fast":12,"slow":26,"consecutive":3,"cooldown":3},"algoNote":"单边顺势","buyRules":[],"sellRules":[]}
+{"title":"量能顺势","kind":"ALGO","algoId":"VOLUME_TREND","algoParams":{"fast":8,"slow":21,"volPeriod":20,"volMult":1.4,"macdConfirm":1,"consecutive":2,"biasFlipBars":3,"minBodyPct":0.03,"cooldown":5,"chaseCooldown":2,"allowChase":1},"algoNote":"量能单边","buyRules":[],"sellRules":[]}
 {"title":"三曲线可靠","kind":"ALGO","algoId":"PEARSON_TRIPLE","algoParams":{"p1":6,"p2":14,"p3":28,"window":36,"minCorr":0.62,"cooldown":4,"entryMode":1,"pullback":1,"rsiBuyMax":58,"rsiSellMin":42,"posBuyMax":0.72,"posSellMin":0.28},"algoNote":"回调入场防追","buyRules":[],"sellRules":[]}
 【PEARSON 硬性要求】
 - 必须输出完整 algoParams（含 entryMode/pullback/rsi/pos 防追字段）
@@ -3300,6 +3319,22 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 p["lookback"] = (p["lookback"] ?: 20.0).coerceIn(5.0, 80.0)
                 p["cooldown"] = (p["cooldown"] ?: 5.0).coerceIn(0.0, 20.0)
             }
+            AlgoIds.VOLUME_TREND -> {
+                var fast = (p["fast"] ?: 8.0).toInt().coerceIn(3, 40)
+                var slow = (p["slow"] ?: 21.0).toInt().coerceIn(fast + 1, 80)
+                if (slow <= fast) slow = fast + 5
+                p["fast"] = fast.toDouble()
+                p["slow"] = slow.toDouble()
+                p["volPeriod"] = (p["volPeriod"] ?: 20.0).coerceIn(5.0, 80.0)
+                p["volMult"] = (p["volMult"] ?: 1.4).coerceIn(1.05, 4.0)
+                p["macdConfirm"] = if ((p["macdConfirm"] ?: 1.0) >= 0.5) 1.0 else 0.0
+                p["consecutive"] = (p["consecutive"] ?: 2.0).coerceIn(1.0, 8.0)
+                p["biasFlipBars"] = (p["biasFlipBars"] ?: 3.0).coerceIn(1.0, 12.0)
+                p["minBodyPct"] = (p["minBodyPct"] ?: 0.03).coerceIn(0.0, 0.5)
+                p["cooldown"] = (p["cooldown"] ?: 5.0).coerceIn(0.0, 30.0)
+                p["chaseCooldown"] = (p["chaseCooldown"] ?: 2.0).coerceIn(0.0, 20.0)
+                p["allowChase"] = if ((p["allowChase"] ?: 1.0) >= 0.5) 1.0 else 0.0
+            }
         }
         return p
     }
@@ -3409,6 +3444,19 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                     p["lookback"] = listOf(8.0, 12.0, 16.0, 20.0, 24.0, 30.0, 40.0, 50.0).random(rnd)
                     p["cooldown"] = listOf(2.0, 3.0, 5.0, 7.0, 10.0, 12.0).random(rnd)
                 }
+                AlgoIds.VOLUME_TREND -> {
+                    p["fast"] = listOf(5.0, 6.0, 8.0, 10.0, 12.0).random(rnd)
+                    p["slow"] = listOf(15.0, 18.0, 21.0, 26.0, 30.0, 34.0).random(rnd)
+                    p["volPeriod"] = listOf(12.0, 16.0, 20.0, 24.0, 30.0).random(rnd)
+                    p["volMult"] = listOf(1.15, 1.25, 1.35, 1.45, 1.6, 1.8, 2.0).random(rnd)
+                    p["macdConfirm"] = listOf(1.0, 1.0, 0.0).random(rnd)
+                    p["consecutive"] = listOf(1.0, 2.0, 2.0, 3.0).random(rnd)
+                    p["biasFlipBars"] = listOf(2.0, 3.0, 4.0, 5.0).random(rnd)
+                    p["minBodyPct"] = listOf(0.01, 0.02, 0.03, 0.05, 0.08).random(rnd)
+                    p["cooldown"] = listOf(3.0, 4.0, 5.0, 6.0, 8.0).random(rnd)
+                    p["chaseCooldown"] = listOf(1.0, 2.0, 2.0, 3.0, 4.0).random(rnd)
+                    p["allowChase"] = listOf(1.0, 1.0, 1.0, 0.0).random(rnd)
+                }
                 else -> return@repeat
             }
             val norm = normalizeAlgoParams(algoId, p)
@@ -3453,6 +3501,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
             val algoIdParsed = when {
                 algoIdRaw.contains("PEARSON") || algoIdRaw.contains("皮尔逊") || algoIdRaw.contains("三曲线") ->
                     AlgoIds.PEARSON_TRIPLE
+                algoIdRaw.contains("VOLUME") || algoIdRaw.contains("量能") || algoIdRaw.contains("VOL_TREND") ->
+                    AlgoIds.VOLUME_TREND
                 algoIdRaw.contains("BREAK") || algoIdRaw.contains("突破") -> AlgoIds.BREAKOUT
                 algoIdRaw.contains("TREND") || algoIdRaw.contains("顺势") || algoIdRaw.contains("单边") ->
                     AlgoIds.TREND_FOLLOW

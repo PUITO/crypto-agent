@@ -104,11 +104,14 @@ object AlgoIds {
     const val TREND_FOLLOW = "TREND_FOLLOW"
     const val PEARSON_TRIPLE = "PEARSON_TRIPLE"
     const val BREAKOUT = "BREAKOUT"
-    val all = listOf(TREND_FOLLOW, PEARSON_TRIPLE, BREAKOUT)
+    /** 量能单边顺势：量能放大 + EMA/MACD 定方向，只做当前单边，可同向追单 */
+    const val VOLUME_TREND = "VOLUME_TREND"
+    val all = listOf(TREND_FOLLOW, PEARSON_TRIPLE, BREAKOUT, VOLUME_TREND)
     fun label(id: String) = when (id) {
         TREND_FOLLOW -> "顺势/单边"
         PEARSON_TRIPLE -> "皮尔逊三曲线"
         BREAKOUT -> "突破"
+        VOLUME_TREND -> "量能单边顺势"
         else -> id
     }
 }
@@ -127,6 +130,7 @@ data class StrategyConfig(
      * TREND_FOLLOW: fast=12 slow=26 consecutive=3 cooldown=3
      * PEARSON_TRIPLE: p1=5 p2=10 p3=20 window=30 minCorr=0.6 cooldown=2
      * BREAKOUT: lookback=20 cooldown=5
+     * VOLUME_TREND: fast/slow/volPeriod/volMult/macdConfirm/cooldown/chaseCooldown/allowChase
      */
     val algoParams: Map<String, Double> = emptyMap(),
     /** 给人看/给 LLM 的算法意图说明（可中文） */
