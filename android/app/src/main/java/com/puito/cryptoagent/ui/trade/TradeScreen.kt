@@ -550,19 +550,12 @@ private fun EditStrategy(
     var algoId by remember { mutableStateOf(cfg.algoId) }
     var algoNote by remember { mutableStateOf(cfg.algoNote) }
     var paramsText by remember {
-        mutableStateOf(cfg.algoParams.entries.joinToString("\n") { "${it.key}=${it.value}" })
+        mutableStateOf(StrategyParamDefaults.formatAlgoLines(cfg.algoId, cfg.algoParams))
     }
     var modelId by remember { mutableStateOf(cfg.modelId.ifBlank { ModelIds.LOGREG_V1 }) }
     var modelNote by remember { mutableStateOf(cfg.modelNote) }
     var modelParamsText by remember {
-        mutableStateOf(
-            cfg.modelParams.ifEmpty {
-                mapOf(
-                    "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
-                    "confirmBars" to 1.0, "lookback" to 5.0,
-                )
-            }.entries.joinToString("\n") { "${it.key}=${it.value}" },
-        )
+        mutableStateOf(StrategyParamDefaults.formatModelLines(cfg.modelId, cfg.modelParams))
     }
     var modelReport by remember { mutableStateOf(cfg.modelTrainReport) }
     var modelEndpoint by remember { mutableStateOf(cfg.modelEndpoint) }
@@ -580,15 +573,10 @@ private fun EditStrategy(
         kind = cfg.kind
         algoId = cfg.algoId
         algoNote = cfg.algoNote
-        paramsText = cfg.algoParams.entries.joinToString("\n") { "${it.key}=${it.value}" }
+        paramsText = StrategyParamDefaults.formatAlgoLines(cfg.algoId, cfg.algoParams)
         modelId = cfg.modelId.ifBlank { ModelIds.LOGREG_V1 }
         modelNote = cfg.modelNote
-        modelParamsText = StrategyParamDefaults.formatModelLines(cfg.modelId, cfg.modelParams) //.ifEmpty {
-            mapOf(
-                "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
-                "confirmBars" to 1.0, "lookback" to 5.0,
-            )
-        }.entries.joinToString("\n") { "${it.key}=${it.value}" }
+        modelParamsText = StrategyParamDefaults.formatModelLines(cfg.modelId, cfg.modelParams)
         modelReport = cfg.modelTrainReport
         modelEndpoint = cfg.modelEndpoint
         tradeIntervalsSel = cfg.tradeIntervals.toSet()
