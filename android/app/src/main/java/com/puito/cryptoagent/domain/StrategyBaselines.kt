@@ -108,7 +108,7 @@ object StrategyBaselines {
             }
             StrategyKind.ALGO -> {
                 when (cfg.algoId) {
-                    AlgoIds.TREND_FOLLOW, AlgoIds.PEARSON_TRIPLE -> {
+                    AlgoIds.TREND_FOLLOW, AlgoIds.PEARSON_TRIPLE, AlgoIds.VOLUME_TREND -> {
                         val fast = (cfg.algoParams["fast"] ?: cfg.algoParams["p1"] ?: 12.0).toInt().coerceIn(3, 80)
                         val slow = (cfg.algoParams["slow"] ?: cfg.algoParams["p2"] ?: 26.0).toInt().coerceIn(fast + 1, 120)
                         val p3 = (cfg.algoParams["p3"] ?: 0.0).toInt()
