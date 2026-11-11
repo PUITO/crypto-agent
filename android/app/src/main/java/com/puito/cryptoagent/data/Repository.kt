@@ -447,7 +447,7 @@ class Repository(ctx: Context) {
                 val type = object : TypeToken<List<StrategyConfig>>() {}.type
                 gson.fromJson<List<StrategyConfig>>(j, type)?.map { normalizeStrategy(it) } ?: emptyList()
             }.getOrDefault(emptyList())
-        }
+        }.map { normalizeStrategy(it) }
         return list.ifEmpty { defaultStrategies() }
     }
 
@@ -466,9 +466,7 @@ class Repository(ctx: Context) {
             enabled = false,
             kind = StrategyKind.ALGO,
             algoId = AlgoIds.TREND_FOLLOW,
-            algoParams = mapOf(
-                "fast" to 12.0, "slow" to 26.0, "consecutive" to 3.0, "cooldown" to 3.0,
-            ),
+            algoParams = StrategyParamDefaults.algo(AlgoIds.TREND_FOLLOW),
             algoNote = "EMA快慢线顺势，连续确认后开单",
         ),
         StrategyConfig(
@@ -477,14 +475,7 @@ class Repository(ctx: Context) {
             enabled = false,
             kind = StrategyKind.ALGO,
             algoId = AlgoIds.PEARSON_TRIPLE,
-            algoParams = mapOf(
-                "p1" to 6.0, "p2" to 14.0, "p3" to 28.0,
-                "window" to 36.0, "minCorr" to 0.62, "cooldown" to 8.0, "sameSideGap" to 16.0,
-                "entryMode" to 1.0, "pullback" to 1.0,
-                "rsiBuyMax" to 58.0, "rsiSellMin" to 42.0,
-                "posBuyMax" to 0.72, "posSellMin" to 0.28,
-                "minSlopePct" to 0.00003,
-            ),
+            algoParams = StrategyParamDefaults.algo(AlgoIds.PEARSON_TRIPLE),
             algoNote = "皮尔逊共振+中长定势+回调入场(防追涨杀跌)",
         ),
         StrategyConfig(
@@ -493,13 +484,7 @@ class Repository(ctx: Context) {
             enabled = false,
             kind = StrategyKind.ALGO,
             algoId = AlgoIds.VOLUME_TREND,
-            algoParams = mapOf(
-                "fast" to 8.0, "slow" to 21.0,
-                "volPeriod" to 20.0, "volMult" to 1.4,
-                "macdConfirm" to 1.0, "consecutive" to 2.0,
-                "biasFlipBars" to 3.0, "minBodyPct" to 0.03,
-                "cooldown" to 5.0, "chaseCooldown" to 2.0, "allowChase" to 1.0,
-            ),
+            algoParams = StrategyParamDefaults.algo(AlgoIds.VOLUME_TREND),
             algoNote = "量能放大确认+EMA单边锁定，可同向追单；参数全可控",
         ),
         StrategyConfig(
@@ -626,12 +611,12 @@ class Repository(ctx: Context) {
             buyRules = buy.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.LT, 30.0, 14)) },
             sellRules = sell.ifEmpty { listOf(Rule(IndicatorType.RSI, CompareOp.GT, 70.0, 14)) },
             algoId = algoId,
-            algoParams = if (kind == StrategyKind.ALGO)
-                normalizeAlgoParams(algoId, algoParams) else algoParams,
+            algoParams = normalizeAlgoParams(algoId, algoParams),
             algoNote = algoNote,
             modelId = modelId,
-            modelParams = modelParams,
+            modelParams = StrategyParamDefaults.mergeModel(modelId, modelParams),
             modelWeights = modelWeights,
+
             modelNote = modelNote,
             modelTrainReport = modelTrainReport,
             tradeIntervals = tradeIntervals,
@@ -2885,7 +2870,7 @@ class Repository(ctx: Context) {
                 appendLine("【类型锁定】当前为 kind=ALGO，禁止改成 RULES/MODEL；只改 algoId/algoParams。")
             } else if (goal.isNotBlank()) {
                 appendLine("可优先 kind=ALGO（TREND_FOLLOW/PEARSON_TRIPLE/BREAKOUT/VOLUME_TREND）。")
-                appendLine("必须在 JSON 里给出可执行的 algoParams 或 buyRules/sellRules，禁止空参数。")
+                appendLine("必须在 JSON 里给出可执行的 algoParams 或 buyRules/sellRules，禁止空参数；algoParams/modelParams 必须带齐默认键（如 PEARSON 必含 p1,p2,p3,window,minCorr）。")
             }
             if (targetWr != null || targetTrades != null) {
                 appendLine("【训练约束——回测必须尽量达到】")
@@ -3283,7 +3268,8 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
 
     /** 规范算法参数：保证 p1<p2<p3、数值在引擎可接受范围，避免 LLM 乱参无效 */
     private fun normalizeAlgoParams(algoId: String, raw: Map<String, Double>): Map<String, Double> {
-        val p = raw.toMutableMap()
+        // 先铺默认（含 p1/p2/p3 等），再叠用户/LLM 值，避免空参
+        val p = StrategyParamDefaults.mergeAlgo(algoId, raw).toMutableMap()
         when (algoId) {
             AlgoIds.PEARSON_TRIPLE -> {
                 var p1 = (p["p1"] ?: 6.0).toInt().coerceIn(2, 40)
@@ -3524,7 +3510,7 @@ ${if (goal.isNotBlank()) "用户需求: $goal\n" else ""}$lastFeedback
                 base != null && (lockKind == StrategyKind.ALGO || base.kind == StrategyKind.ALGO) ->
                     normalizeAlgoParams(algoId, base.algoParams + algoParamsRaw)
                 algoParamsRaw.isNotEmpty() -> normalizeAlgoParams(algoId, algoParamsRaw)
-                else -> algoParamsRaw
+                else -> normalizeAlgoParams(algoId, emptyMap())
             }
             val algoNote = o.get("algoNote")?.asString?.take(200)
                 ?: base?.algoNote?.take(200)

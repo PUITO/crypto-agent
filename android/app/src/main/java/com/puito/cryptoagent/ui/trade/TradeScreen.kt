@@ -120,7 +120,16 @@ fun TradeScreen(repo: Repository) {
             Text("策略配置", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             TextButton(onClick = { showModelMgr = true }) { Text("模型管理") }
             IconButton({
-                editing = StrategyConfig(UUID.randomUUID().toString(), "新策略", false)
+                editing = StrategyConfig(
+                    id = UUID.randomUUID().toString(),
+                    title = "新策略",
+                    enabled = false,
+                    kind = StrategyKind.ALGO,
+                    algoId = AlgoIds.VOLUME_TREND,
+                    algoParams = StrategyParamDefaults.algo(AlgoIds.VOLUME_TREND),
+                    modelId = ModelIds.LOGREG_V1,
+                    modelParams = StrategyParamDefaults.model(ModelIds.LOGREG_V1),
+                )
             }) { Icon(Icons.Default.Add, null) }
         }
         Text("同时仅一套启用 · 同侧多条件 OR", color = MaterialTheme.colorScheme.secondary, fontSize = 12.sp)
@@ -574,7 +583,7 @@ private fun EditStrategy(
         paramsText = cfg.algoParams.entries.joinToString("\n") { "${it.key}=${it.value}" }
         modelId = cfg.modelId.ifBlank { ModelIds.LOGREG_V1 }
         modelNote = cfg.modelNote
-        modelParamsText = cfg.modelParams.ifEmpty {
+        modelParamsText = StrategyParamDefaults.formatModelLines(cfg.modelId, cfg.modelParams) //.ifEmpty {
             mapOf(
                 "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
                 "confirmBars" to 1.0, "lookback" to 5.0,
@@ -603,31 +612,16 @@ private fun EditStrategy(
         kind = kind,
         algoId = algoId,
         algoNote = algoNote,
-        algoParams = parseParams(paramsText),
+        algoParams = StrategyParamDefaults.mergeAlgo(algoId, parseParams(paramsText)),
         modelId = modelId.ifBlank { ModelIds.LOGREG_V1 },
         modelNote = modelNote,
         modelParams = when {
             ModelIds.isOfflinePack(modelId) -> {
                 repo.offlineModels.loadPack(modelId)?.params?.ifEmpty { null }
-                    ?: parseParams(modelParamsText).ifEmpty {
-                        mapOf(
-                            "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
-                            "confirmBars" to 1.0, "lookback" to 5.0,
-                        )
-                    }
+                    ?: StrategyParamDefaults.mergeModel(modelId, parseParams(modelParamsText))
             }
-            ModelIds.isLocked(modelId) -> parseParams(modelParamsText).ifEmpty {
-                mapOf(
-                    "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
-                    "confirmBars" to 1.0, "lookback" to 5.0,
-                )
-            }
-            else -> parseParams(modelParamsText).ifEmpty {
-                mapOf(
-                    "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
-                    "confirmBars" to 1.0, "lookback" to 5.0,
-                )
-            }
+            ModelIds.isLocked(modelId) -> StrategyParamDefaults.mergeModel(modelId, parseParams(modelParamsText))
+            else -> StrategyParamDefaults.mergeModel(modelId, parseParams(modelParamsText))
         },
         modelTrainReport = modelReport,
         modelWeights = if (ModelIds.isOfflinePack(modelId)) {
@@ -684,9 +678,15 @@ private fun EditStrategy(
         )
         Text("类型", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = kind == StrategyKind.ALGO, onClick = { kind = StrategyKind.ALGO }, label = { Text("算法配置") })
+            FilterChip(selected = kind == StrategyKind.ALGO, onClick = {
+                kind = StrategyKind.ALGO
+                paramsText = StrategyParamDefaults.formatAlgoLines(algoId, parseParams(paramsText).ifEmpty { null })
+            }, label = { Text("算法配置") })
             FilterChip(selected = kind == StrategyKind.RULES, onClick = { kind = StrategyKind.RULES }, label = { Text("指标规则") })
-            FilterChip(selected = kind == StrategyKind.MODEL, onClick = { kind = StrategyKind.MODEL }, label = { Text("模型") })
+            FilterChip(selected = kind == StrategyKind.MODEL, onClick = {
+                kind = StrategyKind.MODEL
+                modelParamsText = StrategyParamDefaults.formatModelLines(modelId, parseParams(modelParamsText).ifEmpty { null })
+            }, label = { Text("模型") })
         }
         when (kind) {
             StrategyKind.MODEL -> {
@@ -713,11 +713,11 @@ private fun EditStrategy(
                         FilterChip(
                             selected = modelId == id,
                             onClick = {
-                                if (offline && !installed) {
-                                    // 仍允许选中以提示下载
-                                    modelId = id
-                                } else {
-                                    modelId = id
+                                modelId = id
+                                if (!offline || installed) {
+                                    if (!ModelIds.isOfflinePack(id) && id != ModelIds.ONLINE_AI) {
+                                        modelParamsText = StrategyParamDefaults.formatModelLines(id, emptyMap())
+                                    }
                                 }
                             },
                             enabled = true,
@@ -816,7 +816,11 @@ private fun EditStrategy(
                     AlgoIds.all.forEach { id ->
                         FilterChip(
                             selected = algoId == id,
-                            onClick = { algoId = id },
+                            onClick = {
+                                algoId = id
+                                // 切换算法立即带上完整默认参数，避免空参
+                                paramsText = StrategyParamDefaults.formatAlgoLines(id, emptyMap())
+                            },
                             label = { Text(AlgoIds.label(id), fontSize = 11.sp) },
                         )
                     }

@@ -116,6 +116,76 @@ object AlgoIds {
     }
 }
 
+
+/**
+ * 算法/模型默认参数：新建、切换类型、LLM 空参、归一化时统一从此取，
+ * 避免界面与回测出现空 algoParams（如缺 p3）。
+ */
+object StrategyParamDefaults {
+    fun algo(algoId: String): Map<String, Double> = when (algoId) {
+        AlgoIds.PEARSON_TRIPLE -> mapOf(
+            "p1" to 6.0, "p2" to 14.0, "p3" to 28.0,
+            "window" to 36.0, "minCorr" to 0.62, "cooldown" to 8.0,
+            "sameSideGap" to 16.0, "entryMode" to 1.0, "pullback" to 1.0,
+            "rsiBuyMax" to 58.0, "rsiSellMin" to 42.0,
+            "posBuyMax" to 0.72, "posSellMin" to 0.28,
+            "minSlopePct" to 0.00003,
+        )
+        AlgoIds.VOLUME_TREND -> mapOf(
+            "fast" to 8.0, "slow" to 21.0,
+            "volPeriod" to 20.0, "volMult" to 1.5,
+            "macdConfirm" to 1.0, "consecutive" to 2.0,
+            "biasFlipBars" to 4.0, "minBodyPct" to 0.04,
+            "cooldown" to 6.0, "chaseCooldown" to 3.0, "allowChase" to 1.0,
+        )
+        AlgoIds.BREAKOUT -> mapOf(
+            "lookback" to 20.0, "cooldown" to 5.0,
+        )
+        else -> mapOf( // TREND_FOLLOW
+            "fast" to 12.0, "slow" to 26.0, "consecutive" to 3.0, "cooldown" to 3.0,
+        )
+    }
+
+    fun model(modelId: String): Map<String, Double> = when (modelId) {
+        ModelIds.KALMAN_V1 -> mapOf(
+            "q" to 1e-5, "r" to 1e-3, "velTh" to 0.00015,
+            "cooldown" to 10.0, "sameSideGap" to 16.0,
+            "posBuyMax" to 0.78, "posSellMin" to 0.22,
+        )
+        ModelIds.ENSEMBLE_V1 -> mapOf(
+            "cooldown" to 12.0, "sameSideGap" to 18.0,
+            "minEdge" to 0.08, "votes" to 2.0,
+        )
+        ModelIds.REGIME_V1 -> mapOf(
+            "cooldown" to 10.0, "sameSideGap" to 16.0,
+            "erLen" to 20.0, "erTrend" to 0.42, "minEdge" to 0.07,
+        )
+        else -> mapOf(
+            "threshold" to 0.64, "cooldown" to 12.0, "minEdge" to 0.04,
+            "confirmBars" to 1.0, "lookback" to 5.0,
+        )
+    }
+
+    /** 默认在前，raw 覆盖；保证键完整 */
+    fun mergeAlgo(algoId: String, raw: Map<String, Double>?): Map<String, Double> {
+        val base = algo(algoId)
+        if (raw.isNullOrEmpty()) return base
+        return base + raw
+    }
+
+    fun mergeModel(modelId: String, raw: Map<String, Double>?): Map<String, Double> {
+        val base = model(modelId)
+        if (raw.isNullOrEmpty()) return base
+        return base + raw
+    }
+
+    fun formatAlgoLines(algoId: String, raw: Map<String, Double>? = null): String =
+        mergeAlgo(algoId, raw).entries.joinToString("\n") { "${it.key}=${it.value}" }
+
+    fun formatModelLines(modelId: String, raw: Map<String, Double>? = null): String =
+        mergeModel(modelId, raw).entries.joinToString("\n") { "${it.key}=${it.value}" }
+}
+
 data class StrategyConfig(
     val id: String,
     val title: String,
